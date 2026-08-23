@@ -106,9 +106,18 @@ void TrigglowDelayDock::BuildUi()
 	connect(secondsSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
 		[this](int value) { controller_.SetDelaySeconds(static_cast<uint32_t>(value)); });
 	connect(safeModeCheck_, &QCheckBox::toggled, this, [this](bool checked) { controller_.SetSafeMode(checked); });
-	connect(enableButton_, &QPushButton::clicked, this, [this] { controller_.Enable(); });
-	connect(disableButton_, &QPushButton::clicked, this, [this] { controller_.Disable(); });
-	connect(toggleButton_, &QPushButton::clicked, this, [this] { controller_.Toggle(); });
+	connect(enableButton_, &QPushButton::clicked, this, [this] {
+		TRIGGLOW_LOG_INFO(kComponent, "Enable pressed in dock");
+		controller_.Enable();
+	});
+	connect(disableButton_, &QPushButton::clicked, this, [this] {
+		TRIGGLOW_LOG_INFO(kComponent, "Disable pressed in dock");
+		controller_.Disable();
+	});
+	connect(toggleButton_, &QPushButton::clicked, this, [this] {
+		TRIGGLOW_LOG_INFO(kComponent, "Toggle pressed in dock");
+		controller_.Toggle();
+	});
 
 	applyWatchdog_ = new QTimer(this);
 	applyWatchdog_->setSingleShot(true);
