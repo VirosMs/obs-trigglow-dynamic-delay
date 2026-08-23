@@ -79,7 +79,7 @@ void LoadSettings(trigglow::DelayController &controller)
 	obs_data_t *data = obs_data_create_from_json_file(path.toUtf8().constData());
 	if (!data) {
 		TRIGGLOW_LOG_INFO(kComponent, "no existing settings file at %s, using defaults",
-				   path.toUtf8().constData());
+				  path.toUtf8().constData());
 		return;
 	}
 
@@ -97,7 +97,7 @@ void LoadSettings(trigglow::DelayController &controller)
 	obs_data_release(data);
 
 	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, safeMode=%s, enabled=%s)", delaySeconds,
-			   safeMode ? "on" : "off", wasEnabled ? "yes" : "no");
+			  safeMode ? "on" : "off", wasEnabled ? "yes" : "no");
 }
 
 void SaveSettings(const trigglow::DelayController &controller)

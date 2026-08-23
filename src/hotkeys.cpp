@@ -35,14 +35,14 @@ DelayHotkeys::~DelayHotkeys()
 void DelayHotkeys::Init()
 {
 	toggleId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.toggle", "Trigglow: Toggle Dynamic Delay",
-						  &DelayHotkeys::ToggleCallback, this);
+						 &DelayHotkeys::ToggleCallback, this);
 	enableId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.enable", "Trigglow: Enable Dynamic Delay",
-						  &DelayHotkeys::EnableCallback, this);
+						 &DelayHotkeys::EnableCallback, this);
 	disableId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.disable", "Trigglow: Disable Dynamic Delay",
-						   &DelayHotkeys::DisableCallback, this);
+						  &DelayHotkeys::DisableCallback, this);
 
 	TRIGGLOW_LOG_INFO(kComponent, "registered 3 hotkeys (toggle/enable/disable) — assign them in "
-					"Settings > Hotkeys");
+				      "Settings > Hotkeys");
 }
 
 void DelayHotkeys::Shutdown()

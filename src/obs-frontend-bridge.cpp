@@ -76,7 +76,7 @@ void ObsFrontendBridge::RequestStreamingStop() const
 }
 
 bool ObsFrontendBridge::ApplyConfiguredDelay(uint32_t delaySeconds, bool preserveOnDisconnect,
-					      std::string &outError) const
+					     std::string &outError) const
 {
 	obs_output_t *output = obs_frontend_get_streaming_output();
 	if (!output) {
@@ -90,7 +90,7 @@ bool ObsFrontendBridge::ApplyConfiguredDelay(uint32_t delaySeconds, bool preserv
 	obs_output_release(output);
 
 	TRIGGLOW_LOG_INFO(kComponent, "configured delay set to %us (preserve=%s)", delaySeconds,
-			   preserveOnDisconnect ? "on" : "off");
+			  preserveOnDisconnect ? "on" : "off");
 	return true;
 }
 

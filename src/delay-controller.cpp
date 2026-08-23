@@ -31,7 +31,7 @@ void DelayController::Init()
 {
 	bridge_.Init([this](FrontendEvent event) { OnFrontendEvent(event); });
 	TRIGGLOW_LOG_INFO(kComponent, "initialized (default delay=%us, safeMode=%s)", status_.configuredSeconds,
-			   status_.safeMode ? "on" : "off");
+			  status_.safeMode ? "on" : "off");
 }
 
 void DelayController::Enable()
@@ -111,7 +111,7 @@ void DelayController::OnApplyTimeout()
 	TRIGGLOW_LOG_ERROR(kComponent, "apply timeout reached in safe mode; giving up and reporting Error");
 	pendingReconnect_ = false;
 	SetState(DelayState::Error, "OBS no confirmo la reconexion a tiempo. Revisa tu conexion y el estado del "
-				     "stream en OBS, y vuelve a intentarlo manualmente.");
+				    "stream en OBS, y vuelve a intentarlo manualmente.");
 }
 
 void DelayController::OnFrontendEvent(FrontendEvent event)
@@ -160,7 +160,7 @@ void DelayController::ApplyAndMaybeReconnect()
 		status_.activeSeconds = 0;
 		SetState(enabled_ ? DelayState::Active : DelayState::Inactive);
 		TRIGGLOW_LOG_INFO(kComponent, "%s while offline, armed for next stream start (no reconnect needed)",
-				   enabled_ ? "enabled" : "disabled");
+				  enabled_ ? "enabled" : "disabled");
 		return;
 	}
 
@@ -170,7 +170,7 @@ void DelayController::ApplyAndMaybeReconnect()
 	// confirms the stop/start cycle.
 	pendingReconnect_ = true;
 	SetState(DelayState::Applying, "Aplicando cambios: reconectando el stream para que el nuevo delay tenga "
-					"efecto. Esto puede causar un corte breve visible para tu audiencia.");
+				       "efecto. Esto puede causar un corte breve visible para tu audiencia.");
 	bridge_.RequestStreamingStop();
 }
 

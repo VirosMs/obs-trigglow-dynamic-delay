@@ -80,7 +80,7 @@ void TrigglowDelayDock::BuildUi()
 	safeModeCheck_->setChecked(controller_.GetStatus().safeMode);
 	safeModeCheck_->setToolTip(
 		QStringLiteral("Si la reconexion no se confirma a tiempo, el plugin no reintenta en bucle: "
-				"pasa a estado de Error y espera una accion manual tuya."));
+			       "pasa a estado de Error y espera una accion manual tuya."));
 	root->addWidget(safeModeCheck_);
 
 	// --- Action buttons ---
@@ -93,10 +93,9 @@ void TrigglowDelayDock::BuildUi()
 	buttonRow->addWidget(toggleButton_);
 	root->addLayout(buttonRow);
 
-	auto *hint = new QLabel(
-		QStringLiteral("Si ya estas en directo, aplicar un cambio provoca una breve reconexion "
-				"del stream (ver docs/SPEC.md)."),
-		this);
+	auto *hint = new QLabel(QStringLiteral("Si ya estas en directo, aplicar un cambio provoca una breve reconexion "
+					       "del stream (ver docs/SPEC.md)."),
+				this);
 	hint->setWordWrap(true);
 	hint->setStyleSheet("color: palette(mid); font-size: 10px;");
 	root->addWidget(hint);
@@ -149,8 +148,8 @@ void TrigglowDelayDock::RefreshFromStatus(const DelayStatus &status)
 		color = QStringLiteral("#d8a400");
 		break;
 	case DelayState::Active:
-		stateText = QStringLiteral("● Active (%1s)").arg(status.activeSeconds ? status.activeSeconds
-											      : status.configuredSeconds);
+		stateText = QStringLiteral("● Active (%1s)")
+				    .arg(status.activeSeconds ? status.activeSeconds : status.configuredSeconds);
 		color = QStringLiteral("#2e9e44");
 		break;
 	case DelayState::Error:
