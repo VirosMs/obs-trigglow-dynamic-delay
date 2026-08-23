@@ -6,11 +6,13 @@
 !/build-aux
 !/cmake
 !/data
+!/docs
 !/src
 !.clang-format
 !.gersemirc
 !.gitignore
 !buildspec.json
+!CHANGELOG.md
 !CMakeLists.txt
 !CMakePresets.json
 !LICENSE
