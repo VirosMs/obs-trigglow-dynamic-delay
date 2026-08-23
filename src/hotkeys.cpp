@@ -23,7 +23,29 @@ namespace trigglow {
 
 namespace {
 constexpr const char *kComponent = "hotkeys";
+
+// obs_hotkey_register_frontend callbacks fire on OBS's internal hotkey
+// thread, never the Qt UI thread — that's true for a real key press AND for
+// a Stream Deck press via System > Hotkey, which is this plugin's advertised
+// main control path (see docs/SPEC.md). Calling into DelayController (and,
+// through its status callback, straight into the Qt dock's widgets) from
+// that thread is a data race / Qt thread-affinity violation. Route the
+// actual call through OBS's own UI task queue instead.
+void ToggleOnUiThread(void *param)
+{
+	static_cast<DelayController *>(param)->Toggle();
 }
+
+void EnableOnUiThread(void *param)
+{
+	static_cast<DelayController *>(param)->Enable();
+}
+
+void DisableOnUiThread(void *param)
+{
+	static_cast<DelayController *>(param)->Disable();
+}
+} // namespace
 
 DelayHotkeys::DelayHotkeys(DelayController &controller) : controller_(controller) {}
 
@@ -68,21 +90,24 @@ void DelayHotkeys::ToggleCallback(void *data, obs_hotkey_id /*id*/, obs_hotkey_t
 	// OBS's own built-in hotkeys (Start/Stop Streaming, Mute, etc).
 	if (!pressed)
 		return;
-	static_cast<DelayHotkeys *>(data)->controller_.Toggle();
+	auto *self = static_cast<DelayHotkeys *>(data);
+	obs_queue_task(OBS_TASK_UI, ToggleOnUiThread, &self->controller_, false);
 }
 
 void DelayHotkeys::EnableCallback(void *data, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
 {
 	if (!pressed)
 		return;
-	static_cast<DelayHotkeys *>(data)->controller_.Enable();
+	auto *self = static_cast<DelayHotkeys *>(data);
+	obs_queue_task(OBS_TASK_UI, EnableOnUiThread, &self->controller_, false);
 }
 
 void DelayHotkeys::DisableCallback(void *data, obs_hotkey_id /*id*/, obs_hotkey_t * /*hotkey*/, bool pressed)
 {
 	if (!pressed)
 		return;
-	static_cast<DelayHotkeys *>(data)->controller_.Disable();
+	auto *self = static_cast<DelayHotkeys *>(data);
+	obs_queue_task(OBS_TASK_UI, DisableOnUiThread, &self->controller_, false);
 }
 
 } // namespace trigglow

@@ -80,6 +80,10 @@ void DelayController::SetSafeMode(bool enabled)
 
 void DelayController::LoadSettings(uint32_t delaySeconds, bool safeMode, bool wasEnabled)
 {
+	// Same clamp as SetDelaySeconds() — a hand-edited/corrupted settings
+	// file shouldn't be able to hand an unbounded value to obs_output_set_delay().
+	if (delaySeconds > 1800)
+		delaySeconds = 1800;
 	status_.configuredSeconds = delaySeconds;
 	status_.safeMode = safeMode;
 	enabled_ = wasEnabled;
