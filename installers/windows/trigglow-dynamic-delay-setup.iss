@@ -38,6 +38,11 @@ AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={code:GetObsDir}
 DisableDirPage=no
+; This installer always targets an EXISTING OBS Studio folder (that's the
+; whole point — we're installing a plugin into it, not creating a new app
+; folder), so Inno's default "this folder already exists, continue anyway?"
+; warning is just confusing noise here, not a real "are you sure?" moment.
+DirExistsWarning=no
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
 PrivilegesRequired=admin
