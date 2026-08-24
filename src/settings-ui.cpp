@@ -91,9 +91,9 @@ void TrigglowDelayDock::BuildUi()
 	secondsSpin_->setRange(1, 60);
 	secondsSpin_->setValue(static_cast<int>(bufferController_.GetStatus().delaySeconds));
 	secondsSpin_->setToolTip(
-		QStringLiteral("El maximo real depende de la resolucion/FPS de la escena y de un presupuesto de "
-			       "VRAM fijo (~1.5GB) - pedir mas de lo que cabe se recorta automaticamente (log de "
-			       "OBS)."));
+		QStringLiteral("El delay pedido siempre se respeta en tiempo. Si no cabe entero en el "
+			       "presupuesto de VRAM (~2GB) a la resolucion/FPS de la escena, el buffer se guarda "
+			       "internamente a menor resolucion en vez de acortar el delay."));
 	secondsRow->addWidget(secondsSpin_);
 	root->addLayout(secondsRow);
 

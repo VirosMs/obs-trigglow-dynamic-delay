@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace trigglow {
 
@@ -29,13 +30,28 @@ constexpr const char *kFilterId = "trigglow_video_delay_filter";
 constexpr const char *kSettingDelaySeconds = "delay_seconds";
 
 // VRAM budget for the ring buffer. Uncompressed RGBA at 1920x1080@60fps is
-// ~475MB PER SECOND (1920*1080*4 bytes * 60) — this is the real constraint,
-// not an arbitrary "max seconds" slider. Requesting more delay than this
-// budget covers at the source's actual resolution/fps silently clamps
-// (logged once per change), it never grows unbounded. 1.5GB is a
-// conservative default: at 1080p60 that's ~3.2s of true headroom; lower
-// resolutions/framerates (e.g. a webcam at 720p30) get proportionally more.
-constexpr uint64_t kMaxBufferBytes = 1536ULL * 1024 * 1024;
+// ~475MB PER SECOND (1920*1080*4 bytes * 60) — a real 30-60s buffer at that
+// resolution would need ~14-28GB, not realistic on top of whatever else OBS
+// is doing. Rather than silently truncating the requested delay duration
+// (the original design — found live, 2026-08-24, to make long delays
+// useless: it just quietly gave you a couple of seconds instead), the ring
+// buffer's CAPTURE resolution shrinks instead — see EnsureRingSized(). The
+// requested delaySeconds is always honored in time; only the visual
+// resolution of the delayed segment degrades once it doesn't fit at full
+// res. 2GB is a moderate default increase from the original 1.5GB (still
+// safe for older/lower-VRAM GPUs) — combined with downscaling this covers
+// the vast majority of realistic delay lengths without needing a proper
+// compressed encode/decode buffer (a much bigger rewrite — libobs has no
+// public decoder API for that, only obs-encoder.h for producing an output
+// stream; would need vendoring FFmpeg or a platform decoder).
+constexpr uint64_t kMaxBufferBytes = 2048ULL * 1024 * 1024;
+
+// Never shrink the buffer below this fraction of the source's real
+// resolution, no matter how long a delay is requested — past this point
+// pick fewer frames (shorter effective delay) instead, same as the old
+// clamp-only behavior, as an absolute last resort. Keeps genuinely extreme
+// requests (e.g. 60s at 4K) from producing an unusably tiny image.
+constexpr double kMinBufferScale = 0.15;
 
 // UI slider cap. The real enforcement is EnsureRingSized()'s budget math —
 // this just keeps the properties panel from offering a wildly unrealistic
@@ -85,41 +101,64 @@ void VideoDelayFilter::ReleaseRing()
 	bufferedCount_ = 0;
 }
 
-void VideoDelayFilter::EnsureRingSized(uint32_t width, uint32_t height)
+void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 {
-	if (width == 0 || height == 0)
+	if (origWidth == 0 || origHeight == 0)
 		return;
 
-	// Slot count comes from the VRAM budget at this resolution, not
-	// directly from configuredDelaySeconds_ — see kMaxBufferBytes above.
-	uint64_t bytesPerFrame = static_cast<uint64_t>(width) * height * 4;
-	uint64_t maxFrames = std::max<uint64_t>(1, kMaxBufferBytes / bytesPerFrame);
-
-	uint64_t requestedFrames = static_cast<uint64_t>(configuredDelaySeconds_) * std::max<uint32_t>(1, currentFps_);
+	uint32_t fps = std::max<uint32_t>(1, currentFps_);
 	// +1 so a full N-second delay has a valid slot to read from, not just
 	// N seconds of frames with none old enough yet.
-	uint64_t desiredFrames = std::min(requestedFrames + 1, maxFrames);
-	desiredFrames = std::max<uint64_t>(1, desiredFrames);
+	uint64_t desiredFrames = static_cast<uint64_t>(configuredDelaySeconds_) * fps + 1;
 
-	bool resolutionChanged = !ring_.empty() && (ring_[0].width != width || ring_[0].height != height);
-	if (!resolutionChanged && ring_.size() == desiredFrames)
+	// Prefer shrinking the CAPTURE resolution over shrinking the frame
+	// count: the requested delay duration should always be honored, since a
+	// "10s delay" that quietly only buffers 3s defeats the whole feature.
+	// See kMaxBufferBytes's comment.
+	uint64_t fullResBytesPerFrame = static_cast<uint64_t>(origWidth) * origHeight * 4;
+	uint64_t fullResTotalBytes = desiredFrames * fullResBytesPerFrame;
+
+	double scale = 1.0;
+	if (fullResTotalBytes > kMaxBufferBytes && fullResBytesPerFrame > 0) {
+		double idealScale = std::sqrt(static_cast<double>(kMaxBufferBytes) /
+					      static_cast<double>(desiredFrames * fullResBytesPerFrame));
+		scale = std::max(kMinBufferScale, std::min(1.0, idealScale));
+	}
+
+	uint32_t bufferWidth = std::max<uint32_t>(2, static_cast<uint32_t>(origWidth * scale));
+	uint32_t bufferHeight = std::max<uint32_t>(2, static_cast<uint32_t>(origHeight * scale));
+
+	// Last resort, only reached at the kMinBufferScale floor for genuinely
+	// extreme requests (e.g. 60s at 4K): even the shrunk resolution doesn't
+	// fit the full duration, so fall back to trimming frame count too —
+	// same clamp-only behavior the original design always used.
+	uint64_t bufferBytesPerFrame = static_cast<uint64_t>(bufferWidth) * bufferHeight * 4;
+	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, kMaxBufferBytes / bufferBytesPerFrame);
+	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
+
+	bool resolutionChanged = !ring_.empty() && (ring_[0].width != bufferWidth || ring_[0].height != bufferHeight);
+	if (!resolutionChanged && ring_.size() == actualFrames)
 		return; // Already correctly sized.
 
-	if (requestedFrames + 1 > maxFrames) {
-		TRIGGLOW_LOG_WARN(kComponent,
-				  "requested %us delay at %ux%u@%ufps needs more than the %lluMB VRAM budget; "
-				  "clamped to ~%llu frames (~%.1fs)",
-				  configuredDelaySeconds_, width, height, currentFps_,
-				  static_cast<unsigned long long>(kMaxBufferBytes / (1024 * 1024)),
-				  static_cast<unsigned long long>(maxFrames),
-				  static_cast<double>(maxFrames) / std::max<uint32_t>(1, currentFps_));
+	if (scale < 1.0) {
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "buffering at %ux%u (%.0f%% of the source's %ux%u) to fit %us at %ufps within "
+				  "the %lluMB budget",
+				  bufferWidth, bufferHeight, scale * 100.0, origWidth, origHeight,
+				  configuredDelaySeconds_, fps,
+				  static_cast<unsigned long long>(kMaxBufferBytes / (1024 * 1024)));
+	}
+	if (actualFrames < desiredFrames) {
+		TRIGGLOW_LOG_WARN(kComponent, "even at %ux%u this still doesn't fit the full %us; clamped to ~%.1fs",
+				  bufferWidth, bufferHeight, configuredDelaySeconds_,
+				  static_cast<double>(actualFrames) / fps);
 	}
 
 	ReleaseRing();
-	ring_.resize(static_cast<size_t>(desiredFrames));
+	ring_.resize(static_cast<size_t>(actualFrames));
 	for (auto &slot : ring_) {
-		slot.width = width;
-		slot.height = height;
+		slot.width = bufferWidth;
+		slot.height = bufferHeight;
 	}
 }
 
@@ -166,7 +205,14 @@ void VideoDelayFilter::Render()
 		writeSlot.texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 
 	gs_texrender_reset(writeSlot.texrender);
-	if (gs_texrender_begin(writeSlot.texrender, width, height)) {
+	// texrender_begin's size is the slot's (possibly downscaled) buffer
+	// resolution, but the ortho projection below still spans the source's
+	// real width/height — that mismatch is exactly what makes the GPU
+	// rasterize the capture down to fit the smaller viewport. Playback
+	// (below) draws whichever texture comes out of this at the CURRENT
+	// target's real size regardless of what resolution it was captured at,
+	// so a downscaled slot just reads back a little softer, never wrong.
+	if (gs_texrender_begin(writeSlot.texrender, writeSlot.width, writeSlot.height)) {
 		struct vec4 clearColor = {};
 		gs_clear(GS_CLEAR_COLOR, &clearColor, 0.0f, 0);
 		gs_matrix_push();
@@ -265,9 +311,9 @@ obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 	obs_property_t *prop =
 		obs_properties_add_int(props, kSettingDelaySeconds, "Delay (segundos)", 0, kUiMaxDelaySeconds, 1);
 	obs_property_set_long_description(
-		prop, "Segundos de retraso. El maximo real depende de la resolucion/FPS de la fuente y de un "
-		      "presupuesto de VRAM fijo (~1.5GB) - pedir mas de lo que cabe se recorta automaticamente "
-		      "(ver el log de OBS).");
+		prop, "Segundos de retraso. Siempre se respeta el tiempo pedido; si no cabe entero en el "
+		      "presupuesto de VRAM (~2GB) a la resolucion/FPS de la fuente, el propio buffer se guarda a "
+		      "menor resolucion internamente en vez de acortar el delay (ver el log de OBS).");
 	return props;
 }
 
