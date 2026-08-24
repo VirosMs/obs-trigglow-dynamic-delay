@@ -20,20 +20,30 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <QWidget>
 
+#include "buffer-mode-controller.hpp"
 #include "delay-controller.hpp"
 
 class QLabel;
 class QSpinBox;
 class QCheckBox;
+class QComboBox;
 class QPushButton;
 class QTimer;
 
 // TrigglowDelayDock is the plugin's ONLY Qt-facing file. It is a thin view
-// over DelayController: every button click calls straight into the
-// controller's public Enable()/Disable()/Toggle()/SetDelaySeconds()/
-// SetSafeMode(), and the dock repaints itself whenever the controller reports
-// a status change — the exact same callback path used after a hotkey press,
-// so the dock and the hotkeys can never show inconsistent state.
+// over DelayController and BufferModeController: every button click calls
+// straight into a controller's public methods, and the dock repaints
+// itself whenever a controller reports a status change — the exact same
+// callback path used after a hotkey press, so the dock and the hotkeys can
+// never show inconsistent state.
+//
+// Two modes, one panel (issue #173 phase 2 - previously the buffer mode
+// required manually adding an OBS filter via the Filters dialog, which
+// testing showed was confusing/unusable for a non-technical streamer). A
+// combo at the top shows/hides one of two control groups; only one
+// controller is ever "armed" at a time from the user's point of view, but
+// both controllers exist independently the whole time (each owns its own
+// settings/state regardless of which group is currently visible).
 //
 // Ownership: once passed to ObsFrontendBridge::AddDock() ->
 // obs_frontend_add_dock_by_id(), OBS's dock system owns this widget's
@@ -46,13 +56,15 @@ class TrigglowDelayDock : public QWidget {
 	Q_OBJECT
 
 public:
-	explicit TrigglowDelayDock(DelayController &controller, QWidget *parent = nullptr);
+	explicit TrigglowDelayDock(DelayController &controller, BufferModeController &bufferController,
+				   QWidget *parent = nullptr);
 
 private:
 	void BuildUi();
+
+	// --- Reconnect mode (existing, v0.1.0) ---
 	void OnStatusChanged(const DelayStatus &status);
 	void RefreshFromStatus(const DelayStatus &status);
-
 	// "Modo seguro" watchdog (docs/SPEC.md §3): if we've been stuck in
 	// Applying for too long, tell the controller to give up cleanly instead
 	// of leaving the dock showing "Applying..." forever. Lives here (not in
@@ -60,14 +72,34 @@ private:
 	void ArmApplyWatchdog();
 	void DisarmApplyWatchdog();
 
-	// Repopulates reconnectSceneCombo_ from controller_.ListAvailableScenes()
-	// (scenes can be renamed/added/removed anytime by the user) and reselects
-	// whatever is currently configured, without re-triggering its own
-	// currentIndexChanged handler.
-	void RefreshSceneList();
+	// --- Buffer mode (new, phase 2) ---
+	void OnBufferStatusChanged(const BufferModeStatus &status);
+	void RefreshFromBufferStatus(const BufferModeStatus &status);
+	// Single-shot fill countdown, armed for bufferController_.GetStatus().
+	// delaySeconds when Filling starts — same pattern as applyWatchdog_
+	// above, just a plain elapsed-time trigger instead of a "give up"
+	// timeout (see BufferModeController::OnFillTimerElapsed()'s comment).
+	void ArmFillTimer(uint32_t seconds);
+	void DisarmFillTimer();
+
+	// Shared by reconnectSceneCombo_, liveSceneCombo_, and
+	// loadingSceneCombo_ — repopulates whichever SceneComboBox is passed
+	// from controller_.ListAvailableScenes() (any of them works; both
+	// controllers proxy the same ObsFrontendBridge::ListSceneNames()) and
+	// reselects `currentValue` without re-triggering signals.
+	void RefreshSceneCombo(SceneComboBox *combo, const std::string &currentValue, bool includeNoneOption);
 
 	DelayController &controller_;
+	BufferModeController &bufferController_;
 
+	QWidget *modeSelectorRow_ = nullptr;
+	// Index 0 = reconnect mode, 1 = buffer mode — matches the order the
+	// two groups are added to the stack in BuildUi().
+	QComboBox *modeCombo_ = nullptr;
+	QWidget *reconnectGroup_ = nullptr;
+	QWidget *bufferGroup_ = nullptr;
+
+	// Reconnect mode widgets.
 	QLabel *stateLabel_ = nullptr;
 	QLabel *detailLabel_ = nullptr;
 	QSpinBox *secondsSpin_ = nullptr;
@@ -77,6 +109,16 @@ private:
 	QPushButton *disableButton_ = nullptr;
 	QPushButton *toggleButton_ = nullptr;
 	QTimer *applyWatchdog_ = nullptr;
+
+	// Buffer mode widgets.
+	QLabel *bufferStateLabel_ = nullptr;
+	QLabel *bufferDetailLabel_ = nullptr;
+	SceneComboBox *liveSceneCombo_ = nullptr;
+	SceneComboBox *loadingSceneCombo_ = nullptr;
+	QSpinBox *bufferSecondsSpin_ = nullptr;
+	QPushButton *bufferEnableButton_ = nullptr;
+	QPushButton *bufferDisableButton_ = nullptr;
+	QTimer *fillTimer_ = nullptr;
 };
 
 } // namespace trigglow

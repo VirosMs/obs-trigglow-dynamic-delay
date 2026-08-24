@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "obs-frontend-bridge.hpp"
 #include "logging.hpp"
+#include "video-delay-filter.hpp"
 
 extern "C" {
 #include <obs.h>
@@ -165,6 +166,161 @@ bool ObsFrontendBridge::SetCurrentSceneByName(const std::string &name) const
 	}
 	obs_frontend_source_list_free(&scenes);
 	return found;
+}
+
+namespace {
+// Fixed, well-known names so EnsureBufferWrapperScene()/FindBufferFilter()
+// can relocate the same wrapper scene and filter instance across calls
+// without tracking any extra IDs themselves.
+constexpr const char *kBufferWrapperSceneName = "Trigglow Delay Buffer (no tocar)";
+constexpr const char *kBufferFilterInstanceName = "Trigglow Video Delay Buffer";
+} // namespace
+
+obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneName) const
+{
+	// obs_source_get_filter_by_name() and obs_scene_from_source() are plain
+	// accessors into structures already owned elsewhere (no "increments the
+	// reference counter, use obs_source_release" doc comment, unlike
+	// obs_get_source_by_name()) - the only owned reference in this function
+	// is wrapperSource itself.
+	obs_source_t *wrapperSource = obs_get_source_by_name(kBufferWrapperSceneName);
+	if (!wrapperSource)
+		return nullptr;
+
+	obs_scene_t *wrapperScene = obs_scene_from_source(wrapperSource);
+	if (!wrapperScene) {
+		obs_source_release(wrapperSource);
+		return nullptr;
+	}
+
+	struct FindCtx {
+		obs_source_t *itemSource = nullptr;
+	} ctx;
+	obs_scene_enum_items(
+		wrapperScene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			static_cast<FindCtx *>(param)->itemSource = obs_sceneitem_get_source(item);
+			return false; // We only ever add one item (the live scene); stop immediately.
+		},
+		&ctx);
+
+	obs_source_t *filter = ctx.itemSource ? obs_source_get_filter_by_name(ctx.itemSource, kBufferFilterInstanceName)
+					      : nullptr;
+
+	obs_source_release(wrapperSource);
+	(void)liveSceneName; // Reserved: current design assumes a single live scene at a time (see header comment).
+	return filter;
+}
+
+bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneName) const
+{
+	if (liveSceneName.empty())
+		return false;
+
+	if (FindBufferFilter(liveSceneName) != nullptr)
+		return true; // Already fully set up.
+
+	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
+	if (!liveSource) {
+		TRIGGLOW_LOG_WARN(kComponent, "buffer mode: live scene \"%s\" not found", liveSceneName.c_str());
+		return false;
+	}
+
+	obs_source_t *wrapperSource = obs_get_source_by_name(kBufferWrapperSceneName);
+	obs_scene_t *wrapperScene = wrapperSource ? obs_scene_from_source(wrapperSource) : nullptr;
+	if (!wrapperSource) {
+		wrapperScene = obs_scene_create(kBufferWrapperSceneName);
+		wrapperSource = wrapperScene ? obs_scene_get_source(wrapperScene) : nullptr;
+	}
+	if (!wrapperScene || !wrapperSource) {
+		TRIGGLOW_LOG_ERROR(kComponent, "buffer mode: could not create/find the wrapper scene");
+		obs_source_release(liveSource);
+		return false;
+	}
+
+	// Reuse an existing scene-item if the wrapper already has one (e.g. from
+	// a previous session with a different live scene selected), otherwise
+	// add the live scene now. NOTE: this does NOT duplicate liveSource -
+	// obs_sceneitem_get_source() on the result returns the SAME object, see
+	// the header comment on this function.
+	obs_source_t *itemSource = nullptr;
+	struct FindCtx {
+		obs_source_t *itemSource = nullptr;
+	} ctx;
+	obs_scene_enum_items(
+		wrapperScene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			static_cast<FindCtx *>(param)->itemSource = obs_sceneitem_get_source(item);
+			return false;
+		},
+		&ctx);
+	itemSource = ctx.itemSource;
+
+	if (!itemSource) {
+		obs_sceneitem_t *newItem = obs_scene_add(wrapperScene, liveSource);
+		itemSource = newItem ? obs_sceneitem_get_source(newItem) : nullptr;
+	}
+
+	obs_source_release(liveSource);
+
+	if (!itemSource) {
+		TRIGGLOW_LOG_ERROR(kComponent, "buffer mode: could not add \"%s\" to the wrapper scene",
+				   liveSceneName.c_str());
+		obs_source_release(wrapperSource);
+		return false;
+	}
+
+	bool ok = true;
+	obs_source_t *existingFilter = obs_source_get_filter_by_name(itemSource, kBufferFilterInstanceName);
+	if (!existingFilter) {
+		obs_data_t *filterSettings = obs_data_create();
+		obs_source_t *filter =
+			obs_source_create(VideoDelayFilter::Id(), kBufferFilterInstanceName, filterSettings, nullptr);
+		obs_data_release(filterSettings);
+		if (filter) {
+			obs_source_filter_add(itemSource, filter);
+			// Disabled by default: this filter stays permanently attached
+			// to the live scene's OWN source object (see header comment),
+			// so it must be inert unless SetBufferFilterEnabled(true) is
+			// called for an actively-showing wrapper.
+			obs_source_set_enabled(filter, false);
+			obs_source_release(filter);
+			TRIGGLOW_LOG_INFO(kComponent, "buffer mode: attached delay filter to \"%s\"",
+					  liveSceneName.c_str());
+		} else {
+			TRIGGLOW_LOG_ERROR(kComponent, "buffer mode: obs_source_create for the delay filter failed");
+			ok = false;
+		}
+	}
+
+	obs_source_release(wrapperSource);
+	return ok;
+}
+
+bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const
+{
+	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	if (!filter)
+		return false;
+	obs_source_set_enabled(filter, enabled);
+	return true;
+}
+
+bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const
+{
+	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	if (!filter)
+		return false;
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "delay_seconds", seconds);
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
+bool ObsFrontendBridge::ShowBufferWrapperScene() const
+{
+	return SetCurrentSceneByName(kBufferWrapperSceneName);
 }
 
 void ObsFrontendBridge::AddDock(const char *id, const char *title, void *qWidget) const

@@ -52,6 +52,8 @@ target_sources(
     src/video-delay-filter.hpp
     src/scene-combo-box.cpp
     src/scene-combo-box.hpp
+    src/buffer-mode-controller.cpp
+    src/buffer-mode-controller.hpp
 )
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

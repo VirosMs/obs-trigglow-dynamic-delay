@@ -27,6 +27,7 @@ extern "C" {
 #include <plugin-support.h>
 }
 
+#include "buffer-mode-controller.hpp"
 #include "delay-controller.hpp"
 #include "hotkeys.hpp"
 #include "logging.hpp"
@@ -51,6 +52,7 @@ constexpr const char *kSettingsFile = "settings.json";
 struct PluginState {
 	trigglow::ObsFrontendBridge bridge;
 	std::unique_ptr<trigglow::DelayController> controller;
+	std::unique_ptr<trigglow::BufferModeController> bufferController;
 	std::unique_ptr<trigglow::DelayHotkeys> hotkeys;
 	// Not owned past AddDock(): OBS's dock system takes ownership of the
 	// QWidget once obs_frontend_add_dock_by_id() returns true. Kept here
@@ -127,27 +129,85 @@ void SaveSettings(const trigglow::DelayController &controller)
 	TRIGGLOW_LOG_INFO(kComponent, "settings saved to %s", path.toUtf8().constData());
 }
 
+// Separate file from the reconnect-mode settings above: keeps the two
+// controllers' persistence fully independent, same as the rest of their
+// design (see buffer-mode-controller.hpp).
+constexpr const char *kBufferSettingsFile = "buffer-mode-settings.json";
+
+void LoadBufferSettings(trigglow::BufferModeController &controller)
+{
+	char *rawPath = obs_module_get_config_path(obs_current_module(), kBufferSettingsFile);
+	QString path = rawPath ? QString::fromUtf8(rawPath) : QString();
+	bfree(rawPath);
+	if (path.isEmpty())
+		return;
+
+	obs_data_t *data = obs_data_create_from_json_file(path.toUtf8().constData());
+	if (!data) {
+		TRIGGLOW_LOG_INFO(kComponent, "no existing buffer-mode settings file, using defaults");
+		return;
+	}
+
+	uint32_t delaySeconds = static_cast<uint32_t>(obs_data_get_int(data, "delay_seconds"));
+	if (delaySeconds == 0 && !obs_data_has_user_value(data, "delay_seconds"))
+		delaySeconds = 5;
+	const char *liveScene = obs_data_get_string(data, "live_scene");
+	const char *loadingScene = obs_data_get_string(data, "loading_scene");
+
+	controller.LoadSettings(delaySeconds, liveScene ? liveScene : "", loadingScene ? loadingScene : "");
+	obs_data_release(data);
+
+	TRIGGLOW_LOG_INFO(kComponent, "buffer-mode settings loaded (delay=%us, live=\"%s\", loading=\"%s\")",
+			  delaySeconds, liveScene ? liveScene : "", loadingScene ? loadingScene : "");
+}
+
+void SaveBufferSettings(const trigglow::BufferModeController &controller)
+{
+	char *rawPath = obs_module_get_config_path(obs_current_module(), kBufferSettingsFile);
+	QString path = rawPath ? QString::fromUtf8(rawPath) : QString();
+	bfree(rawPath);
+	if (path.isEmpty())
+		return;
+
+	QFileInfo info(path);
+	QDir().mkpath(info.absolutePath());
+
+	auto snapshot = controller.SaveSettings();
+
+	obs_data_t *data = obs_data_create();
+	obs_data_set_int(data, "delay_seconds", snapshot.delaySeconds);
+	obs_data_set_string(data, "live_scene", snapshot.liveSceneName.c_str());
+	obs_data_set_string(data, "loading_scene", snapshot.loadingSceneName.c_str());
+	obs_data_save_json(data, path.toUtf8().constData());
+	obs_data_release(data);
+
+	TRIGGLOW_LOG_INFO(kComponent, "buffer-mode settings saved to %s", path.toUtf8().constData());
+}
+
 } // namespace
 
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "loading Trigglow Dynamic Delay v%s", PLUGIN_VERSION);
 
-	// Phase 1 (issue #173, video-only): a standalone OBS filter the user
-	// attaches manually via the Filters dialog. Not wired into
-	// DelayController/the dock yet -- see video-delay-filter.hpp.
+	// Registers the OBS filter that buffer mode orchestrates under the hood
+	// (see obs-frontend-bridge.cpp's EnsureBufferWrapperScene). The user
+	// never adds it manually via the Filters dialog -- see
+	// video-delay-filter.hpp.
 	trigglow::VideoDelayFilter::Register();
 
 	g_state = new PluginState();
 	g_state->controller = std::make_unique<trigglow::DelayController>(g_state->bridge);
 	g_state->controller->Init();
+	g_state->bufferController = std::make_unique<trigglow::BufferModeController>(g_state->bridge);
 
 	LoadSettings(*g_state->controller);
+	LoadBufferSettings(*g_state->bufferController);
 
 	g_state->hotkeys = std::make_unique<trigglow::DelayHotkeys>(*g_state->controller);
 	g_state->hotkeys->Init();
 
-	auto *dock = new trigglow::TrigglowDelayDock(*g_state->controller);
+	auto *dock = new trigglow::TrigglowDelayDock(*g_state->controller, *g_state->bufferController);
 	g_state->dock = dock;
 	g_state->bridge.AddDock(kDockId, kDockTitle, dock);
 
@@ -161,6 +221,7 @@ void obs_module_unload(void)
 		return;
 
 	SaveSettings(*g_state->controller);
+	SaveBufferSettings(*g_state->bufferController);
 
 	// Hotkeys and the frontend event callback must be torn down before we
 	// free the controller they point back into.

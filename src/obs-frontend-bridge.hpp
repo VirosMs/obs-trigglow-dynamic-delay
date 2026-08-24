@@ -114,9 +114,53 @@ public:
 	// "couldn't switch," not a crash-worthy error.
 	bool SetCurrentSceneByName(const std::string &name) const;
 
+	// --- No-reconnect buffer mode orchestration (issue #173 phase 2) ---
+	//
+	// IMPORTANT: nesting an existing scene inside another scene (via
+	// obs_scene_add) does NOT duplicate it — obs_sceneitem_get_source() on
+	// the resulting item returns the SAME obs_source_t as the original
+	// scene. A filter attached to that source therefore affects the scene
+	// EVERYWHERE it's used, not just inside our wrapper. So the delay
+	// filter is attached to the live scene ONCE (idempotent,
+	// EnsureBufferWrapperScene) and its effect is controlled entirely via
+	// SetBufferFilterEnabled(), never by adding/removing it — enabling it
+	// only while our own scene-switch flow is actively showing the wrapper
+	// (never while the raw live scene could also be on Program directly).
+
+	// Idempotent: ensures the wrapper scene exists, contains a scene-item
+	// wrapping `liveSceneName`, and that scene-item's source has our video
+	// delay filter attached (disabled by default — see SetBufferFilterEnabled).
+	// Returns false if liveSceneName doesn't resolve to a real scene, or
+	// setup otherwise fails.
+	bool EnsureBufferWrapperScene(const std::string &liveSceneName) const;
+
+	// Enables/disables the buffer filter attached by EnsureBufferWrapperScene.
+	// No-op (returns false) if that hasn't been called successfully yet for
+	// the current live scene.
+	bool SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const;
+
+	// Pushes `seconds` into the already-attached filter's configured delay.
+	// No-op (returns false) if EnsureBufferWrapperScene hasn't run yet.
+	bool SetBufferFilterDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const;
+
+	// Switches Program to the wrapper scene created by EnsureBufferWrapperScene.
+	// Callers don't need to know its literal name. False if it doesn't exist
+	// yet (EnsureBufferWrapperScene hasn't been called/succeeded).
+	bool ShowBufferWrapperScene() const;
+
 private:
 	// Must match obs_frontend_event_cb exactly: void(*)(enum obs_frontend_event, void*).
 	static void FrontendEventCallback(enum obs_frontend_event event, void *privateData);
+
+	// Locates the video-delay filter previously attached to `liveSceneName`'s
+	// source by EnsureBufferWrapperScene, if the wrapper scene, its
+	// scene-item, and the filter all still exist. Returned pointer is
+	// borrowed (caller must NOT release it) — release the object obtained
+	// from obs_source_get_filter_by_name would be correct per libobs
+	// convention, but every call site here needs it only transiently, so
+	// this wraps that release internally and returns a raw non-owning
+	// pointer valid only for the duration of the calling function.
+	obs_source_t *FindBufferFilter(const std::string &liveSceneName) const;
 
 	FrontendEventHandler handler_;
 	bool initialized_ = false;
