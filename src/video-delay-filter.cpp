@@ -197,7 +197,7 @@ obs_audio_data *VideoDelayFilter::FilterAudio(obs_audio_data *audio)
 		return audio;
 
 	audio_t *audioContext = obs_get_audio();
-	uint32_t channels = audio_output_get_channels(audioContext);
+	auto channels = static_cast<uint32_t>(audio_output_get_channels(audioContext));
 	uint32_t sampleRate = audio_output_get_sample_rate(audioContext);
 	if (channels == 0 || sampleRate == 0)
 		return audio;
