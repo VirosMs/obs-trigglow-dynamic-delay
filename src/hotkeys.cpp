@@ -27,27 +27,27 @@ constexpr const char *kComponent = "hotkeys";
 // obs_hotkey_register_frontend callbacks fire on OBS's internal hotkey
 // thread, never the Qt UI thread — that's true for a real key press AND for
 // a Stream Deck press via System > Hotkey, which is this plugin's advertised
-// main control path (see docs/SPEC.md). Calling into DelayController (and,
+// main control path (see docs/SPEC.md). Calling into BufferModeController (and,
 // through its status callback, straight into the Qt dock's widgets) from
 // that thread is a data race / Qt thread-affinity violation. Route the
 // actual call through OBS's own UI task queue instead.
 void ToggleOnUiThread(void *param)
 {
-	static_cast<DelayController *>(param)->Toggle();
+	static_cast<BufferModeController *>(param)->Toggle();
 }
 
 void EnableOnUiThread(void *param)
 {
-	static_cast<DelayController *>(param)->Enable();
+	static_cast<BufferModeController *>(param)->Enable();
 }
 
 void DisableOnUiThread(void *param)
 {
-	static_cast<DelayController *>(param)->Disable();
+	static_cast<BufferModeController *>(param)->Disable();
 }
 } // namespace
 
-DelayHotkeys::DelayHotkeys(DelayController &controller) : controller_(controller) {}
+DelayHotkeys::DelayHotkeys(BufferModeController &controller) : controller_(controller) {}
 
 DelayHotkeys::~DelayHotkeys()
 {

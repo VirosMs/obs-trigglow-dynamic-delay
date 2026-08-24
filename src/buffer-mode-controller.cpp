@@ -49,6 +49,17 @@ void BufferModeController::SetDelaySeconds(uint32_t seconds)
 
 void BufferModeController::Enable()
 {
+	// Guard against re-entry: pressing Enable again while already
+	// Filling/Active must be a no-op, not re-run the whole sequence. Found
+	// live (2026-08-24): re-running it while Active overwrote
+	// sceneBeforeEnable_ with the WRAPPER scene itself (since that's what's
+	// on Program at that point), not the true original live scene — Disable()
+	// would then "restore" to the wrapper instead of the real live content.
+	// The observed symptom was Program getting stuck on the loading scene /
+	// black after a second Enable press.
+	if (status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active)
+		return;
+
 	if (status_.liveSceneName.empty()) {
 		SetState(BufferModeState::Error, "Elige primero una escena en directo.");
 		return;
@@ -97,6 +108,14 @@ void BufferModeController::Disable()
 	SetState(BufferModeState::Inactive);
 	if (wasActive)
 		TRIGGLOW_LOG_INFO(kComponent, "disabled");
+}
+
+void BufferModeController::Toggle()
+{
+	if (status_.state == BufferModeState::Inactive)
+		Enable();
+	else
+		Disable();
 }
 
 void BufferModeController::LoadSettings(uint32_t delaySeconds, std::string liveSceneName, std::string loadingSceneName)

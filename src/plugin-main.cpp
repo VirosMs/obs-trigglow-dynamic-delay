@@ -28,7 +28,6 @@ extern "C" {
 }
 
 #include "buffer-mode-controller.hpp"
-#include "delay-controller.hpp"
 #include "hotkeys.hpp"
 #include "logging.hpp"
 #include "obs-frontend-bridge.hpp"
@@ -43,15 +42,24 @@ namespace {
 constexpr const char *kComponent = "plugin-main";
 constexpr const char *kDockId = "trigglow_dynamic_delay_dock";
 constexpr const char *kDockTitle = "Trigglow Dynamic Delay";
-constexpr const char *kSettingsFile = "settings.json";
+constexpr const char *kBufferSettingsFile = "buffer-mode-settings.json";
 
 // All plugin-lifetime state lives in one place, constructed in
 // obs_module_load() and torn down in obs_module_unload(). No globals spread
 // across the other files — every other module gets what it needs by
 // reference/pointer from here.
+//
+// Buffer mode (BufferModeController) only, as of 2026-08-24. DelayController
+// (native obs_output_set_delay reconnect mode) and its hotkeys.hpp/cpp
+// wiring aren't instantiated here anymore -- live testing confirmed buffer
+// mode works well and having two mechanisms + a mode selector was confusing
+// for a non-technical streamer. DelayController's source stays in the repo
+// (may come back) but is now dead code from the module's point of view;
+// hotkeys.hpp/cpp was repointed to drive BufferModeController instead of
+// deleted, since Stream Deck hotkey compatibility is a flagship feature
+// that still needs a home.
 struct PluginState {
 	trigglow::ObsFrontendBridge bridge;
-	std::unique_ptr<trigglow::DelayController> controller;
 	std::unique_ptr<trigglow::BufferModeController> bufferController;
 	std::unique_ptr<trigglow::DelayHotkeys> hotkeys;
 	// Not owned past AddDock(): OBS's dock system takes ownership of the
@@ -63,77 +71,6 @@ struct PluginState {
 
 PluginState *g_state = nullptr;
 
-QString SettingsFilePath()
-{
-	char *path = obs_module_get_config_path(obs_current_module(), kSettingsFile);
-	QString qpath = path ? QString::fromUtf8(path) : QString();
-	bfree(path);
-	return qpath;
-}
-
-void LoadSettings(trigglow::DelayController &controller)
-{
-	QString path = SettingsFilePath();
-	if (path.isEmpty()) {
-		TRIGGLOW_LOG_WARN(kComponent, "could not resolve settings path, using defaults");
-		return;
-	}
-
-	obs_data_t *data = obs_data_create_from_json_file(path.toUtf8().constData());
-	if (!data) {
-		TRIGGLOW_LOG_INFO(kComponent, "no existing settings file at %s, using defaults",
-				  path.toUtf8().constData());
-		return;
-	}
-
-	uint32_t delaySeconds = static_cast<uint32_t>(obs_data_get_int(data, "delay_seconds"));
-	bool safeMode = obs_data_get_bool(data, "safe_mode");
-	bool wasEnabled = obs_data_get_bool(data, "enabled");
-	const char *reconnectScene = obs_data_get_string(data, "reconnect_scene");
-
-	// Fresh installs (empty obs_data_t defaults) would give us 0/false/false;
-	// treat a totally-empty file as "use built-in defaults" instead of a
-	// literal 0-second delay.
-	if (delaySeconds == 0 && !obs_data_has_user_value(data, "delay_seconds"))
-		delaySeconds = 10;
-
-	controller.LoadSettings(delaySeconds, safeMode, wasEnabled, reconnectScene ? reconnectScene : "");
-	obs_data_release(data);
-
-	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, safeMode=%s, enabled=%s, reconnectScene=%s)",
-			  delaySeconds, safeMode ? "on" : "off", wasEnabled ? "yes" : "no",
-			  (reconnectScene && *reconnectScene) ? reconnectScene : "(none)");
-}
-
-void SaveSettings(const trigglow::DelayController &controller)
-{
-	QString path = SettingsFilePath();
-	if (path.isEmpty())
-		return;
-
-	// obs_module_get_config_path() does not guarantee the directory exists
-	// yet on a fresh install; ensure it does before writing.
-	QFileInfo info(path);
-	QDir().mkpath(info.absolutePath());
-
-	auto snapshot = controller.SaveSettings();
-
-	obs_data_t *data = obs_data_create();
-	obs_data_set_int(data, "delay_seconds", snapshot.delaySeconds);
-	obs_data_set_bool(data, "safe_mode", snapshot.safeMode);
-	obs_data_set_bool(data, "enabled", snapshot.enabled);
-	obs_data_set_string(data, "reconnect_scene", snapshot.reconnectSceneName.c_str());
-	obs_data_save_json(data, path.toUtf8().constData());
-	obs_data_release(data);
-
-	TRIGGLOW_LOG_INFO(kComponent, "settings saved to %s", path.toUtf8().constData());
-}
-
-// Separate file from the reconnect-mode settings above: keeps the two
-// controllers' persistence fully independent, same as the rest of their
-// design (see buffer-mode-controller.hpp).
-constexpr const char *kBufferSettingsFile = "buffer-mode-settings.json";
-
 void LoadBufferSettings(trigglow::BufferModeController &controller)
 {
 	char *rawPath = obs_module_get_config_path(obs_current_module(), kBufferSettingsFile);
@@ -144,7 +81,7 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 
 	obs_data_t *data = obs_data_create_from_json_file(path.toUtf8().constData());
 	if (!data) {
-		TRIGGLOW_LOG_INFO(kComponent, "no existing buffer-mode settings file, using defaults");
+		TRIGGLOW_LOG_INFO(kComponent, "no existing settings file, using defaults");
 		return;
 	}
 
@@ -157,8 +94,8 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 	controller.LoadSettings(delaySeconds, liveScene ? liveScene : "", loadingScene ? loadingScene : "");
 	obs_data_release(data);
 
-	TRIGGLOW_LOG_INFO(kComponent, "buffer-mode settings loaded (delay=%us, live=\"%s\", loading=\"%s\")",
-			  delaySeconds, liveScene ? liveScene : "", loadingScene ? loadingScene : "");
+	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, live=\"%s\", loading=\"%s\")", delaySeconds,
+			  liveScene ? liveScene : "", loadingScene ? loadingScene : "");
 }
 
 void SaveBufferSettings(const trigglow::BufferModeController &controller)
@@ -181,7 +118,7 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 
-	TRIGGLOW_LOG_INFO(kComponent, "buffer-mode settings saved to %s", path.toUtf8().constData());
+	TRIGGLOW_LOG_INFO(kComponent, "settings saved to %s", path.toUtf8().constData());
 }
 
 } // namespace
@@ -197,17 +134,14 @@ bool obs_module_load(void)
 	trigglow::VideoDelayFilter::Register();
 
 	g_state = new PluginState();
-	g_state->controller = std::make_unique<trigglow::DelayController>(g_state->bridge);
-	g_state->controller->Init();
 	g_state->bufferController = std::make_unique<trigglow::BufferModeController>(g_state->bridge);
 
-	LoadSettings(*g_state->controller);
 	LoadBufferSettings(*g_state->bufferController);
 
-	g_state->hotkeys = std::make_unique<trigglow::DelayHotkeys>(*g_state->controller);
+	g_state->hotkeys = std::make_unique<trigglow::DelayHotkeys>(*g_state->bufferController);
 	g_state->hotkeys->Init();
 
-	auto *dock = new trigglow::TrigglowDelayDock(*g_state->controller, *g_state->bufferController);
+	auto *dock = new trigglow::TrigglowDelayDock(*g_state->bufferController);
 	g_state->dock = dock;
 	g_state->bridge.AddDock(kDockId, kDockTitle, dock);
 
@@ -220,11 +154,10 @@ void obs_module_unload(void)
 	if (!g_state)
 		return;
 
-	SaveSettings(*g_state->controller);
 	SaveBufferSettings(*g_state->bufferController);
 
-	// Hotkeys and the frontend event callback must be torn down before we
-	// free the controller they point back into.
+	// Hotkeys must be torn down before we free the controller they point
+	// back into.
 	if (g_state->hotkeys)
 		g_state->hotkeys->Shutdown();
 	g_state->bridge.Shutdown();

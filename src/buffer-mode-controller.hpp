@@ -83,6 +83,8 @@ public:
 	// unavailable). Safe to call from any state, including mid-Filling.
 	void Disable();
 
+	void Toggle();
+
 	void SetLiveScene(std::string sceneName);
 	void SetLoadingScene(std::string sceneName);
 	void SetDelaySeconds(uint32_t seconds);

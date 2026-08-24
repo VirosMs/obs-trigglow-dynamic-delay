@@ -20,7 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <cstddef>
 
-#include "delay-controller.hpp"
+#include "buffer-mode-controller.hpp"
 
 extern "C" {
 #include <obs.h> // obs_hotkey_id, obs_hotkey_t, obs_hotkey_func — core libobs, not the frontend API.
@@ -43,7 +43,7 @@ namespace trigglow {
 
 class DelayHotkeys {
 public:
-	explicit DelayHotkeys(DelayController &controller);
+	explicit DelayHotkeys(BufferModeController &controller);
 	~DelayHotkeys();
 
 	DelayHotkeys(const DelayHotkeys &) = delete;
@@ -60,7 +60,7 @@ private:
 	static void EnableCallback(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 	static void DisableCallback(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed);
 
-	DelayController &controller_;
+	BufferModeController &controller_;
 	obs_hotkey_id toggleId_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id enableId_ = OBS_INVALID_HOTKEY_ID;
 	obs_hotkey_id disableId_ = OBS_INVALID_HOTKEY_ID;
