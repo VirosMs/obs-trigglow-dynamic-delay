@@ -48,6 +48,8 @@ target_sources(
     src/hotkeys.hpp
     src/logging.cpp
     src/logging.hpp
+    src/video-delay-filter.cpp
+    src/video-delay-filter.hpp
 )
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

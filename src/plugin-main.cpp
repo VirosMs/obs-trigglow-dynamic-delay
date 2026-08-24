@@ -32,6 +32,7 @@ extern "C" {
 #include "logging.hpp"
 #include "obs-frontend-bridge.hpp"
 #include "settings-ui.hpp"
+#include "video-delay-filter.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -131,6 +132,11 @@ void SaveSettings(const trigglow::DelayController &controller)
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "loading Trigglow Dynamic Delay v%s", PLUGIN_VERSION);
+
+	// Phase 1 (issue #173, video-only): a standalone OBS filter the user
+	// attaches manually via the Filters dialog. Not wired into
+	// DelayController/the dock yet -- see video-delay-filter.hpp.
+	trigglow::VideoDelayFilter::Register();
 
 	g_state = new PluginState();
 	g_state->controller = std::make_unique<trigglow::DelayController>(g_state->bridge);
