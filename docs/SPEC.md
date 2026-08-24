@@ -107,6 +107,10 @@ Incluido:
 - Panel (dock) mínimo en OBS con: estado, campo de segundos, checkbox "modo seguro" (ver más abajo),
   y los tres botones.
 - Persistencia de settings en la carpeta de configuración de OBS (por perfil).
+- Escena de reconexión opcional: el streamer puede elegir en el dock una escena a mostrar
+  mientras dura la reconexión, en vez del corte/pantalla negra por defecto de OBS. Vuelve a la
+  escena anterior en cuanto `StreamingStarted` confirma la reconexión (o si "modo seguro" da
+  por perdido el intento). Ver trigglow#173.
 - Manejo de errores sin crashear: sin output de streaming disponible, output no soporta delay
   (`OBS_OUTPUT_ENCODED` no presente), o llamada fuera de un estado válido.
 - Logs mínimos y útiles con prefijo `[trigglow-dynamic-delay]` en el log de OBS.
@@ -124,7 +128,8 @@ Explícitamente fuera del MVP (v0.2+, ver roadmap):
   nativas de OBS, que Stream Deck ya soporta de forma nativa vía su acción "System Hotkey" /
   "Hotkey").
 - Filtro de delay sin reconexión (ver §2.3).
-- Builds firmados / instaladores. v0.1.0 se distribuye sin firmar, ver README.
+- Builds firmados. Hay un instalador de Windows (Inno Setup, sin firmar) desde v0.1.0 —
+  ver README y `installers/windows/`; firmarlo con certificado queda para más adelante.
 
 ## 4. Flujo de usuario
 

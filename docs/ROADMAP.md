@@ -7,6 +7,11 @@
 - Persistencia de settings por perfil de OBS.
 - Uso con Stream Deck vía la acción nativa "Hotkey" de Stream Deck sobre la hotkey de OBS.
 - Windows como plataforma prioritaria; proyecto preparado para macOS/Linux.
+- Escena de reconexión opcional (issue trigglow#173): al reconectar en directo, cambia a
+  una escena elegida por el streamer en vez de dejar el corte/pantalla negra por defecto
+  de OBS, y vuelve a la escena anterior en cuanto se confirma la reconexión.
+- Instalador de Windows (Inno Setup, sin firmar) que detecta la carpeta de OBS y copia
+  los archivos — ya no hace falta copiar el `.dll` a mano.
 
 ## v0.2.0 (propuesto)
 - Presets guardados (p. ej. "Delay corto 5s", "Delay largo 30s") seleccionables desde el dock y desde hotkeys adicionales.
