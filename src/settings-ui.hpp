@@ -25,7 +25,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 class QLabel;
 class QSpinBox;
 class QCheckBox;
-class QComboBox;
 class QPushButton;
 class QTimer;
 
@@ -40,6 +39,8 @@ class QTimer;
 // obs_frontend_add_dock_by_id(), OBS's dock system owns this widget's
 // lifetime. plugin-main.cpp must not delete it manually.
 namespace trigglow {
+
+class SceneComboBox;
 
 class TrigglowDelayDock : public QWidget {
 	Q_OBJECT
@@ -71,7 +72,7 @@ private:
 	QLabel *detailLabel_ = nullptr;
 	QSpinBox *secondsSpin_ = nullptr;
 	QCheckBox *safeModeCheck_ = nullptr;
-	QComboBox *reconnectSceneCombo_ = nullptr;
+	SceneComboBox *reconnectSceneCombo_ = nullptr;
 	QPushButton *enableButton_ = nullptr;
 	QPushButton *disableButton_ = nullptr;
 	QPushButton *toggleButton_ = nullptr;

@@ -18,9 +18,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "settings-ui.hpp"
 #include "logging.hpp"
+#include "scene-combo-box.hpp"
 
 #include <QCheckBox>
-#include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -93,11 +93,12 @@ void TrigglowDelayDock::BuildUi()
 	auto *sceneLabel = new QLabel(QStringLiteral("Escena durante reconexion:"), this);
 	sceneRow->addWidget(sceneLabel);
 
-	reconnectSceneCombo_ = new QComboBox(this);
+	reconnectSceneCombo_ = new SceneComboBox(this);
 	reconnectSceneCombo_->setToolTip(
 		QStringLiteral("Opcional: escena a mostrar mientras el stream reconecta, en vez del corte/pantalla "
 			       "negra por defecto de OBS. Vuelve a la escena anterior en cuanto se confirma la "
 			       "reconexion."));
+	reconnectSceneCombo_->SetRefreshCallback([this] { RefreshSceneList(); });
 	sceneRow->addWidget(reconnectSceneCombo_, /*stretch=*/1);
 	root->addLayout(sceneRow);
 	RefreshSceneList();
