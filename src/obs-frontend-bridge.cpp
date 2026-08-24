@@ -55,6 +55,21 @@ void ObsFrontendBridge::Init(FrontendEventHandler handler)
 
 void ObsFrontendBridge::Shutdown()
 {
+	// Defensive: normally BufferModeController's Enable()/Disable() pairing
+	// already released this before unload, but don't leave a dangling main
+	// render callback + source ref behind if the plugin is unloaded mid-Filling.
+	if (liveSceneRenderSource_)
+		ReleaseLiveSceneRendering({});
+	if (liveSceneRenderTarget_) {
+		// Unlike a source's own destroy callback, Shutdown() runs on the
+		// plugin-unload path with no graphics context already entered for
+		// us — gs_texrender_destroy() needs one explicitly.
+		obs_enter_graphics();
+		gs_texrender_destroy(liveSceneRenderTarget_);
+		obs_leave_graphics();
+		liveSceneRenderTarget_ = nullptr;
+	}
+
 	if (!initialized_)
 		return;
 	obs_frontend_remove_event_callback(&ObsFrontendBridge::FrontendEventCallback, this);
@@ -321,6 +336,67 @@ bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveScene
 bool ObsFrontendBridge::ShowBufferWrapperScene() const
 {
 	return SetCurrentSceneByName(kBufferWrapperSceneName);
+}
+
+bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneName)
+{
+	if (liveSceneRenderSource_) {
+		TRIGGLOW_LOG_WARN(kComponent, "AcquireLiveSceneRendering called while already holding one, ignoring");
+		return false;
+	}
+
+	// obs_get_source_by_name() gives us the +1 ref this function keeps
+	// until ReleaseLiveSceneRendering() releases it.
+	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
+	if (!liveSource)
+		return false;
+
+	liveSceneRenderSource_ = liveSource;
+	obs_source_inc_showing(liveSceneRenderSource_);
+	obs_add_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
+	return true;
+}
+
+bool ObsFrontendBridge::ReleaseLiveSceneRendering(const std::string & /*liveSceneName*/)
+{
+	if (!liveSceneRenderSource_)
+		return false;
+
+	obs_remove_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
+	obs_source_dec_showing(liveSceneRenderSource_);
+	obs_source_release(liveSceneRenderSource_);
+	liveSceneRenderSource_ = nullptr;
+	return true;
+}
+
+void ObsFrontendBridge::RenderLiveSceneCallback(void *param, uint32_t /*cx*/, uint32_t /*cy*/)
+{
+	auto *self = static_cast<ObsFrontendBridge *>(param);
+	if (!self->liveSceneRenderSource_)
+		return;
+
+	uint32_t width = obs_source_get_base_width(self->liveSceneRenderSource_);
+	uint32_t height = obs_source_get_base_height(self->liveSceneRenderSource_);
+	if (width == 0 || height == 0)
+		return;
+
+	if (!self->liveSceneRenderTarget_)
+		self->liveSceneRenderTarget_ = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+
+	// Render into our own throwaway texture, NOT the real Program output —
+	// see the header comment on AcquireLiveSceneRendering for why (draw
+	// callbacks run with the render target already pointed at OBS's actual
+	// output texture).
+	gs_texrender_reset(self->liveSceneRenderTarget_);
+	if (gs_texrender_begin(self->liveSceneRenderTarget_, width, height)) {
+		struct vec4 clearColor = {};
+		gs_clear(GS_CLEAR_COLOR, &clearColor, 0.0f, 0);
+		gs_matrix_push();
+		gs_ortho(0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height), -100.0f, 100.0f);
+		obs_source_video_render(self->liveSceneRenderSource_);
+		gs_matrix_pop();
+		gs_texrender_end(self->liveSceneRenderTarget_);
+	}
 }
 
 void ObsFrontendBridge::AddDock(const char *id, const char *title, void *qWidget) const

@@ -24,7 +24,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 extern "C" {
-#include <obs-frontend-api.h> // needed here too: obs_frontend_event is the exact callback param type
+#include <obs-frontend-api.h>  // needed here too: obs_frontend_event is the exact callback param type
+#include <graphics/graphics.h> // gs_texrender_t, for AcquireLiveSceneRendering's private render target
 }
 
 // obs-frontend-bridge.hpp/.cpp are the ONLY files in this plugin allowed to include
@@ -148,9 +149,48 @@ public:
 	// yet (EnsureBufferWrapperScene hasn't been called/succeeded).
 	bool ShowBufferWrapperScene() const;
 
+	// Nothing calls obs_source_video_render() on a source that isn't part of
+	// whatever's currently on Program/Preview (or nested inside it) — OBS's
+	// per-frame render pass is just "run the registered draw callbacks, then
+	// render the active view's scene tree" (see libobs/obs-video.c
+	// render_main_texture()), nothing walks a global "showing" list. During
+	// the Filling window Program shows the loading scene, NOT the live scene
+	// and not yet the wrapper scene either, so without this the live scene
+	// (and its attached buffer filter) never renders a single frame while
+	// "filling" — confirmed live (2026-08-24): the delay collapsed to ~0
+	// within a second of switching to the wrapper scene, because the ring
+	// buffer had been sitting empty the entire time.
+	//
+	// Fix, mirroring the technique the well-known "Source Record" OBS
+	// plugin uses to capture a source that isn't the active scene:
+	//   1. obs_add_main_render_callback() to force obs_source_video_render()
+	//      on the live scene every frame regardless of what Program shows.
+	//   2. Render it into our OWN throwaway gs_texrender_t, never the real
+	//      Program output texture — draw callbacks run with the render
+	//      target already pointed at that texture (see obs-video.c), so
+	//      rendering the live scene directly there would visibly smear it
+	//      into whatever's on screen. Same private-texrender pattern
+	//      VideoDelayFilter::Render() already uses for its ring buffer.
+	//   3. obs_source_inc_showing() so any leaf sources inside the live
+	//      scene (capture devices, browser sources, etc.) don't themselves
+	//      pause updating while not "showing" the normal way.
+	// Must be paired 1:1 with ReleaseLiveSceneRendering(); only one live
+	// scene can be held at a time (matches the rest of this design, see the
+	// header comment above).
+	bool AcquireLiveSceneRendering(const std::string &liveSceneName);
+
+	// Releases everything acquired by AcquireLiveSceneRendering(). False if
+	// nothing is currently held.
+	bool ReleaseLiveSceneRendering(const std::string &liveSceneName);
+
 private:
 	// Must match obs_frontend_event_cb exactly: void(*)(enum obs_frontend_event, void*).
 	static void FrontendEventCallback(enum obs_frontend_event event, void *privateData);
+
+	// Matches obs_add_main_render_callback's signature. Renders
+	// liveSceneRenderSource_ into liveSceneRenderTarget_ (never the real
+	// Program output) — see AcquireLiveSceneRendering's comment.
+	static void RenderLiveSceneCallback(void *param, uint32_t cx, uint32_t cy);
 
 	// Locates the video-delay filter previously attached to `liveSceneName`'s
 	// source by EnsureBufferWrapperScene, if the wrapper scene, its
@@ -164,6 +204,15 @@ private:
 
 	FrontendEventHandler handler_;
 	bool initialized_ = false;
+
+	// Owned strong ref to the scene AcquireLiveSceneRendering() is currently
+	// keeping alive, or null if nothing is held. Only one at a time (matches
+	// the rest of buffer mode's single-live-scene design).
+	obs_source_t *liveSceneRenderSource_ = nullptr;
+	// Throwaway render target RenderLiveSceneCallback() draws into every
+	// frame. Its contents are never read — see AcquireLiveSceneRendering's
+	// comment for why we can't just render straight to the real output.
+	gs_texrender_t *liveSceneRenderTarget_ = nullptr;
 };
 
 } // namespace trigglow

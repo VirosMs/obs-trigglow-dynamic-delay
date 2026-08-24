@@ -121,6 +121,12 @@ private:
 	// Scene that was on Program right before Enable() switched away from
 	// it, restored by Disable(). Empty when not currently enabled.
 	std::string sceneBeforeEnable_;
+	// True between a successful AcquireLiveSceneRendering() (in Enable())
+	// and the matching ReleaseLiveSceneRendering() (in OnFillTimerElapsed()
+	// once the wrapper scene takes over showing it naturally, or in
+	// Disable() if we're interrupted mid-Filling). Tracked so we never
+	// double-release or leak the keep-alive.
+	bool liveSceneRenderingHeld_ = false;
 	BufferStatusChangedCallback onStatusChanged_;
 };
 

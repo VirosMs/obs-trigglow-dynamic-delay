@@ -72,6 +72,18 @@ void BufferModeController::Enable()
 	}
 	bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, status_.delaySeconds);
 
+	// Enable the filter AND force the live scene to keep rendering in the
+	// background right now, not once the fill timer elapses: Program is
+	// about to switch to the loading scene, and without both of these the
+	// live scene stops rendering entirely (nothing shows it), so the
+	// filter's ring buffer would sit empty for the whole Filling window
+	// instead of actually accumulating delayFrames worth of history. See
+	// ObsFrontendBridge::AcquireLiveSceneRendering's comment for the full
+	// story (found live, 2026-08-24: the delay collapsed to ~0 within a
+	// second of switching to the delayed view).
+	bridge_.SetBufferFilterEnabled(status_.liveSceneName, true);
+	liveSceneRenderingHeld_ = bridge_.AcquireLiveSceneRendering(status_.liveSceneName);
+
 	sceneBeforeEnable_ = bridge_.GetCurrentSceneName();
 	if (!status_.loadingSceneName.empty())
 		bridge_.SetCurrentSceneByName(status_.loadingSceneName);
@@ -87,7 +99,13 @@ void BufferModeController::OnFillTimerElapsed()
 	if (status_.state != BufferModeState::Filling)
 		return;
 
-	bridge_.SetBufferFilterEnabled(status_.liveSceneName, true);
+	// The filter was already enabled back in Enable(); the wrapper scene
+	// nesting the live scene now naturally keeps it rendering once it's on
+	// Program, so the manual keep-alive from Enable() can be released.
+	if (liveSceneRenderingHeld_) {
+		bridge_.ReleaseLiveSceneRendering(status_.liveSceneName);
+		liveSceneRenderingHeld_ = false;
+	}
 	bridge_.ShowBufferWrapperScene();
 	SetState(BufferModeState::Active);
 	TRIGGLOW_LOG_INFO(kComponent, "buffer full, now showing delayed content");
@@ -96,6 +114,13 @@ void BufferModeController::OnFillTimerElapsed()
 void BufferModeController::Disable()
 {
 	bool wasActive = status_.state != BufferModeState::Inactive;
+
+	// Covers Disable() interrupting mid-Filling, before OnFillTimerElapsed()
+	// had a chance to release it.
+	if (liveSceneRenderingHeld_) {
+		bridge_.ReleaseLiveSceneRendering(status_.liveSceneName);
+		liveSceneRenderingHeld_ = false;
+	}
 
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
 	if (!sceneBeforeEnable_.empty()) {

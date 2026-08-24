@@ -195,9 +195,11 @@ void VideoDelayFilter::Render()
 	}
 	// Else: buffer still filling (first configuredDelaySeconds_ after
 	// enabling/raising the delay) — draw nothing, same as
-	// obs_source_skip_video_filter would leave. Pair this filter with the
-	// dock's reconnect-scene picker (issue #173) pointed at a placeholder
-	// scene for this exact window, once wired together.
+	// obs_source_skip_video_filter would leave. BufferModeController pairs
+	// this with a loading scene on Program for exactly this window, and
+	// forces this filter to keep receiving frames during it via
+	// ObsFrontendBridge::AcquireLiveSceneRendering (otherwise bufferedCount_
+	// would never advance while something else is on Program).
 
 	writeIndex_ = (writeIndex_ + 1) % ring_.size();
 	bufferedCount_ = std::min(bufferedCount_ + 1, ring_.size());
