@@ -24,34 +24,40 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #include <obs.h>
 #include <graphics/graphics.h>
+#include <media-io/audio-io.h> // audio_output_get_channels/sample_rate() — used to size the audio ring
 }
 
-// PHASE 1 (issue #173, "modo sin reconexion") — video-only, no audio yet.
+// Delays BOTH video and audio by the same configured number of seconds,
+// with the streaming OUTPUT never touched — no reconnection, ever, at any
+// point. A standard OBS filter (video+audio), attached automatically by
+// BufferModeController to the live scene via ObsFrontendBridge — the user
+// never opens OBS's own Filters dialog for it.
 //
-// A standard OBS video-effect FILTER (not a source of its own): attached by
-// the user to whatever source/scene they want delayed, via OBS's own
-// Filters dialog — same UX as any other filter (Color Correction, Chroma
-// Key, etc). NOT wired into DelayController/settings-ui yet; that
-// integration (a hotkey/dock toggle that arms this + switches to it) is
-// follow-up work once this core mechanism is verified live.
+// Video mechanism: every video_render call renders the filter's target
+// source into the NEXT slot of a ring buffer of GPU textures
+// (gs_texrender_t), then draws whichever slot is `delaySeconds` old. Memory
+// is the hard constraint, not CPU: uncompressed RGBA at 1920x1080@60fps is
+// ~475MB PER SECOND. Rather than silently truncating the requested delay
+// duration to whatever fits, EnsureRingSized() shrinks the ring's CAPTURE
+// resolution instead (kMaxBufferBytes budget) — the requested seconds are
+// always honored in time, only the visual resolution of the delayed segment
+// degrades if it doesn't fit at full res.
 //
-// Mechanism: every video_render call, renders the filter's target source
-// into the NEXT slot of a ring buffer of GPU textures (gs_texrender_t),
-// then draws whichever slot is `delaySeconds` old. The streaming OUTPUT
-// itself is never touched — no reconnection, ever. This is the same
-// technique real-world "no reconnect" OBS delay filters use (GPU texture
-// ring buffer via gs_texrender, not libobs's async obs_source_frame
-// pipeline) — verified against the real OBS 31.1.1 headers before writing
-// this, not guessed.
+// Audio mechanism (added after video was verified live): filter_audio
+// writes each incoming chunk into a per-channel ring buffer of raw float
+// samples, then returns whichever `frames`-sized window is `delaySeconds`
+// old, stamped with the CURRENT (unmodified) timestamp — mirrors video's
+// "old pixels, current instant" approach rather than rewinding the
+// timestamp, which would risk confusing OBS's own AV sync bookkeeping.
+// Audio is CPU-side raw PCM, cheap enough (~69MB for 60s of 5.1 @ 48kHz)
+// that it never needs the resolution-style budget tradeoff video does — the
+// full requested duration is always buffered exactly.
 //
-// Memory is the hard constraint here, not CPU: uncompressed RGBA at
-// 1920x1080@60fps is ~475MB PER SECOND of buffer (1920*1080*4 bytes *
-// 60). A careless "just buffer N seconds" implementation is how you end up
-// with the multi-GB RAM/VRAM blowups real users report against similar
-// tools. So the ring buffer is sized from an actual VRAM budget
-// (kMaxBufferBytes), not directly from the requested delay — requesting
-// more than the budget allows silently clamps (logged), it never grows
-// unbounded.
+// Both rings only fill while ObsFrontendBridge::AcquireLiveSceneRendering
+// forces the live scene to stay active in the background (Filling window)
+// or while it's naturally showing via the wrapper scene (Active) — see that
+// function's comment for why a source that isn't on Program/Preview
+// normally renders/mixes nothing at all.
 namespace trigglow {
 
 class VideoDelayFilter {
@@ -76,6 +82,7 @@ private:
 	void Update(obs_data_t *settings);
 	void Tick(float secondsSinceLastTick);
 	void Render();
+	obs_audio_data *FilterAudio(obs_audio_data *audio);
 	uint32_t GetWidth() const;
 	uint32_t GetHeight() const;
 
@@ -87,6 +94,12 @@ private:
 	void EnsureRingSized(uint32_t width, uint32_t height);
 	void ReleaseRing();
 
+	// Resizes audioRing_ for the given channel count/sample rate and the
+	// current configuredDelaySeconds_. Plain CPU memory (no graphics
+	// context needed, unlike EnsureRingSized). No-op if already correctly
+	// sized.
+	void EnsureAudioRingSized(uint32_t channels, uint32_t samplesPerSec);
+
 	// --- obs_source_info callback trampolines (static: OBS calls C
 	// function pointers, not member functions) ---
 	static const char *GetName(void *typeData);
@@ -95,6 +108,7 @@ private:
 	static void UpdateCb(void *data, obs_data_t *settings);
 	static void TickCb(void *data, float seconds);
 	static void RenderCb(void *data, gs_effect_t *effect);
+	static obs_audio_data *FilterAudioCb(void *data, obs_audio_data *audio);
 	static uint32_t GetWidthCb(void *data);
 	static uint32_t GetHeightCb(void *data);
 	static obs_properties_t *GetProperties(void *data);
@@ -107,6 +121,22 @@ private:
 	size_t writeIndex_ = 0;
 	size_t bufferedCount_ = 0; // How many ring_ slots hold a real rendered frame so far.
 	uint32_t currentFps_ = 30; // Updated from obs_get_video_info() each Tick().
+
+	// audioRing_[channel][frame] — one flat sample buffer per channel, big
+	// enough for configuredDelaySeconds_ at samplesPerSec_. Resized by
+	// EnsureAudioRingSized whenever the delay, channel count, or sample
+	// rate changes.
+	std::vector<std::vector<float>> audioRing_;
+	size_t audioWriteIndex_ = 0;
+	size_t audioBufferedFrames_ = 0; // How many frames of real history audioRing_ holds so far.
+	uint32_t audioChannels_ = 0;
+	uint32_t samplesPerSec_ = 0;
+
+	// Owned output storage for FilterAudio(): filter_audio's contract
+	// requires returned data to stay valid until the next call, so this
+	// can't be a stack buffer — resized to match each call's audio->frames.
+	std::vector<std::vector<float>> audioOutputChunks_;
+	obs_audio_data audioOutput_ = {};
 };
 
 } // namespace trigglow

@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace trigglow {
 
@@ -57,6 +58,12 @@ constexpr double kMinBufferScale = 0.15;
 // this just keeps the properties panel from offering a wildly unrealistic
 // number before that math clamps it anyway.
 constexpr int kUiMaxDelaySeconds = 60;
+
+// Extra headroom on top of configuredDelaySeconds_ worth of audio frames, so
+// a write can never catch up to a read mid-copy. Audio is cheap (raw PCM,
+// no VRAM concern like video), so this is generously 1 full second per
+// channel rather than trying to shave it down.
+constexpr uint32_t kAudioRingMarginSeconds = 1;
 } // namespace
 
 const char *VideoDelayFilter::Id()
@@ -69,13 +76,14 @@ void VideoDelayFilter::Register()
 	obs_source_info info = {};
 	info.id = kFilterId;
 	info.type = OBS_SOURCE_TYPE_FILTER;
-	info.output_flags = OBS_SOURCE_VIDEO;
+	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO;
 	info.get_name = &VideoDelayFilter::GetName;
 	info.create = &VideoDelayFilter::Create;
 	info.destroy = &VideoDelayFilter::Destroy;
 	info.update = &VideoDelayFilter::UpdateCb;
 	info.video_tick = &VideoDelayFilter::TickCb;
 	info.video_render = &VideoDelayFilter::RenderCb;
+	info.filter_audio = &VideoDelayFilter::FilterAudioCb;
 	info.get_width = &VideoDelayFilter::GetWidthCb;
 	info.get_height = &VideoDelayFilter::GetHeightCb;
 	info.get_properties = &VideoDelayFilter::GetProperties;
@@ -160,6 +168,106 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 		slot.width = bufferWidth;
 		slot.height = bufferHeight;
 	}
+}
+
+void VideoDelayFilter::EnsureAudioRingSized(uint32_t channels, uint32_t samplesPerSec)
+{
+	if (channels == 0 || samplesPerSec == 0)
+		return;
+
+	uint64_t desiredFrames = static_cast<uint64_t>(configuredDelaySeconds_) * samplesPerSec +
+				 static_cast<uint64_t>(kAudioRingMarginSeconds) * samplesPerSec;
+	desiredFrames = std::max<uint64_t>(1, desiredFrames);
+
+	bool needsResize = channels != audioChannels_ || samplesPerSec != samplesPerSec_ || audioRing_.empty() ||
+			   audioRing_[0].size() != desiredFrames;
+	if (!needsResize)
+		return;
+
+	audioChannels_ = channels;
+	samplesPerSec_ = samplesPerSec;
+	audioRing_.assign(channels, std::vector<float>(static_cast<size_t>(desiredFrames), 0.0f));
+	audioWriteIndex_ = 0;
+	audioBufferedFrames_ = 0;
+}
+
+obs_audio_data *VideoDelayFilter::FilterAudio(obs_audio_data *audio)
+{
+	if (!audio || audio->frames == 0)
+		return audio;
+
+	audio_t *audioContext = obs_get_audio();
+	uint32_t channels = audio_output_get_channels(audioContext);
+	uint32_t sampleRate = audio_output_get_sample_rate(audioContext);
+	if (channels == 0 || sampleRate == 0)
+		return audio;
+
+	EnsureAudioRingSized(channels, sampleRate);
+	size_t frames = audio->frames;
+	size_t ringLen = audioRing_.empty() ? 0 : audioRing_[0].size();
+	// A single call delivering more frames than the whole ring would break
+	// the index math below; never happens in practice (chunks are a small
+	// fraction of a second), but pass through unmodified rather than risk
+	// corrupting the ring if it ever did.
+	if (ringLen == 0 || frames >= ringLen)
+		return audio;
+
+	auto **inData = reinterpret_cast<float **>(audio->data);
+
+	// --- Write: copy this call's samples into the ring, per channel ---
+	for (uint32_t c = 0; c < audioChannels_; ++c) {
+		if (!inData[c])
+			continue;
+		std::vector<float> &channelRing = audioRing_[c];
+		size_t firstPart = std::min(frames, ringLen - audioWriteIndex_);
+		std::memcpy(channelRing.data() + audioWriteIndex_, inData[c], firstPart * sizeof(float));
+		if (firstPart < frames)
+			std::memcpy(channelRing.data(), inData[c] + firstPart, (frames - firstPart) * sizeof(float));
+	}
+	audioWriteIndex_ = (audioWriteIndex_ + frames) % ringLen;
+	audioBufferedFrames_ = std::min(audioBufferedFrames_ + frames, ringLen);
+
+	// --- Read: whichever `frames`-sized window is configuredDelaySeconds_ old ---
+	uint64_t delayFrames = static_cast<uint64_t>(configuredDelaySeconds_) * sampleRate;
+	delayFrames = std::min(delayFrames, static_cast<uint64_t>(ringLen - frames));
+	bool haveEnoughHistory = audioBufferedFrames_ >= delayFrames + frames;
+
+	audioOutputChunks_.resize(audioChannels_);
+	for (auto &chunk : audioOutputChunks_)
+		chunk.resize(frames);
+
+	if (haveEnoughHistory) {
+		size_t readIndex =
+			(audioWriteIndex_ + ringLen * 2 - frames - static_cast<size_t>(delayFrames)) % ringLen;
+		for (uint32_t c = 0; c < audioChannels_; ++c) {
+			std::vector<float> &channelRing = audioRing_[c];
+			size_t firstPart = std::min(frames, ringLen - readIndex);
+			std::memcpy(audioOutputChunks_[c].data(), channelRing.data() + readIndex,
+				    firstPart * sizeof(float));
+			if (firstPart < frames)
+				std::memcpy(audioOutputChunks_[c].data() + firstPart, channelRing.data(),
+					    (frames - firstPart) * sizeof(float));
+		}
+	} else {
+		// Still filling — same spirit as video's "draw nothing" while the
+		// buffer warms up. Program is on the loading scene during this
+		// window anyway (BufferModeController), so silence here is never
+		// actually heard.
+		for (auto &chunk : audioOutputChunks_)
+			std::fill(chunk.begin(), chunk.end(), 0.0f);
+	}
+
+	for (uint32_t c = 0; c < audioChannels_; ++c)
+		audioOutput_.data[c] = reinterpret_cast<uint8_t *>(audioOutputChunks_[c].data());
+	for (uint32_t c = audioChannels_; c < MAX_AV_PLANES; ++c)
+		audioOutput_.data[c] = nullptr;
+	audioOutput_.frames = static_cast<uint32_t>(frames);
+	// Passthrough, not recomputed: mirrors the video side, which draws old
+	// pixels at the CURRENT instant rather than rewinding a timestamp — see
+	// this file's header comment for why.
+	audioOutput_.timestamp = audio->timestamp;
+
+	return &audioOutput_;
 }
 
 void VideoDelayFilter::Update(obs_data_t *settings)
@@ -293,6 +401,11 @@ void VideoDelayFilter::TickCb(void *data, float seconds)
 void VideoDelayFilter::RenderCb(void *data, gs_effect_t * /*effect*/)
 {
 	static_cast<VideoDelayFilter *>(data)->Render();
+}
+
+obs_audio_data *VideoDelayFilter::FilterAudioCb(void *data, obs_audio_data *audio)
+{
+	return static_cast<VideoDelayFilter *>(data)->FilterAudio(audio);
 }
 
 uint32_t VideoDelayFilter::GetWidthCb(void *data)

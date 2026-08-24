@@ -352,7 +352,10 @@ bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneNa
 		return false;
 
 	liveSceneRenderSource_ = liveSource;
-	obs_source_inc_showing(liveSceneRenderSource_);
+	// inc_active, not inc_showing: the stronger of the two, needed so audio
+	// from the live scene's leaf sources also keeps flowing while hidden —
+	// see the header comment on this function.
+	obs_source_inc_active(liveSceneRenderSource_);
 	obs_add_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
 	return true;
 }
@@ -363,7 +366,7 @@ bool ObsFrontendBridge::ReleaseLiveSceneRendering(const std::string & /*liveScen
 		return false;
 
 	obs_remove_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
-	obs_source_dec_showing(liveSceneRenderSource_);
+	obs_source_dec_active(liveSceneRenderSource_);
 	obs_source_release(liveSceneRenderSource_);
 	liveSceneRenderSource_ = nullptr;
 	return true;
