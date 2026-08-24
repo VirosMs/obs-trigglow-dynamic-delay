@@ -8,6 +8,13 @@ Antes de nada, lee `docs/SPEC.md` (especificación técnica completa, incluida l
 OBS que determina cómo funciona este plugin) y `docs/BUILD_VALIDATION.md` (qué se verificó realmente
 y qué no, en esta primera entrega).
 
+## Requisitos de uso
+
+**OBS Studio 31.1.0 o superior.** El binario v0.1.0 se compila contra las fuentes de OBS 31.1.1
+(ver `buildspec.json`) y se ha verificado que carga y funciona correctamente en OBS **32.2.2**
+(el mecanismo de compatibilidad de plugins de OBS rechaza solo los plugins compilados contra una
+versión *más nueva* que la que está corriendo; nunca se ha probado en versiones anteriores a 31.1.1).
+
 ## Requisitos de compilación
 
 Basado en la plantilla oficial [`obsproject/obs-plugintemplate`](https://github.com/obsproject/obs-plugintemplate),
