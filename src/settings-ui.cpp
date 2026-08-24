@@ -61,7 +61,11 @@ void TrigglowDelayDock::BuildUi()
 
 	detailLabel_ = new QLabel(this);
 	detailLabel_->setWordWrap(true);
-	detailLabel_->setStyleSheet("color: palette(mid); font-size: 11px;");
+	// palette(mid) is meant for borders/grooves, not body text — it renders as
+	// low-contrast, hard-to-read gray on OBS's dark themes, which matters most
+	// here since this label carries the Error state's explanation.
+	// palette(windowText) is the theme's actual "readable text" role.
+	detailLabel_->setStyleSheet("color: palette(windowText); font-size: 11px;");
 	root->addWidget(detailLabel_);
 
 	// --- Config row: seconds + safe mode ---

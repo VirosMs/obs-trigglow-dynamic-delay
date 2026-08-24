@@ -80,8 +80,15 @@ bool ObsFrontendBridge::ApplyConfiguredDelay(uint32_t delaySeconds, bool preserv
 {
 	obs_output_t *output = obs_frontend_get_streaming_output();
 	if (!output) {
-		outError = "No hay ningun output de streaming disponible ahora mismo "
-			   "(revisa que el servicio de streaming este configurado en OBS).";
+		// OBS only creates the streaming output once a service is configured
+		// under Ajustes -> Emision. This is the expected state for anyone
+		// testing the plugin via local recording instead of a real stream
+		// (Recording/Replay Buffer never had a delay, so there is nothing to
+		// arm) - not a plugin bug, so the message says so explicitly instead
+		// of just "Error".
+		outError = "El delay solo aplica al streaming (no a grabar en local): configura un "
+			   "servicio en Ajustes -> Emision para poder activarlo. Si solo estas "
+			   "probando el plugin grabando en local, esto es normal.";
 		return false;
 	}
 
