@@ -86,6 +86,7 @@ void LoadSettings(trigglow::DelayController &controller)
 	uint32_t delaySeconds = static_cast<uint32_t>(obs_data_get_int(data, "delay_seconds"));
 	bool safeMode = obs_data_get_bool(data, "safe_mode");
 	bool wasEnabled = obs_data_get_bool(data, "enabled");
+	const char *reconnectScene = obs_data_get_string(data, "reconnect_scene");
 
 	// Fresh installs (empty obs_data_t defaults) would give us 0/false/false;
 	// treat a totally-empty file as "use built-in defaults" instead of a
@@ -93,11 +94,12 @@ void LoadSettings(trigglow::DelayController &controller)
 	if (delaySeconds == 0 && !obs_data_has_user_value(data, "delay_seconds"))
 		delaySeconds = 10;
 
-	controller.LoadSettings(delaySeconds, safeMode, wasEnabled);
+	controller.LoadSettings(delaySeconds, safeMode, wasEnabled, reconnectScene ? reconnectScene : "");
 	obs_data_release(data);
 
-	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, safeMode=%s, enabled=%s)", delaySeconds,
-			  safeMode ? "on" : "off", wasEnabled ? "yes" : "no");
+	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, safeMode=%s, enabled=%s, reconnectScene=%s)",
+			  delaySeconds, safeMode ? "on" : "off", wasEnabled ? "yes" : "no",
+			  (reconnectScene && *reconnectScene) ? reconnectScene : "(none)");
 }
 
 void SaveSettings(const trigglow::DelayController &controller)
@@ -117,6 +119,7 @@ void SaveSettings(const trigglow::DelayController &controller)
 	obs_data_set_int(data, "delay_seconds", snapshot.delaySeconds);
 	obs_data_set_bool(data, "safe_mode", snapshot.safeMode);
 	obs_data_set_bool(data, "enabled", snapshot.enabled);
+	obs_data_set_string(data, "reconnect_scene", snapshot.reconnectSceneName.c_str());
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 

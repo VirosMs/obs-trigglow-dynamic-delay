@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 extern "C" {
 #include <obs-frontend-api.h> // needed here too: obs_frontend_event is the exact callback param type
@@ -40,6 +41,9 @@ extern "C" {
 //   - obs_frontend_streaming_start() / obs_frontend_streaming_stop() / obs_frontend_streaming_active()
 //   - obs_frontend_add_event_callback() / obs_frontend_remove_event_callback()
 //   - obs_frontend_add_dock_by_id()
+//   - obs_frontend_get_scenes() / obs_frontend_source_list_free()
+//   - obs_frontend_get_current_scene() / obs_frontend_set_current_scene()
+//   - obs_source_get_name() / obs_source_release()
 namespace trigglow {
 
 // Mirrors the subset of obs_frontend_event we care about, so callers outside
@@ -95,6 +99,20 @@ public:
 	// passed as void* here so this header stays Qt-free and can be included
 	// from delay-controller.hpp / hotkeys.hpp without pulling in Qt.
 	void AddDock(const char *id, const char *title, void *qWidget) const;
+
+	// --- Scene switching (optional "reconnect placeholder" scene, see
+	// docs/product roadmap issue #173) ---
+
+	// Names of every scene in the current scene collection, in OBS's own order.
+	std::vector<std::string> ListSceneNames() const;
+
+	// Name of the currently active (program) scene, or empty if none.
+	std::string GetCurrentSceneName() const;
+
+	// Switches the active scene by name. Returns false (no-op) if `name` is
+	// empty or doesn't match any current scene — callers should treat that as
+	// "couldn't switch," not a crash-worthy error.
+	bool SetCurrentSceneByName(const std::string &name) const;
 
 private:
 	// Must match obs_frontend_event_cb exactly: void(*)(enum obs_frontend_event, void*).

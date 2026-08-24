@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "obs-frontend-bridge.hpp"
 
@@ -47,6 +48,11 @@ struct DelayStatus {
 	uint32_t configuredSeconds = 10;
 	uint32_t activeSeconds = 0;
 	bool safeMode = true;
+	// Empty = disabled (current behavior: no scene switch during reconnect).
+	// Scene shown to viewers while Applying, in place of OBS's own brief
+	// black/frozen frame during the reconnect (issue #173). Switched back to
+	// whatever was active once StreamingStarted confirms the reconnect.
+	std::string reconnectSceneName;
 	std::string message; // Human-readable (Spanish), empty outside of Error/info states.
 };
 
@@ -70,17 +76,26 @@ public:
 	// --- Settings ---
 	void SetDelaySeconds(uint32_t seconds);
 	void SetSafeMode(bool enabled);
+	// `sceneName` empty disables the feature (default): no scene switch
+	// during reconnect, same behavior as before issue #173.
+	void SetReconnectScene(std::string sceneName);
 	DelayStatus GetStatus() const { return status_; }
+
+	// Every scene in the current OBS scene collection, for the dock's scene
+	// picker. Passthrough to ObsFrontendBridge so settings-ui never needs to
+	// touch obs-frontend-api.h directly.
+	std::vector<std::string> ListAvailableScenes() const;
 
 	// Persistence: called by plugin-main.cpp with the obs_data_t* loaded
 	// from/about to be saved to obs_module_get_config_path(). Kept as plain
 	// getters/setters here (not obs_data_t directly) so this header doesn't
 	// need to include obs.h.
-	void LoadSettings(uint32_t delaySeconds, bool safeMode, bool wasEnabled);
+	void LoadSettings(uint32_t delaySeconds, bool safeMode, bool wasEnabled, std::string reconnectSceneName = {});
 	struct SettingsSnapshot {
 		uint32_t delaySeconds;
 		bool safeMode;
 		bool enabled;
+		std::string reconnectSceneName;
 	};
 	SettingsSnapshot SaveSettings() const;
 
@@ -95,12 +110,18 @@ public:
 private:
 	void SetState(DelayState state, std::string message = {});
 	void ApplyAndMaybeReconnect();
+	void RestoreSceneBeforeReconnect();
 	void NotifyStatusChanged();
 
 	ObsFrontendBridge &bridge_;
 	DelayStatus status_;
 	bool enabled_ = false;
 	bool pendingReconnect_ = false;
+	// Scene active right before we switched to reconnectSceneName for a live
+	// reconnect; empty when we haven't switched anything. Restored once the
+	// reconnect resolves (success or safe-mode giveup) — see ApplyAndMaybeReconnect(),
+	// OnFrontendEvent(), and OnApplyTimeout().
+	std::string sceneBeforeReconnect_;
 	StatusChangedCallback onStatusChanged_;
 };
 

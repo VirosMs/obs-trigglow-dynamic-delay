@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -87,6 +88,20 @@ void TrigglowDelayDock::BuildUi()
 			       "pasa a estado de Error y espera una accion manual tuya."));
 	root->addWidget(safeModeCheck_);
 
+	// --- Optional reconnect placeholder scene (issue #173) ---
+	auto *sceneRow = new QHBoxLayout();
+	auto *sceneLabel = new QLabel(QStringLiteral("Escena durante reconexion:"), this);
+	sceneRow->addWidget(sceneLabel);
+
+	reconnectSceneCombo_ = new QComboBox(this);
+	reconnectSceneCombo_->setToolTip(
+		QStringLiteral("Opcional: escena a mostrar mientras el stream reconecta, en vez del corte/pantalla "
+			       "negra por defecto de OBS. Vuelve a la escena anterior en cuanto se confirma la "
+			       "reconexion."));
+	sceneRow->addWidget(reconnectSceneCombo_, /*stretch=*/1);
+	root->addLayout(sceneRow);
+	RefreshSceneList();
+
 	// --- Action buttons ---
 	auto *buttonRow = new QHBoxLayout();
 	enableButton_ = new QPushButton(QStringLiteral("Enable Delay"), this);
@@ -101,7 +116,7 @@ void TrigglowDelayDock::BuildUi()
 					       "del stream (ver docs/SPEC.md)."),
 				this);
 	hint->setWordWrap(true);
-	hint->setStyleSheet("color: palette(mid); font-size: 10px;");
+	hint->setStyleSheet("color: palette(windowText); font-size: 10px;");
 	root->addWidget(hint);
 
 	root->addStretch(1);
@@ -109,6 +124,10 @@ void TrigglowDelayDock::BuildUi()
 	connect(secondsSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
 		[this](int value) { controller_.SetDelaySeconds(static_cast<uint32_t>(value)); });
 	connect(safeModeCheck_, &QCheckBox::toggled, this, [this](bool checked) { controller_.SetSafeMode(checked); });
+	connect(reconnectSceneCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+		controller_.SetReconnectScene(index <= 0 ? std::string{}
+							 : reconnectSceneCombo_->currentText().toStdString());
+	});
 	connect(enableButton_, &QPushButton::clicked, this, [this] {
 		TRIGGLOW_LOG_INFO(kComponent, "Enable pressed in dock");
 		controller_.Enable();
@@ -179,6 +198,25 @@ void TrigglowDelayDock::RefreshFromStatus(const DelayStatus &status)
 	enableButton_->setEnabled(!busy);
 	disableButton_->setEnabled(!busy);
 	toggleButton_->setEnabled(!busy);
+	// Don't let the user pick a different placeholder scene mid-reconnect —
+	// the controller already captured "the scene to restore to" for this
+	// specific reconnect when it started.
+	reconnectSceneCombo_->setEnabled(!busy);
+
+	const QSignalBlocker blockScene(reconnectSceneCombo_);
+	int sceneIndex = status.reconnectSceneName.empty()
+				 ? 0
+				 : reconnectSceneCombo_->findText(QString::fromStdString(status.reconnectSceneName));
+	reconnectSceneCombo_->setCurrentIndex(sceneIndex >= 0 ? sceneIndex : 0);
+}
+
+void TrigglowDelayDock::RefreshSceneList()
+{
+	const QSignalBlocker block(reconnectSceneCombo_);
+	reconnectSceneCombo_->clear();
+	reconnectSceneCombo_->addItem(QStringLiteral("(Ninguna)"));
+	for (const auto &name : controller_.ListAvailableScenes())
+		reconnectSceneCombo_->addItem(QString::fromStdString(name));
 }
 
 void TrigglowDelayDock::ArmApplyWatchdog()

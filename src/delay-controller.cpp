@@ -78,7 +78,19 @@ void DelayController::SetSafeMode(bool enabled)
 	NotifyStatusChanged();
 }
 
-void DelayController::LoadSettings(uint32_t delaySeconds, bool safeMode, bool wasEnabled)
+void DelayController::SetReconnectScene(std::string sceneName)
+{
+	status_.reconnectSceneName = std::move(sceneName);
+	NotifyStatusChanged();
+}
+
+std::vector<std::string> DelayController::ListAvailableScenes() const
+{
+	return bridge_.ListSceneNames();
+}
+
+void DelayController::LoadSettings(uint32_t delaySeconds, bool safeMode, bool wasEnabled,
+				   std::string reconnectSceneName)
 {
 	// Same clamp as SetDelaySeconds() — a hand-edited/corrupted settings
 	// file shouldn't be able to hand an unbounded value to obs_output_set_delay().
@@ -86,6 +98,7 @@ void DelayController::LoadSettings(uint32_t delaySeconds, bool safeMode, bool wa
 		delaySeconds = 1800;
 	status_.configuredSeconds = delaySeconds;
 	status_.safeMode = safeMode;
+	status_.reconnectSceneName = std::move(reconnectSceneName);
 	enabled_ = wasEnabled;
 	// Deliberately NOT auto-applying on load: OBS may not have a valid
 	// streaming service configured yet at obs_module_load() time, and this
@@ -96,7 +109,7 @@ void DelayController::LoadSettings(uint32_t delaySeconds, bool safeMode, bool wa
 
 DelayController::SettingsSnapshot DelayController::SaveSettings() const
 {
-	return {status_.configuredSeconds, status_.safeMode, enabled_};
+	return {status_.configuredSeconds, status_.safeMode, enabled_, status_.reconnectSceneName};
 }
 
 void DelayController::OnApplyTimeout()
@@ -114,6 +127,7 @@ void DelayController::OnApplyTimeout()
 
 	TRIGGLOW_LOG_ERROR(kComponent, "apply timeout reached in safe mode; giving up and reporting Error");
 	pendingReconnect_ = false;
+	RestoreSceneBeforeReconnect();
 	SetState(DelayState::Error, "OBS no confirmo la reconexion a tiempo. Revisa tu conexion y el estado del "
 				    "stream en OBS, y vuelve a intentarlo manualmente.");
 }
@@ -126,6 +140,7 @@ void DelayController::OnFrontendEvent(FrontendEvent event)
 			pendingReconnect_ = false;
 			uint32_t active = bridge_.GetActiveDelaySeconds();
 			status_.activeSeconds = active;
+			RestoreSceneBeforeReconnect();
 			SetState(enabled_ ? DelayState::Active : DelayState::Inactive);
 			TRIGGLOW_LOG_INFO(kComponent, "reconnect confirmed, active delay now %us", active);
 		}
@@ -173,9 +188,31 @@ void DelayController::ApplyAndMaybeReconnect()
 	// "Applying" and let OnFrontendEvent() take it from here once OBS
 	// confirms the stop/start cycle.
 	pendingReconnect_ = true;
+
+	// Optional (issue #173): switch to a placeholder scene for the duration
+	// of the reconnect gap so viewers see that instead of OBS's own brief
+	// black/frozen frame. Best-effort — if the configured scene no longer
+	// exists, SetCurrentSceneByName() just no-ops and we proceed as before.
+	if (!status_.reconnectSceneName.empty()) {
+		sceneBeforeReconnect_ = bridge_.GetCurrentSceneName();
+		if (!bridge_.SetCurrentSceneByName(status_.reconnectSceneName)) {
+			TRIGGLOW_LOG_WARN(kComponent, "reconnect scene \"%s\" not found, skipping scene switch",
+					  status_.reconnectSceneName.c_str());
+			sceneBeforeReconnect_.clear();
+		}
+	}
+
 	SetState(DelayState::Applying, "Aplicando cambios: reconectando el stream para que el nuevo delay tenga "
 				       "efecto. Esto puede causar un corte breve visible para tu audiencia.");
 	bridge_.RequestStreamingStop();
+}
+
+void DelayController::RestoreSceneBeforeReconnect()
+{
+	if (sceneBeforeReconnect_.empty())
+		return;
+	bridge_.SetCurrentSceneByName(sceneBeforeReconnect_);
+	sceneBeforeReconnect_.clear();
 }
 
 void DelayController::SetState(DelayState state, std::string message)

@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 class QLabel;
 class QSpinBox;
 class QCheckBox;
+class QComboBox;
 class QPushButton;
 class QTimer;
 
@@ -58,12 +59,19 @@ private:
 	void ArmApplyWatchdog();
 	void DisarmApplyWatchdog();
 
+	// Repopulates reconnectSceneCombo_ from controller_.ListAvailableScenes()
+	// (scenes can be renamed/added/removed anytime by the user) and reselects
+	// whatever is currently configured, without re-triggering its own
+	// currentIndexChanged handler.
+	void RefreshSceneList();
+
 	DelayController &controller_;
 
 	QLabel *stateLabel_ = nullptr;
 	QLabel *detailLabel_ = nullptr;
 	QSpinBox *secondsSpin_ = nullptr;
 	QCheckBox *safeModeCheck_ = nullptr;
+	QComboBox *reconnectSceneCombo_ = nullptr;
 	QPushButton *enableButton_ = nullptr;
 	QPushButton *disableButton_ = nullptr;
 	QPushButton *toggleButton_ = nullptr;

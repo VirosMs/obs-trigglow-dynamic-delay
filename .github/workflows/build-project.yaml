@@ -290,6 +290,14 @@ jobs:
           config: ${{ needs.check-event.outputs.config }}
           package: ${{ fromJSON(needs.check-event.outputs.package) }}
 
+      - name: Build Windows Installer 📦
+        if: fromJSON(needs.check-event.outputs.package)
+        run: |
+          # Build Windows Installer 📦
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DPluginStageDir=${{ github.workspace }}\release\${{ needs.check-event.outputs.config }}" `
+            "${{ github.workspace }}\installers\windows\trigglow-dynamic-delay-setup.iss"
+
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@v4
         with:
