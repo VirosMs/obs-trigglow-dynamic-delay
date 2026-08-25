@@ -17,7 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "video-delay-filter.hpp"
-#include "gpu-info.hpp"
+#include "hardware-info.hpp"
 #include "logging.hpp"
 
 #include <algorithm>
@@ -32,25 +32,28 @@ constexpr const char *kFilterId = "trigglow_video_delay_filter";
 constexpr const char *kSettingDelaySeconds = "delay_seconds";
 constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
 
-// VRAM budget for the ring buffer. Uncompressed RGBA at 1920x1080@60fps is
+// RAM budget for the ring buffer. Uncompressed RGBA at 1920x1080@60fps is
 // ~475MB PER SECOND (1920*1080*4 bytes * 60) — a real 30-60s buffer at that
-// resolution would need ~14-28GB, not realistic on top of whatever else OBS
-// is doing. No proper compressed encode/decode buffer yet (a much bigger
-// rewrite — libobs has no public decoder API for that, only obs-encoder.h
-// for producing an OUTPUT stream tied to the main video mix, not something
-// a plugin can feed arbitrary frames to on demand; would need vendoring
-// FFmpeg for both encode AND decode — investigated and explicitly deferred,
-// 2026-08-25, as multi-session work).
+// resolution would need ~14-28GB, not realistic on top of whatever else the
+// game/OBS/Windows itself is doing. No proper compressed encode/decode
+// buffer yet (a much bigger rewrite — libobs has no public decoder API for
+// that, only obs-encoder.h for producing an OUTPUT stream tied to the main
+// video mix, not something a plugin can feed arbitrary frames to on demand;
+// would need vendoring FFmpeg for both encode AND decode — investigated and
+// explicitly deferred, 2026-08-25, as multi-session work).
 //
-// GetBufferBudget() below picks the actual budget from the real GPU's VRAM
-// (src/gpu-info.hpp) where that's available, falling back to
-// kFallbackBufferBytes when it isn't (non-Windows for now, or the query
-// failed) -- these bounds keep that recommendation sane on both very small
-// and very large GPUs.
+// GetBufferBudget() below picks the actual budget from the machine's total
+// system RAM (src/hardware-info.hpp) where that's available, falling back
+// to kFallbackBufferBytes when it isn't (non-Windows for now, or the query
+// failed) -- these bounds keep that recommendation sane on both a modest
+// 8GB machine and a 64GB+ workstation. The fraction is deliberately lower
+// than VRAM used to get (15%): unlike a dedicated GPU's VRAM, system RAM is
+// also what the game itself, Windows, and everything else running is
+// fighting over, so this leaves much more headroom.
 constexpr uint64_t kFallbackBufferBytes = 2048ULL * 1024 * 1024;
-constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;            // Floor even on a detected low-VRAM GPU.
-constexpr uint64_t kMaxRecommendedBufferBytes = 6144ULL * 1024 * 1024; // Ceiling even on a monster GPU.
-constexpr double kVramFractionForBuffer = 0.15; // Don't hog more than ~15% of total VRAM -- OBS/the game need the rest.
+constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;            // Floor even on a detected low-RAM machine.
+constexpr uint64_t kMaxRecommendedBufferBytes = 8192ULL * 1024 * 1024; // Ceiling even on a very high-RAM machine.
+constexpr double kRamFractionForBuffer = 0.10;                         // Don't hog more than ~10% of total system RAM.
 
 // Pure math shared by EnsureRingSized() (actually resizes the ring) and
 // VideoDelayFilter::EstimateBufferFit() (predicts the outcome without one --
@@ -98,23 +101,24 @@ BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps
 
 uint64_t GetBufferBudget()
 {
-	// Computed once, not per-frame: DXGI adapter enumeration is cheap but
-	// there's no reason to repeat it every EnsureRingSized() call, and VRAM
-	// doesn't change mid-session. Thread-safe init (C++11 magic statics);
-	// EnsureRingSized only ever runs on the video render thread anyway.
+	// Computed once, not per-frame: GlobalMemoryStatusEx is cheap but
+	// there's no reason to repeat it every EnsureRingSized() call, and total
+	// system RAM doesn't change mid-session. Thread-safe init (C++11 magic
+	// statics); EnsureRingSized only ever runs on the video render thread
+	// anyway.
 	static const uint64_t budget = [] {
-		uint64_t vram = QueryDedicatedVramBytes();
-		if (vram == 0) {
-			TRIGGLOW_LOG_INFO(kComponent, "VRAM detection unavailable, using the %lluMB fallback budget",
+		uint64_t ram = QueryTotalSystemRamBytes();
+		if (ram == 0) {
+			TRIGGLOW_LOG_INFO(kComponent, "RAM detection unavailable, using the %lluMB fallback budget",
 					  static_cast<unsigned long long>(kFallbackBufferBytes / (1024 * 1024)));
 			return kFallbackBufferBytes;
 		}
-		uint64_t recommended = std::clamp<uint64_t>(static_cast<uint64_t>(vram * kVramFractionForBuffer),
+		uint64_t recommended = std::clamp<uint64_t>(static_cast<uint64_t>(ram * kRamFractionForBuffer),
 							    kMinBufferBytes, kMaxRecommendedBufferBytes);
-		TRIGGLOW_LOG_INFO(kComponent, "detected %lluMB VRAM, using a %lluMB buffer budget (~%.0f%%)",
-				  static_cast<unsigned long long>(vram / (1024 * 1024)),
+		TRIGGLOW_LOG_INFO(kComponent, "detected %lluMB system RAM, using a %lluMB buffer budget (~%.0f%%)",
+				  static_cast<unsigned long long>(ram / (1024 * 1024)),
 				  static_cast<unsigned long long>(recommended / (1024 * 1024)),
-				  kVramFractionForBuffer * 100.0);
+				  kRamFractionForBuffer * 100.0);
 		return recommended;
 	}();
 	return budget;
@@ -221,17 +225,33 @@ VideoDelayFilter::VideoDelayFilter(obs_source_t *filterSource) : filterSource_(f
 VideoDelayFilter::~VideoDelayFilter()
 {
 	ReleaseRing();
+	ReleaseGpuObjects();
 }
 
 void VideoDelayFilter::ReleaseRing()
 {
-	for (auto &slot : ring_) {
-		if (slot.texrender)
-			gs_texrender_destroy(slot.texrender);
-	}
 	ring_.clear();
 	writeIndex_ = 0;
 	bufferedCount_ = 0;
+}
+
+void VideoDelayFilter::ReleaseGpuObjects()
+{
+	if (captureTexrender_) {
+		gs_texrender_destroy(captureTexrender_);
+		captureTexrender_ = nullptr;
+	}
+	if (playbackTexture_) {
+		gs_texture_destroy(playbackTexture_);
+		playbackTexture_ = nullptr;
+	}
+	for (auto &slot : stagingSlots_) {
+		if (slot.surface) {
+			gs_stagesurface_destroy(slot.surface);
+			slot.surface = nullptr;
+		}
+		slot.pending = false;
+	}
 }
 
 void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
@@ -243,8 +263,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	BufferFit fit = ComputeBufferFit(origWidth, origHeight, fps, configuredDelaySeconds_,
 					 configuredMinResolutionHeight_, GetBufferBudget());
 
-	bool resolutionChanged = !ring_.empty() &&
-				 (ring_[0].width != fit.bufferWidth || ring_[0].height != fit.bufferHeight);
+	bool resolutionChanged = bufferWidth_ != fit.bufferWidth || bufferHeight_ != fit.bufferHeight;
 	if (!resolutionChanged && ring_.size() == fit.actualFrames)
 		return; // Already correctly sized.
 
@@ -263,11 +282,28 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	}
 
 	ReleaseRing();
-	ring_.resize(static_cast<size_t>(fit.actualFrames));
-	for (auto &slot : ring_) {
-		slot.width = fit.bufferWidth;
-		slot.height = fit.bufferHeight;
+	// playbackTexture_/stagingSlots_ are fixed-resolution GPU objects (unlike
+	// captureTexrender_, which auto-resizes on gs_texrender_begin) -- they
+	// must be torn down and lazily recreated at the new size in Render().
+	if (resolutionChanged) {
+		ReleaseGpuObjects();
+	} else {
+		// Resolution is unchanged but the FRAME COUNT just did (ring_ above
+		// was just cleared/resized) -- any staging slot still mid-readback
+		// holds a targetRingIndex into the OLD ring_, which may now be
+		// out-of-bounds for the new (possibly smaller) one. The GPU objects
+		// themselves are still valid at this resolution, so just drop the
+		// pending readback rather than destroying/recreating them.
+		for (auto &slot : stagingSlots_)
+			slot.pending = false;
 	}
+
+	bufferWidth_ = fit.bufferWidth;
+	bufferHeight_ = fit.bufferHeight;
+	size_t frameBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_ * 4;
+	ring_.resize(static_cast<size_t>(fit.actualFrames));
+	for (auto &slot : ring_)
+		slot.pixels.assign(frameBytes, 0);
 }
 
 void VideoDelayFilter::EnsureAudioRingSized(uint32_t channels, uint32_t samplesPerSec)
@@ -439,44 +475,83 @@ void VideoDelayFilter::Render()
 		return;
 	}
 
-	// --- Capture: render the target into this frame's ring slot ---
-	Slot &writeSlot = ring_[writeIndex_];
-	if (!writeSlot.texrender)
-		writeSlot.texrender = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+	// --- Capture step 1: render the target into the ONE reusable capture
+	// texrender (not one per slot -- see this file's header comment). Its
+	// size is the ring's (possibly downscaled) buffer resolution, but the
+	// ortho projection below still spans the source's real width/height —
+	// that mismatch is exactly what makes the GPU rasterize the capture
+	// down to fit the smaller viewport. ---
+	if (!captureTexrender_)
+		captureTexrender_ = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 
-	gs_texrender_reset(writeSlot.texrender);
-	// texrender_begin's size is the slot's (possibly downscaled) buffer
-	// resolution, but the ortho projection below still spans the source's
-	// real width/height — that mismatch is exactly what makes the GPU
-	// rasterize the capture down to fit the smaller viewport. Playback
-	// (below) draws whichever texture comes out of this at the CURRENT
-	// target's real size regardless of what resolution it was captured at,
-	// so a downscaled slot just reads back a little softer, never wrong.
-	if (gs_texrender_begin(writeSlot.texrender, writeSlot.width, writeSlot.height)) {
+	gs_texrender_reset(captureTexrender_);
+	if (gs_texrender_begin(captureTexrender_, bufferWidth_, bufferHeight_)) {
 		struct vec4 clearColor = {};
 		gs_clear(GS_CLEAR_COLOR, &clearColor, 0.0f, 0);
 		gs_matrix_push();
 		gs_ortho(0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height), -100.0f, 100.0f);
 		obs_source_video_render(target);
 		gs_matrix_pop();
-		gs_texrender_end(writeSlot.texrender);
-		writeSlot.valid = true;
+		gs_texrender_end(captureTexrender_);
+
+		// --- Capture step 2: harvest whichever staging slot was kicked off
+		// LAST frame (its GPU->CPU copy has now had a full frame to finish,
+		// so mapping it here never stalls the CPU the way mapping the SAME
+		// frame's staging surface immediately would), then kick off a fresh
+		// async readback of what was just rendered above into the OTHER
+		// staging slot. kStagingSlotCount==2 alternates cleanly via parity. ---
+		size_t kickSlotIdx = captureFrameCounter_ % kStagingSlotCount;
+		size_t harvestSlotIdx = (captureFrameCounter_ + 1) % kStagingSlotCount;
+		++captureFrameCounter_;
+
+		StagingSlot &harvest = stagingSlots_[harvestSlotIdx];
+		if (harvest.pending && harvest.surface) {
+			uint8_t *mapped = nullptr;
+			uint32_t linesize = 0;
+			if (gs_stagesurface_map(harvest.surface, &mapped, &linesize)) {
+				Slot &dst = ring_[harvest.targetRingIndex];
+				uint32_t rowBytes = bufferWidth_ * 4;
+				for (uint32_t row = 0; row < bufferHeight_; ++row) {
+					std::memcpy(dst.pixels.data() + static_cast<size_t>(row) * rowBytes,
+						    mapped + static_cast<size_t>(row) * linesize, rowBytes);
+				}
+				dst.valid = true;
+				gs_stagesurface_unmap(harvest.surface);
+			}
+			harvest.pending = false;
+		}
+
+		StagingSlot &kick = stagingSlots_[kickSlotIdx];
+		if (!kick.surface)
+			kick.surface = gs_stagesurface_create(bufferWidth_, bufferHeight_, GS_RGBA);
+		gs_texture_t *captured = gs_texrender_get_texture(captureTexrender_);
+		if (captured && kick.surface) {
+			gs_stage_texture(kick.surface, captured);
+			kick.pending = true;
+			kick.targetRingIndex = writeIndex_;
+		}
 	}
 
-	// --- Playback: draw whichever slot is configuredDelaySeconds_ old ---
+	// --- Playback: draw whichever slot is configuredDelaySeconds_ old, via
+	// the ONE reusable playback texture (uploaded fresh from RAM each frame,
+	// not one persistent GPU texture per slot) ---
 	uint64_t delayFrames = static_cast<uint64_t>(configuredDelaySeconds_) * std::max<uint32_t>(1, currentFps_);
 	delayFrames = std::min(delayFrames, static_cast<uint64_t>(ring_.size() - 1));
 	size_t readIndex = (writeIndex_ + ring_.size() - static_cast<size_t>(delayFrames)) % ring_.size();
 	bool haveEnoughHistory = bufferedCount_ > delayFrames;
 
 	if (haveEnoughHistory && ring_[readIndex].valid) {
-		gs_texture_t *tex = gs_texrender_get_texture(ring_[readIndex].texrender);
-		if (tex) {
+		if (!playbackTexture_)
+			playbackTexture_ =
+				gs_texture_create(bufferWidth_, bufferHeight_, GS_RGBA, 1, nullptr, GS_DYNAMIC);
+		if (playbackTexture_) {
+			gs_texture_set_image(playbackTexture_, ring_[readIndex].pixels.data(), bufferWidth_ * 4, false);
+
 			gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 			gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
-			gs_effect_set_texture(image, tex);
+			gs_effect_set_texture(image, playbackTexture_);
 			while (gs_effect_loop(effect, "Draw"))
-				gs_draw_sprite(tex, 0, width, height);
+				gs_draw_sprite(playbackTexture_, 0, width, height);
 		}
 	}
 	// Else: buffer still filling (first configuredDelaySeconds_ after
@@ -557,8 +632,8 @@ obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 		obs_properties_add_int(props, kSettingDelaySeconds, "Delay (segundos)", 0, kUiMaxDelaySeconds, 1);
 	obs_property_set_long_description(
 		prop, "Segundos de retraso pedidos. Se respeta la calidad minima (ver mas abajo) por encima del "
-		      "tiempo -- si no caben enteros en el presupuesto de VRAM (calculado segun tu GPU) a esa "
-		      "calidad, el tiempo real de buffer se acorta en su lugar (ver el log de OBS).");
+		      "tiempo -- si no caben enteros en el presupuesto de RAM (calculado segun la memoria de tu "
+		      "PC) a esa calidad, el tiempo real de buffer se acorta en su lugar (ver el log de OBS).");
 
 	obs_property_t *qualityProp = obs_properties_add_list(props, kSettingMinResolutionHeight, "Calidad minima",
 							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
@@ -568,7 +643,7 @@ obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 	obs_property_set_long_description(
 		qualityProp, "Nunca se baja de esta resolucion para el tramo delayed, aunque eso signifique "
 			     "guardar menos segundos de los pedidos. Un valor mas alto guarda menos tiempo real "
-			     "con el mismo presupuesto de VRAM.");
+			     "con el mismo presupuesto de RAM.");
 
 	return props;
 }

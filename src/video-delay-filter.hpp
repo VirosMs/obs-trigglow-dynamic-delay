@@ -33,16 +33,34 @@ extern "C" {
 // live scene via ObsFrontendBridge — the user never opens OBS's own Filters
 // dialog for it.
 //
-// Video mechanism: every video_render call renders the filter's target
-// source into the NEXT slot of a ring buffer of GPU textures
-// (gs_texrender_t), then draws whichever slot is `delaySeconds` old. Memory
-// is the hard constraint, not CPU: uncompressed RGBA at 1920x1080@60fps is
-// ~475MB PER SECOND. EnsureRingSized() picks a buffer budget from the real
-// GPU's VRAM (src/gpu-info.hpp) and never captures below a configurable
-// minimum resolution (quality floor, user-chosen) -- if the full requested
-// delay doesn't fit the budget at that floor, the ACTUAL buffered duration
+// Video mechanism (rewritten 2026-08-25 from "one persistent GPU texture per
+// buffered frame" to a hybrid RAM+fixed-GPU-object design, after live
+// feedback asked whether VRAM was really required and a real "Device
+// Remove/Reset" game crash raised the cost of holding dozens of large GPU
+// textures alive at once): the ring buffer itself lives in ordinary system
+// RAM (Slot::pixels below, one plain byte vector per buffered frame) --
+// there are only ever THREE actual GPU objects total, regardless of how many
+// seconds are buffered:
+//   1. captureTexrender_ -- one reusable render target the live frame is
+//      rendered into each tick (same one every frame, just reset/reused).
+//   2. stagingSlots_[kStagingSlotCount] -- a small (2) rotating pool of
+//      gs_stagesurf_t used for ASYNC GPU->CPU readback (gs_stage_texture +
+//      a deferred gs_stagesurface_map one frame later, so the CPU never
+//      stalls waiting on the copy the way mapping the SAME frame's staging
+//      surface immediately would).
+//   3. playbackTexture_ -- one reusable upload texture: whichever RAM slot
+//      is `delaySeconds` old gets pushed into it via gs_texture_set_image
+//      right before drawing.
+// Memory is still the hard constraint, not CPU: uncompressed RGBA at
+// 1920x1080@60fps is ~475MB PER SECOND of buffered history. EnsureRingSized()
+// picks a buffer budget from the machine's total system RAM
+// (src/hardware-info.hpp) and never captures below a configurable minimum
+// resolution (quality floor, user-chosen) -- if the full requested delay
+// doesn't fit the budget at that floor, the ACTUAL buffered duration
 // shortens instead (flipped 2026-08-25 after live feedback that always
-// honoring the full duration made long delays look terrible).
+// honoring the full duration made long delays look terrible). This part of
+// the math didn't change in the RAM migration, only what resource it's
+// measured against.
 //
 // FilterAudio()/EnsureAudioRingSized() below are a COMPLETE, implemented
 // audio ring buffer (same delay-window logic as video, in sample-space) --
@@ -72,12 +90,13 @@ public:
 	// Registers this filter type with OBS. Call once from obs_module_load().
 	static void Register();
 
-	// The VRAM budget EnsureRingSized() is actually using right now (bytes)
-	// -- computed once from the real GPU's detected VRAM (src/gpu-info.hpp)
-	// or a safe fallback if that's unavailable. Exposed so the dock can show
-	// the user what their hardware allows, per BufferModeController's
-	// "aconsejar segun el hardware, pero a su eleccion" requirement -- this
-	// never restricts delaySeconds/minResolutionHeight, it's informational.
+	// The RAM budget EnsureRingSized() is actually using right now (bytes)
+	// -- computed once from the machine's detected total system RAM
+	// (src/hardware-info.hpp) or a safe fallback if that's unavailable.
+	// Exposed so the dock can show the user what their hardware allows, per
+	// BufferModeController's "aconsejar segun el hardware, pero a su
+	// eleccion" requirement -- this never restricts
+	// delaySeconds/minResolutionHeight, it's informational.
 	static uint64_t GetBufferBudgetBytes();
 
 	// What EnsureRingSized() would actually do for a given
@@ -93,19 +112,29 @@ public:
 		double actualSeconds = 0.0;
 		// False if actualSeconds ends up shorter than requestedDelaySeconds
 		// -- the quality floor didn't leave room for the full duration at
-		// the current VRAM budget.
+		// the current RAM budget.
 		bool fitsFullDuration = true;
 	};
 	static BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight,
 						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t fps);
 
 private:
-	// One buffered historical frame.
+	// One buffered historical frame, plain RAM -- NOT a GPU object. See this
+	// file's header comment: the ring itself lives here, in system memory;
+	// the only GPU objects involved (captureTexrender_, stagingSlots_,
+	// playbackTexture_ below) are a small FIXED set shared by every slot,
+	// not one-per-slot.
 	struct Slot {
-		gs_texrender_t *texrender = nullptr;
-		uint32_t width = 0;
-		uint32_t height = 0;
-		bool valid = false; // false until first successfully rendered.
+		std::vector<uint8_t> pixels; // bufferWidth_*bufferHeight_*4 bytes, tightly packed RGBA.
+		bool valid = false;          // false until first successfully captured.
+	};
+
+	// One in-flight (or just-finished) async GPU->CPU readback. See
+	// kStagingSlotCount's comment for why there are exactly two of these.
+	struct StagingSlot {
+		gs_stagesurf_t *surface = nullptr;
+		bool pending = false;       // true from gs_stage_texture() until the deferred harvest reads it back.
+		size_t targetRingIndex = 0; // Which ring_ slot the pending readback belongs to.
 	};
 
 	explicit VideoDelayFilter(obs_source_t *filterSource);
@@ -118,13 +147,16 @@ private:
 	uint32_t GetWidth() const;
 	uint32_t GetHeight() const;
 
-	// Resizes ring_ (VRAM-budget-capped) for the given target resolution and
-	// current output frame rate. No-op if slotCapacity_ is already correct
-	// for this width/height. Must be called from within a video_render (or
-	// otherwise graphics-context-active) call, since it creates/destroys
-	// gs_texrender_t objects.
+	// Resizes ring_ (RAM-budget-capped) for the given target resolution and
+	// current output frame rate. No-op if the ring is already correct for
+	// this width/height/frame count. Must be called from within a
+	// video_render (or otherwise graphics-context-active) call: a resolution
+	// change also tears down and lazily-recreates the fixed GPU object pool
+	// (via ReleaseGpuObjects()), since gs_stagesurf_t/gs_texture_t can't be
+	// resized in place the way gs_texrender_t can.
 	void EnsureRingSized(uint32_t width, uint32_t height);
-	void ReleaseRing();
+	void ReleaseRing();       // Frees the CPU-side ring_ (Slot::pixels) only.
+	void ReleaseGpuObjects(); // Frees captureTexrender_/stagingSlots_/playbackTexture_.
 
 	// Resizes audioRing_ for the given channel count/sample rate and the
 	// current configuredDelaySeconds_. Plain CPU memory (no graphics
@@ -151,14 +183,29 @@ private:
 	// Floor on the ring's capture height, in pixels -- quality wins over
 	// duration: EnsureRingSized() never captures shorter than this, and
 	// shortens the ACTUAL buffered seconds instead if the full requested
-	// delay doesn't fit the VRAM budget at this floor. Defaults to 720
+	// delay doesn't fit the RAM budget at this floor. Defaults to 720
 	// (kDefaultMinResolutionHeight); user-configurable via the dock.
 	uint32_t configuredMinResolutionHeight_ = 720;
 
 	std::vector<Slot> ring_;
+	uint32_t bufferWidth_ = 0; // Resolution every ring_ slot and the fixed GPU pool are currently sized for.
+	uint32_t bufferHeight_ = 0;
 	size_t writeIndex_ = 0;
 	size_t bufferedCount_ = 0; // How many ring_ slots hold a real rendered frame so far.
 	uint32_t currentFps_ = 30; // Updated from obs_get_video_info() each Tick().
+
+	// The fixed, small GPU object pool -- see this file's header comment.
+	// Independent of ring_.size(): a 5s buffer and a 60s buffer both use
+	// exactly these same three objects (well, four counting both staging
+	// slots), just with a bigger RAM ring_ behind them.
+	gs_texrender_t *captureTexrender_ = nullptr;
+	gs_texture_t *playbackTexture_ = nullptr;
+	// 2, not more: double-buffering is enough headroom for a GPU->CPU copy
+	// to finish one frame later without the CPU ever having to stall on
+	// gs_stagesurface_map() waiting for it -- see Render()'s capture step.
+	static constexpr size_t kStagingSlotCount = 2;
+	StagingSlot stagingSlots_[kStagingSlotCount];
+	uint64_t captureFrameCounter_ = 0; // Parity counter picking which staging slot kicks off vs. gets harvested.
 
 	// audioRing_[channel][frame] — one flat sample buffer per channel, big
 	// enough for configuredDelaySeconds_ at samplesPerSec_. Resized by

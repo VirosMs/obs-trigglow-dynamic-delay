@@ -92,7 +92,7 @@ void TrigglowDelayDock::BuildUi()
 	secondsSpin_->setValue(static_cast<int>(bufferController_.GetStatus().delaySeconds));
 	secondsSpin_->setToolTip(
 		QStringLiteral("Segundos de retraso pedidos. Se respeta la calidad minima elegida abajo por "
-			       "encima del tiempo: si no caben enteros en el presupuesto de VRAM a esa calidad, "
+			       "encima del tiempo: si no caben enteros en el presupuesto de RAM a esa calidad, "
 			       "el tiempo real de buffer se acorta en su lugar."));
 	secondsRow->addWidget(secondsSpin_);
 	root->addLayout(secondsRow);
@@ -106,7 +106,7 @@ void TrigglowDelayDock::BuildUi()
 	minResolutionCombo_->setToolTip(
 		QStringLiteral("El tramo delayed nunca baja de esta resolucion, aunque eso signifique guardar "
 			       "menos segundos de los pedidos. Mas calidad = menos tiempo real de buffer con el "
-			       "mismo presupuesto de VRAM."));
+			       "mismo presupuesto de RAM."));
 	qualityRow->addWidget(minResolutionCombo_);
 	root->addLayout(qualityRow);
 
@@ -119,13 +119,13 @@ void TrigglowDelayDock::BuildUi()
 	root->addWidget(fitLabel_);
 
 	// Informational only, computed once from real hardware where possible
-	// (VideoDelayFilter::GetBufferBudgetBytes, see src/gpu-info.hpp) --
+	// (VideoDelayFilter::GetBufferBudgetBytes, see src/hardware-info.hpp) --
 	// "aconsejar segun el hardware, pero a su eleccion": this never
 	// restricts delaySeconds/minResolutionHeight above, just shows the
 	// user what their choices are actually working with.
 	uint64_t budgetMb = bufferController_.GetBufferBudgetBytes() / (1024 * 1024);
 	auto *budgetLabel = new QLabel(
-		QStringLiteral("Presupuesto de buffer detectado: ~%1 MB (segun tu GPU).").arg(budgetMb), this);
+		QStringLiteral("Presupuesto de buffer detectado: ~%1 MB (segun la RAM de tu PC).").arg(budgetMb), this);
 	budgetLabel->setWordWrap(true);
 	budgetLabel->setStyleSheet("color: palette(windowText); font-size: 10px;");
 	root->addWidget(budgetLabel);

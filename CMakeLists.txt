@@ -16,13 +16,6 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 find_package(libobs REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 
-if(WIN32)
-  # DXGI adapter enumeration (src/gpu-info.cpp) -- libobs's own public API
-  # has no VRAM query, so this talks to DXGI directly for the hardware-based
-  # buffer size recommendation. Part of the Windows SDK, no separate fetch.
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE dxgi)
-endif()
-
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
@@ -59,8 +52,8 @@ target_sources(
     src/video-delay-filter.hpp
     src/audio-delay-filter.cpp
     src/audio-delay-filter.hpp
-    src/gpu-info.cpp
-    src/gpu-info.hpp
+    src/hardware-info.cpp
+    src/hardware-info.hpp
     src/scene-combo-box.cpp
     src/scene-combo-box.hpp
     src/buffer-mode-controller.cpp
