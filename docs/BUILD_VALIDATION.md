@@ -1,56 +1,65 @@
 # Validación de compilación — qué se verificó y qué no (honesto, sin humo)
 
-Este proyecto se generó en un entorno de sandbox en la nube sin acceso a `apt` (los espejos de
-Ubuntu devuelven `403 Forbidden` por política de red del sandbox), por lo que **no fue posible
-instalar `libobs-dev` / `qt6-base-dev` reales ni hacer un build+link completo contra OBS Studio**
-dentro de esta sesión. Esto se documenta aquí sin adornos, tal y como se pidió: nada de "demo falsa".
+Este documento describía originalmente (2026-08-23) un bootstrap hecho en un sandbox en la nube sin
+acceso real al SDK de OBS ni a Qt6 — solo verificación de sintaxis (`g++ -fsyntax-only`) contra
+headers sintéticos, y `settings-ui.cpp` sin compilar ni una sola vez. Eso ya no describe el estado
+real del proyecto. Desde entonces el plugin se ha compilado con éxito **muchas veces** en CI real
+contra el SDK real de OBS y Qt6 real, y se ha probado en directo dentro de una instancia real de OBS
+Studio. Esto se reescribe aquí para reflejar eso, con la misma honestidad de siempre: qué está
+confirmado y qué todavía no.
 
-## Lo que SÍ se verificó, y cómo
+## Lo que SÍ está confirmado, y cómo
 
-1. **Ground truth de la API, leída directamente del código fuente real**, no solo de la
-   documentación (que en varios puntos está incompleta): se clonó
-   [`obsproject/obs-studio`](https://github.com/obsproject/obs-studio) (sparse checkout de
-   `libobs/obs-output.c`, `libobs/obs-output-delay.c`, `libobs/obs-output.h`, `libobs/obs-hotkey.h`,
-   `libobs/util/base.h`, `frontend/api/obs-frontend-api.h`) y se clonó
-   [`obsproject/obs-plugintemplate`](https://github.com/obsproject/obs-plugintemplate) completo como
-   base real del proyecto (no una recreación de memoria). Esto es lo que permitió confirmar, a nivel
-   de código, el hallazgo central del §2 de `SPEC.md` (que el delay se "bloquea" al arrancar el
-   output) y las firmas exactas de cada función usada.
+1. **Compilación real en CI en las 3 plataformas.** `.github/workflows/push.yaml` y
+   `build-project.yaml` compilan el plugin en Windows, macOS y Ubuntu contra el **SDK real de OBS**
+   (`obs-studio` v31.1.1, ver `buildspec.json`) y **Qt6 real** (prebuilt de `obsproject/obs-deps`), no
+   headers sintéticos ni un chequeo de solo-sintaxis. Esto incluye el linkado real contra
+   `libobs`/`obs-frontend-api`/Qt6 — no solo comprobación de tipos. El estado de estos workflows es
+   verde en las 3 plataformas.
 
-2. **Comprobación de sintaxis real con `g++ -std=c++17 -fsyntax-only`** contra un conjunto de headers
-   sintéticos (`/tmp/synthetic-obs-headers` durante la generación; no se incluyen en este ZIP porque
-   no son parte del proyecto, son un arnés de verificación) construidos copiando literalmente las
-   firmas verificadas en el paso 1 — no inventadas. Archivos verificados así, con éxito
-   (`exit: 0`, sin errores ni warnings):
-   - `src/logging.cpp`
-   - `src/obs-frontend-bridge.cpp` — **este paso encontró y corrigió un bug real**: el callback de
-     `obs_frontend_add_event_callback` estaba declarado como `void(int, void*)` en vez de
-     `void(enum obs_frontend_event, void*)`, lo cual no compila. Corregido antes de entregar el ZIP.
-   - `src/delay-controller.cpp`
-   - `src/hotkeys.cpp`
-   - `src/plugin-main.cpp` (parcial: la lógica de ciclo de vida del módulo, hotkeys y
-     persistencia de settings se verificó con stubs de `QString`/`QDir`/`QFileInfo`/`QWidget`
-     mínimos; **el contenido interno de `settings-ui.cpp` NO se verificó**, ver más abajo)
+2. **`src/settings-ui.cpp` (el dock de Qt) ya se ha compilado de verdad**, con el Qt6 real del SDK de
+   OBS, como parte de esas mismas builds de CI — ya no es el único archivo del proyecto sin verificar
+   que era en 2026-08-23. Los layouts, señales/slots, `QSpinBox`, `QComboBox`, etc. compilan y enlazan
+   contra Qt6 real.
 
-## Lo que NO se verificó (y por qué)
+3. **Pruebas en directo dentro de una instancia real y en ejecución de OBS Studio 32.2.2 en Windows**,
+   con captura de juego real, a lo largo de varias iteraciones del desarrollo del modo buffer (ver
+   `docs/SPEC.md` para el diseño completo). Concretamente, el desarrollador ha confirmado en directo:
+   - El llenado y vaciado del ring buffer (`Inactive → Filling → Active` y vuelta a `Inactive` al
+     hacer Disable) con contenido de vídeo y audio real.
+   - Habilitar/Deshabilitar (Enable/Disable) repetidamente sin crashes, incluyendo el ciclo completo
+     de la migración de un diseño de una-textura-de-GPU-por-frame a RAM+NV12 (ver `docs/SPEC.md` §3.1).
+   - Corrección de color confirmada visualmente tras la conversión RGBA↔NV12 (BT.601) — el vídeo
+     retrasado se ve igual que el vídeo en directo, sin desplazamientos de color.
+   - Sincronía de audio: el audio retrasado se mantiene en sync con el vídeo retrasado a lo largo del
+     tiempo, no solo al empezar.
+   - Uso de RAM confirmado en el Administrador de tareas de Windows, consistente con el presupuesto de
+     RAM calculado por `EnsureRingSized()` (ver `docs/SPEC.md` §3.5).
+   - La corrección de "liberar RAM al hacer Disable" (`docs/SPEC.md` §3.4): confirmado que el uso de
+     RAM vuelve a bajar tras pulsar Disable, en vez de quedarse reservado indefinidamente.
 
-- **`src/settings-ui.cpp`** (el dock de Qt: layouts, señales/slots, `QSpinBox`, `QCheckBox`, etc.)
-  no se pudo compilar ni siquiera en modo sintaxis-únicamente en este sandbox, porque no hay un Qt6
-  real disponible y no se pudo instalar (`apt-get install qt6-base-dev` falló por la política de red
-  del sandbox, no por un problema del paquete). El código se escribió siguiendo los patrones
-  estándar de Qt Widgets (los mismos usados por cientos de plugins de OBS reales), pero **su primera
-  compilación real ocurrirá quien lo compile con el SDK oficial de OBS** — ver `README.md` para los
-  pasos. Es el único archivo del proyecto sin verificación de sintaxis en esta sesión.
-- **Ningún linkado real contra `libobs`/`obs-frontend-api`/Qt6** ocurrió — solo verificación de
-  sintaxis y tipos contra las firmas reales. Esto NO sustituye una build real; es una red de
-  seguridad adicional antes de que tú hagas la primera build de verdad.
-- **No se probó dentro de una instancia real de OBS** — ni el registro del dock, ni las hotkeys, ni
-  el comportamiento de reconexión al aplicar el delay en directo. Esa es la verificación que falta
-  y que solo tú puedes hacer siguiendo la guía rápida del `README.md`.
+## Lo que TODAVÍA no está confirmado (y por qué)
+
+- **macOS y Linux no se han probado en directo** dentro de una instancia real de OBS — ambos compilan
+  en verde en CI (SDK real, no sintético), pero nadie ha ejecutado el plugin todavía dentro de un OBS
+  en ejecución en esas plataformas. Trátalos como "compila, comportamiento en directo sin confirmar"
+  hasta que alguien lo pruebe.
+- **El riesgo de crash "Device Remove/Reset" de la GPU no está confirmado como resuelto.** Se observó
+  en directo bajo el diseño anterior (una textura de GPU por frame almacenado); la reescritura a
+  RAM/NV12 reduce plausiblemente el riesgo (un puñado de objetos de GPU fijos y pequeños en vez de
+  docenas que escalan con la duración del delay) pero esto no es lo mismo que una prueba de que ya no
+  puede ocurrir. Ver `docs/SPEC.md` §6 para el detalle completo — sigue siendo un área de riesgo real
+  hasta que se vuelva a probar específicamente buscando que reaparezca.
+- **No existe una suite de pruebas automatizadas dedicada** (unit tests, integration tests, etc.) para
+  este plugin. Toda la validación descrita arriba es CI de compilación/enlazado más pruebas manuales
+  en directo por parte del desarrollador — no hay cobertura automatizada que se ejecute en cada commit
+  más allá de "¿compila?".
 
 ## Recomendación
 
-Trata este plugin como un **MVP listo para tu primera compilación real, no como un binario ya
-probado**. La checklist final de esta entrega incluye exactamente los pasos para hacer esa primera
-build y detectar cualquier detalle que solo un compilador con el SDK real de OBS pueda pillar (por
-ejemplo, cualquier diferencia entre mis headers sintéticos y la versión exacta de OBS que uses).
+Trata este plugin como un **MVP con compilación real confirmada en las 3 plataformas y comportamiento
+en directo confirmado en Windows**, no como un producto con cobertura de pruebas automatizada ni con
+paridad de pruebas en directo entre plataformas. Si vas a usarlo en macOS o Linux, o si tu escenario
+se acerca al patrón que causó el crash de GPU descrito arriba (delays largos, habilitar/deshabilitar
+repetidamente durante una sesión larga), prueba primero fuera de una emisión real antes de confiar en
+él para directo.

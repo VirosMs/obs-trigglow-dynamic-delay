@@ -27,8 +27,10 @@ nativas que este plugin registra en OBS, y Stream Deck ya sabe disparar cualquie
 1. Con OBS abierto (no hace falta estar en directo para la primera prueba), pulsa el botón del
    Stream Deck.
 2. Deberías ver el estado del dock "Trigglow Dynamic Delay" cambiar entre `Inactive` y `Active`.
-3. Repite ya en directo para comprobar la reconexión breve — ver `docs/SPEC.md` §2 para entender por
-   qué ocurre.
+3. Repítelo ya en directo sin miedo: al pulsar, el dock pasa a `Filling` y muestra
+   "Llenando buffer... Ns restantes"; en cuanto se han almacenado los segundos pedidos, el estado
+   cambia solo a `Active` — un cambio de escena puramente interno, sin cortar ni reconectar el stream
+   en ningún momento. Ver `docs/SPEC.md` §3.3 para el detalle de esta transición.
 
 ## Notas y limitaciones de este flujo
 
@@ -39,4 +41,4 @@ nativas que este plugin registra en OBS, y Stream Deck ya sabe disparar cualquie
 - Si usas la misma combinación de teclas para otra cosa en tu sistema, puede haber conflictos.
   Prueba con una combinación poco habitual.
 - Un plugin de Stream Deck propio de Trigglow (con estado ON/OFF reflejado en el color del propio
-  botón) está en el roadmap de v0.3 — ver `docs/ROADMAP.md`. No es necesario para usar el MVP hoy.
+  botón) está en el roadmap de v0.3 — ver `docs/ROADMAP-es.md`. No es necesario para usar el MVP hoy.

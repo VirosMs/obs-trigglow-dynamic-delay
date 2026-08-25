@@ -7,11 +7,13 @@ Activa o desactiva un delay en tu stream directamente desde OBS: un botón, una 
 Stream Deck. Sin apps externas, sin paneles aparte — todo vive dentro de OBS.
 
 Qué incluye v0.1.0:
-• Enable / Disable / Toggle Delay con estado visible en un dock nativo
+• Enable / Disable / Toggle instantáneos, con estado visible en un dock nativo
+• Vídeo y audio retrasados juntos, siempre en sync
+• El stream **nunca** se corta ni se reconecta — ni al activar el delay, ni al desactivarlo, ni en
+  ningún momento. Cero interrupciones, siempre
 • Hotkeys nativas de OBS (compatibles con Stream Deck out-of-the-box)
-• Configuración de segundos + modo seguro
-• 100% transparente sobre cómo funciona: si cambias el delay en directo, OBS hace una reconexión
-  breve para aplicarlo — lo explicamos sin rodeos en la web y en la documentación
+• Calidad mínima configurable (480p/720p/1080p) y una estimación en vivo de cuánto delay cabe en tu
+  hardware
 
 Es un Early Access: estable para probarlo con tu equipo, con un roadmap claro de lo que viene
 después.

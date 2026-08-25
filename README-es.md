@@ -1,12 +1,17 @@
+*[English version](README.md)*
+
 # Trigglow Dynamic Delay for OBS
 
-Plugin nativo de OBS Studio para activar, desactivar y alternar un delay configurable del stream
-desde dentro de OBS — con un botón, una hotkey nativa o Stream Deck. Sin app externa, sin panel web
-como forma principal de control. **Estado: MVP / v0.1.0 — Early Access.**
+Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream juntos**, un número
+configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
+output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
+motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
+OBS. **Estado: MVP / v0.1.0 — Early Access.**
 
-Antes de nada, lee `docs/SPEC.md` (especificación técnica completa, incluida la limitación real de
-OBS que determina cómo funciona este plugin) y `docs/BUILD_VALIDATION.md` (qué se verificó realmente
-y qué no, en esta primera entrega).
+Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
+modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
+se probó y se descartó) y `docs/BUILD_VALIDATION.md` (qué se verificó realmente y qué no, en esta
+primera entrega).
 
 ## Requisitos de uso
 
@@ -27,8 +32,9 @@ sin modificar su sistema de build (`cmake/`, `CMakePresets.json`, `.github/`) sa
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows es la plataforma prioritaria para v0.1.0** (así lo pidió el producto); macOS/Linux están
-soportados por el propio sistema de build de la plantilla, pero no se han probado en esta entrega.
+**Windows es la plataforma prioritaria para v0.1.0** (así lo pidió el producto); macOS/Linux
+compilan en verde en CI con el propio sistema de build de la plantilla, pero no se han probado en
+directo en esta entrega.
 
 ## Compilar (Windows)
 
@@ -65,15 +71,24 @@ cmake --build --preset macos --config RelWithDebInfo
 ## Usar el plugin
 
 1. Abre OBS. Si el dock **"Trigglow Dynamic Delay"** no aparece, ve a `View → Docks` y actívalo.
-2. Configura los segundos de delay (por defecto 10s) y decide si quieres "Modo seguro" activado
-   (recomendado: sí).
+2. En el dock, elige tu **escena en directo** (obligatoria — la escena con tu contenido real) y,
+   opcionalmente, una **escena de carga** para mostrar mientras se llena el buffer en vez de
+   quedarte en la escena en directo sin delay. Configura el **Delay (segundos)** (1–60) y la
+   **calidad mínima** (480p/720p/1080p) por debajo de la cual el vídeo delayed nunca debe caer. El
+   dock muestra una estimación en vivo de si los segundos elegidos caben realmente en la RAM a esa
+   calidad *antes* de pulsar Enable — si no caben, avisa de que el tiempo real de buffer se
+   acortará en vez de bajar nunca la calidad, pero nunca bloquea tu elección.
 3. Ve a `Configuración → Atajos de teclado`, busca "Trigglow" y asigna una tecla a **Toggle Dynamic
    Delay** (y opcionalmente a Enable/Disable por separado).
-4. Ya puedes usar el botón del dock, la hotkey, o (ver más abajo) Stream Deck.
+4. Pulsa Enable (desde el botón del dock, la hotkey o Stream Deck). El dock muestra `Filling` con
+   una cuenta atrás en vivo mientras se llena el buffer hasta el delay pedido; en cuanto se llena,
+   pasa automáticamente a `Active` y el Programa empieza a mostrar el vídeo y el audio delayed, en
+   sincronía. **El output de streaming en sí no se toca en ningún momento**: los espectadores en
+   Twitch/YouTube/Kick/donde sea nunca ven un corte ni una reconexión, ya pulses el botón antes o
+   durante un directo.
 
-**Importante:** si ya estás en directo cuando activas/desactivas/cambias el delay, OBS reconectará
-brevemente el stream para aplicar el nuevo valor — es una limitación real de OBS, no un bug del
-plugin. Detalle completo en `docs/SPEC.md` §2.
+Pulsar Disable libera el buffer de RAM al instante y vuelve a la escena que estaba antes de
+activarlo.
 
 ## Mapear un botón de Stream Deck
 
@@ -86,6 +101,9 @@ No hace falta ningún plugin de Stream Deck propio en v0.1.0:
 3. Pon el foco en la ventana de OBS al pulsar el botón (Stream Deck envía la pulsación de teclado al
    sistema; OBS necesita tener el foco, o al menos estar corriendo y escuchando el atajo global,
    según cómo tengas configurado OBS/tu SO).
+4. Pulsarlo estando ya en directo es igual de seguro que pulsarlo antes de salir en directo: OBS
+   pasa por `Filling` (con la cuenta atrás en vivo del dock) hasta `Active` en cuanto el buffer se
+   llena — no hay reconexión ni corte visible en el stream en ningún momento de esa transición.
 
 Guía más detallada, con capturas de ejemplo y solución de problemas: `docs/STREAM_DECK.md`.
 
@@ -93,12 +111,28 @@ Guía más detallada, con capturas de ejemplo y solución de problemas: `docs/ST
 
 ```
 src/
-  plugin-main.cpp          → obs_module_load/unload, wiring de todos los componentes
-  delay-controller.{hpp,cpp} → máquina de estados (Inactive/Applying/Active/Error), lógica principal
-  obs-frontend-bridge.{hpp,cpp} → única capa que toca obs-frontend-api.h
-  settings-ui.{hpp,cpp}    → dock Qt mínimo
-  hotkeys.{hpp,cpp}        → registro de las 3 hotkeys nativas de OBS
-  logging.{hpp,cpp}        → wrapper de logging con prefijo de componente
+  plugin-main.cpp                 → obs_module_load/unload, wiring de todos los componentes
+  buffer-mode-controller.{hpp,cpp} → la máquina de estados (Inactive/Filling/Active/Error) que
+                                     orquesta el modo buffer — la única dueña del estado
+  obs-frontend-bridge.{hpp,cpp}    → única capa que toca obs-frontend-api.h + el cableado de
+                                     filtros/escenas
+  video-delay-filter.{hpp,cpp}     → el ring buffer en RAM/NV12 del vídeo delayed + su pequeño pool
+                                     fijo de objetos GPU
+  audio-delay-filter.{hpp,cpp}     → ring de delay de audio por fuente hoja, sincronizado con el
+                                     vídeo
+  hardware-info.{hpp,cpp}          → consulta de RAM total del sistema, usada para dimensionar el
+                                     presupuesto del buffer
+  scene-combo-box.{hpp,cpp}        → combo box del dock poblado a partir de la lista de escenas de
+                                     OBS
+  settings-ui.{hpp,cpp}            → el dock Qt (escena en directo/de carga, segundos, calidad,
+                                     estimación de ajuste, Enable/Disable, cuenta atrás de llenado)
+  hotkeys.{hpp,cpp}                → registro de las 3 hotkeys nativas de OBS, conectadas a
+                                     BufferModeController
+  logging.{hpp,cpp}                → wrapper de logging con prefijo de componente
+  delay-controller.{hpp,cpp}       → lógica heredada del modo reconexión del diseño original
+                                     abandonado (ver `docs/SPEC.md` §5) — presente en el repo pero
+                                     nunca instanciada por plugin-main.cpp; no se envía en ningún
+                                     build actual
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
   BUILD_VALIDATION.md       → qué se verificó de verdad en esta entrega, y qué no
