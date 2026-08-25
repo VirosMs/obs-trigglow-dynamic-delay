@@ -52,6 +52,50 @@ constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;            // Floor 
 constexpr uint64_t kMaxRecommendedBufferBytes = 6144ULL * 1024 * 1024; // Ceiling even on a monster GPU.
 constexpr double kVramFractionForBuffer = 0.15; // Don't hog more than ~15% of total VRAM -- OBS/the game need the rest.
 
+// Pure math shared by EnsureRingSized() (actually resizes the ring) and
+// VideoDelayFilter::EstimateBufferFit() (predicts the outcome without one --
+// see that method's header comment). Quality floor first, duration second
+// (flipped 2026-08-25 -- see kDefaultMinResolutionHeight's comment): never
+// go narrower than minResolutionHeight pixels tall; shrink the FRAME COUNT
+// instead if the full requested duration doesn't fit the budget at that
+// floor.
+struct BufferFit {
+	uint32_t bufferWidth;
+	uint32_t bufferHeight;
+	uint64_t actualFrames;
+	uint64_t desiredFrames;
+	double scale;
+};
+
+BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps, uint32_t delaySeconds,
+			   uint32_t minResolutionHeight, uint64_t budget)
+{
+	// +1 so a full N-second delay has a valid slot to read from, not just
+	// N seconds of frames with none old enough yet.
+	uint64_t desiredFrames = static_cast<uint64_t>(delaySeconds) * fps + 1;
+
+	double minScale = std::min(1.0, static_cast<double>(minResolutionHeight) / origHeight);
+
+	uint64_t fullResBytesPerFrame = static_cast<uint64_t>(origWidth) * origHeight * 4;
+	uint64_t fullResTotalBytes = desiredFrames * fullResBytesPerFrame;
+
+	double scale = 1.0;
+	if (fullResTotalBytes > budget && fullResBytesPerFrame > 0) {
+		double idealScale = std::sqrt(static_cast<double>(budget) /
+					      static_cast<double>(desiredFrames * fullResBytesPerFrame));
+		scale = std::max(minScale, std::min(1.0, idealScale));
+	}
+
+	uint32_t bufferWidth = std::max<uint32_t>(2, static_cast<uint32_t>(origWidth * scale));
+	uint32_t bufferHeight = std::max<uint32_t>(2, static_cast<uint32_t>(origHeight * scale));
+
+	uint64_t bufferBytesPerFrame = static_cast<uint64_t>(bufferWidth) * bufferHeight * 4;
+	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, budget / bufferBytesPerFrame);
+	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
+
+	return {bufferWidth, bufferHeight, actualFrames, desiredFrames, scale};
+}
+
 uint64_t GetBufferBudget()
 {
 	// Computed once, not per-frame: DXGI adapter enumeration is cheap but
@@ -106,6 +150,25 @@ const char *VideoDelayFilter::Id()
 uint64_t VideoDelayFilter::GetBufferBudgetBytes()
 {
 	return GetBufferBudget();
+}
+
+VideoDelayFilter::BufferFitEstimate VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds,
+									uint32_t minResolutionHeight,
+									uint32_t sourceWidth, uint32_t sourceHeight,
+									uint32_t fps)
+{
+	if (sourceWidth == 0 || sourceHeight == 0 || fps == 0)
+		return {};
+
+	BufferFit fit = ComputeBufferFit(sourceWidth, sourceHeight, fps, requestedDelaySeconds, minResolutionHeight,
+					 GetBufferBudget());
+
+	BufferFitEstimate estimate;
+	estimate.width = fit.bufferWidth;
+	estimate.height = fit.bufferHeight;
+	estimate.actualSeconds = static_cast<double>(fit.actualFrames) / fps;
+	estimate.fitsFullDuration = fit.actualFrames >= fit.desiredFrames;
+	return estimate;
 }
 
 void VideoDelayFilter::Register()
@@ -177,62 +240,33 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 		return;
 
 	uint32_t fps = std::max<uint32_t>(1, currentFps_);
-	// +1 so a full N-second delay has a valid slot to read from, not just
-	// N seconds of frames with none old enough yet.
-	uint64_t desiredFrames = static_cast<uint64_t>(configuredDelaySeconds_) * fps + 1;
-	uint64_t budget = GetBufferBudget();
+	BufferFit fit = ComputeBufferFit(origWidth, origHeight, fps, configuredDelaySeconds_,
+					 configuredMinResolutionHeight_, GetBufferBudget());
 
-	// Quality floor first, duration second (flipped 2026-08-25 -- see
-	// kDefaultMinResolutionHeight's comment): never capture shorter than
-	// configuredMinResolutionHeight_ pixels tall, no matter how long the
-	// requested delay is. Only shrink resolution ABOVE that floor to try to
-	// fit the full requested duration.
-	double minScale = std::min(1.0, static_cast<double>(configuredMinResolutionHeight_) / origHeight);
-
-	uint64_t fullResBytesPerFrame = static_cast<uint64_t>(origWidth) * origHeight * 4;
-	uint64_t fullResTotalBytes = desiredFrames * fullResBytesPerFrame;
-
-	double scale = 1.0;
-	if (fullResTotalBytes > budget && fullResBytesPerFrame > 0) {
-		double idealScale = std::sqrt(static_cast<double>(budget) /
-					      static_cast<double>(desiredFrames * fullResBytesPerFrame));
-		scale = std::max(minScale, std::min(1.0, idealScale));
-	}
-
-	uint32_t bufferWidth = std::max<uint32_t>(2, static_cast<uint32_t>(origWidth * scale));
-	uint32_t bufferHeight = std::max<uint32_t>(2, static_cast<uint32_t>(origHeight * scale));
-
-	// If the full requested duration still doesn't fit at the quality
-	// floor, shorten the ACTUAL buffered seconds instead of ever going
-	// below configuredMinResolutionHeight_ -- this is now the expected path
-	// for any sufficiently long delay, not a rare last resort.
-	uint64_t bufferBytesPerFrame = static_cast<uint64_t>(bufferWidth) * bufferHeight * 4;
-	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, budget / bufferBytesPerFrame);
-	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
-
-	bool resolutionChanged = !ring_.empty() && (ring_[0].width != bufferWidth || ring_[0].height != bufferHeight);
-	if (!resolutionChanged && ring_.size() == actualFrames)
+	bool resolutionChanged = !ring_.empty() &&
+				 (ring_[0].width != fit.bufferWidth || ring_[0].height != fit.bufferHeight);
+	if (!resolutionChanged && ring_.size() == fit.actualFrames)
 		return; // Already correctly sized.
 
-	if (scale < 1.0) {
+	if (fit.scale < 1.0) {
 		TRIGGLOW_LOG_INFO(kComponent,
 				  "buffering at %ux%u (%.0f%% of the source's %ux%u) to fit %us at %ufps within "
 				  "the %lluMB budget",
-				  bufferWidth, bufferHeight, scale * 100.0, origWidth, origHeight,
+				  fit.bufferWidth, fit.bufferHeight, fit.scale * 100.0, origWidth, origHeight,
 				  configuredDelaySeconds_, fps,
-				  static_cast<unsigned long long>(budget / (1024 * 1024)));
+				  static_cast<unsigned long long>(GetBufferBudget() / (1024 * 1024)));
 	}
-	if (actualFrames < desiredFrames) {
+	if (fit.actualFrames < fit.desiredFrames) {
 		TRIGGLOW_LOG_WARN(kComponent, "even at %ux%u this still doesn't fit the full %us; clamped to ~%.1fs",
-				  bufferWidth, bufferHeight, configuredDelaySeconds_,
-				  static_cast<double>(actualFrames) / fps);
+				  fit.bufferWidth, fit.bufferHeight, configuredDelaySeconds_,
+				  static_cast<double>(fit.actualFrames) / fps);
 	}
 
 	ReleaseRing();
-	ring_.resize(static_cast<size_t>(actualFrames));
+	ring_.resize(static_cast<size_t>(fit.actualFrames));
 	for (auto &slot : ring_) {
-		slot.width = bufferWidth;
-		slot.height = bufferHeight;
+		slot.width = fit.bufferWidth;
+		slot.height = fit.bufferHeight;
 	}
 }
 

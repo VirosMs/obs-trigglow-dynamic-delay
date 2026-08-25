@@ -72,6 +72,13 @@ private:
 	// `currentValue` without re-triggering signals.
 	void RefreshSceneCombo(SceneComboBox *combo, const std::string &currentValue, bool includeNoneOption);
 
+	// Live-updates fitLabel_ from bufferController_.EstimateBufferFit() for
+	// whatever's currently in secondsSpin_/minResolutionCombo_ -- called
+	// whenever either changes, so the user sees the tradeoff of their
+	// choice immediately, before pressing Enable. "Aconsejar segun el
+	// hardware, pero a su eleccion": never blocks anything, just warns.
+	void RefreshFitEstimate();
+
 	BufferModeController &bufferController_;
 
 	QLabel *stateLabel_ = nullptr;
@@ -82,6 +89,9 @@ private:
 	// "Calidad minima" -- floor on the delayed video's resolution; see
 	// BufferModeStatus::minResolutionHeight / VideoDelayFilter::EnsureRingSized.
 	QComboBox *minResolutionCombo_ = nullptr;
+	// Shows what secondsSpin_/minResolutionCombo_'s current combo would
+	// actually achieve -- see RefreshFitEstimate().
+	QLabel *fitLabel_ = nullptr;
 	QPushButton *enableButton_ = nullptr;
 	QPushButton *disableButton_ = nullptr;
 	QTimer *fillTimer_ = nullptr;

@@ -23,6 +23,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string>
 #include <vector>
 
+#include "video-delay-filter.hpp" // VideoDelayFilter::BufferFitEstimate, for EstimateBufferFit()
+
 extern "C" {
 #include <obs-frontend-api.h>  // needed here too: obs_frontend_event is the exact callback param type
 #include <graphics/graphics.h> // gs_texrender_t, for AcquireLiveSceneRendering's private render target
@@ -105,6 +107,17 @@ public:
 	// never needs to include video-delay-filter.hpp itself. See that
 	// method's comment.
 	uint64_t GetBufferBudgetBytes() const;
+
+	// Predicts what EnsureRingSized() would actually do for `liveSceneName`
+	// at its real current width/height/fps -- see
+	// VideoDelayFilter::EstimateBufferFit's comment. Works even before
+	// EnsureBufferWrapperScene has ever run (reads the live scene directly,
+	// not the filter), so the dock can warn the user as they adjust the
+	// seconds/quality controls, before they've pressed Enable at all.
+	// Returns a zeroed estimate if liveSceneName doesn't resolve.
+	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(const std::string &liveSceneName,
+							      uint32_t requestedDelaySeconds,
+							      uint32_t minResolutionHeight) const;
 
 	// --- Scene switching (optional "reconnect placeholder" scene, see
 	// docs/product roadmap issue #173) ---

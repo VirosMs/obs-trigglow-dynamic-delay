@@ -108,6 +108,16 @@ public:
 	// just lets the dock show the user what their choices are working with.
 	uint64_t GetBufferBudgetBytes() const { return bridge_.GetBufferBudgetBytes(); }
 
+	// Predicts what the current live scene at (requestedDelaySeconds,
+	// minResolutionHeight) would actually achieve -- see
+	// ObsFrontendBridge::EstimateBufferFit. For live-updating the dock as
+	// the user adjusts either control, before Enable() has even run once.
+	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds,
+							      uint32_t minResolutionHeight) const
+	{
+		return bridge_.EstimateBufferFit(status_.liveSceneName, requestedDelaySeconds, minResolutionHeight);
+	}
+
 	// Called once by the dock's fill timer after status_.delaySeconds has
 	// elapsed since Enable(). No-op if we're no longer Filling (e.g. the
 	// user pressed Disable before the timer fired).

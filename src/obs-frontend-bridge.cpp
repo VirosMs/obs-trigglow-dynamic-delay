@@ -653,6 +653,29 @@ uint64_t ObsFrontendBridge::GetBufferBudgetBytes() const
 	return VideoDelayFilter::GetBufferBudgetBytes();
 }
 
+VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const std::string &liveSceneName,
+									 uint32_t requestedDelaySeconds,
+									 uint32_t minResolutionHeight) const
+{
+	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
+	if (!liveSource)
+		return {};
+
+	// base_width/height, not the filtered width/height -- matches what
+	// VideoDelayFilter::Render() itself queries, so this predicts the exact
+	// same thing EnsureRingSized() will actually compute once Enable() runs.
+	uint32_t width = obs_source_get_base_width(liveSource);
+	uint32_t height = obs_source_get_base_height(liveSource);
+	obs_source_release(liveSource);
+
+	obs_video_info ovi = {};
+	uint32_t fps = 30;
+	if (obs_get_video_info(&ovi) && ovi.fps_den > 0)
+		fps = ovi.fps_num / ovi.fps_den;
+
+	return VideoDelayFilter::EstimateBufferFit(requestedDelaySeconds, minResolutionHeight, width, height, fps);
+}
+
 void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, void *privateData)
 {
 	auto *self = static_cast<ObsFrontendBridge *>(privateData);

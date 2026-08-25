@@ -110,6 +110,14 @@ void TrigglowDelayDock::BuildUi()
 	qualityRow->addWidget(minResolutionCombo_);
 	root->addLayout(qualityRow);
 
+	// Live-updated by RefreshFitEstimate() whenever secondsSpin_/
+	// minResolutionCombo_ change -- see that method and
+	// BufferModeController::EstimateBufferFit's comment.
+	fitLabel_ = new QLabel(this);
+	fitLabel_->setWordWrap(true);
+	fitLabel_->setStyleSheet("font-size: 10px;");
+	root->addWidget(fitLabel_);
+
 	// Informational only, computed once from real hardware where possible
 	// (VideoDelayFilter::GetBufferBudgetBytes, see src/gpu-info.hpp) --
 	// "aconsejar segun el hardware, pero a su eleccion": this never
@@ -141,18 +149,22 @@ void TrigglowDelayDock::BuildUi()
 	connect(liveSceneCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
 		bufferController_.SetLiveScene(index < 0 ? std::string{}
 							 : liveSceneCombo_->currentText().toStdString());
+		RefreshFitEstimate(); // Different scene = different resolution/fps to estimate against.
 	});
 	connect(loadingSceneCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
 		bufferController_.SetLoadingScene(index <= 0 ? std::string{}
 							     : loadingSceneCombo_->currentText().toStdString());
 	});
-	connect(secondsSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
-		[this](int value) { bufferController_.SetDelaySeconds(static_cast<uint32_t>(value)); });
+	connect(secondsSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+		bufferController_.SetDelaySeconds(static_cast<uint32_t>(value));
+		RefreshFitEstimate();
+	});
 	connect(minResolutionCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
 		if (index < 0)
 			return;
 		bufferController_.SetMinResolutionHeight(
 			static_cast<uint32_t>(minResolutionCombo_->itemData(index).toInt()));
+		RefreshFitEstimate();
 	});
 	connect(enableButton_, &QPushButton::clicked, this, [this] {
 		TRIGGLOW_LOG_INFO(kComponent, "Enable pressed in dock");
@@ -166,6 +178,41 @@ void TrigglowDelayDock::BuildUi()
 	fillTimer_ = new QTimer(this);
 	fillTimer_->setSingleShot(true);
 	connect(fillTimer_, &QTimer::timeout, this, [this] { bufferController_.OnFillTimerElapsed(); });
+
+	RefreshFitEstimate();
+}
+
+void TrigglowDelayDock::RefreshFitEstimate()
+{
+	auto estimate =
+		bufferController_.EstimateBufferFit(static_cast<uint32_t>(secondsSpin_->value()),
+						    static_cast<uint32_t>(minResolutionCombo_->currentData().toInt()));
+
+	if (estimate.width == 0 || estimate.height == 0) {
+		// No live scene chosen yet, or it doesn't resolve -- nothing
+		// concrete to estimate against.
+		fitLabel_->setText(QStringLiteral("Elige una escena en directo para ver una estimacion."));
+		fitLabel_->setStyleSheet("color: palette(windowText); font-size: 10px;");
+		return;
+	}
+
+	if (estimate.fitsFullDuration) {
+		fitLabel_->setText(QStringLiteral("✓ Con estos ajustes caben los %1s pedidos enteros, a %2x%3.")
+					   .arg(secondsSpin_->value())
+					   .arg(estimate.width)
+					   .arg(estimate.height));
+		fitLabel_->setStyleSheet("color: #2e9e44; font-size: 10px;");
+	} else {
+		fitLabel_->setText(
+			QStringLiteral("⚠ Con estos ajustes solo se guardaran ~%1s reales de los %2s pedidos "
+				       "(a %3x%4) -- no es un error, pero el delay real sera mas corto de lo "
+				       "pedido. Baja los segundos o la calidad minima si quieres los %2s enteros.")
+				.arg(estimate.actualSeconds, 0, 'f', 1)
+				.arg(secondsSpin_->value())
+				.arg(estimate.width)
+				.arg(estimate.height));
+		fitLabel_->setStyleSheet("color: #d8a400; font-size: 10px;");
+	}
 }
 
 void TrigglowDelayDock::OnStatusChanged(const BufferModeStatus &status)
@@ -232,6 +279,13 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 				   ? 0
 				   : loadingSceneCombo_->findText(QString::fromStdString(status.loadingSceneName));
 	loadingSceneCombo_->setCurrentIndex(loadingIndex >= 0 ? loadingIndex : 0);
+
+	// The signal blockers above mean secondsSpin_/minResolutionCombo_/
+	// liveSceneCombo_ may have just changed to their real values without
+	// RefreshFitEstimate() having run for them yet -- refresh explicitly so
+	// the estimate is never stale.
+	if (fitLabel_)
+		RefreshFitEstimate();
 }
 
 void TrigglowDelayDock::ArmFillTimer(uint32_t seconds)

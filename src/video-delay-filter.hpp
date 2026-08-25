@@ -80,6 +80,25 @@ public:
 	// never restricts delaySeconds/minResolutionHeight, it's informational.
 	static uint64_t GetBufferBudgetBytes();
 
+	// What EnsureRingSized() would actually do for a given
+	// (requestedDelaySeconds, minResolutionHeight) at the live scene's real
+	// (sourceWidth, sourceHeight, fps) -- same math, exposed as a pure
+	// query so the dock can warn the user BEFORE they press Enable, not
+	// just after. Never restricts their choice: this is purely informational,
+	// "aconsejar segun el hardware, pero a su eleccion" per the 2026-08-25
+	// live feedback that asked for exactly this.
+	struct BufferFitEstimate {
+		uint32_t width = 0;
+		uint32_t height = 0;
+		double actualSeconds = 0.0;
+		// False if actualSeconds ends up shorter than requestedDelaySeconds
+		// -- the quality floor didn't leave room for the full duration at
+		// the current VRAM budget.
+		bool fitsFullDuration = true;
+	};
+	static BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight,
+						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t fps);
+
 private:
 	// One buffered historical frame.
 	struct Slot {
