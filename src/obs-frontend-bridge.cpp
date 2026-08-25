@@ -442,6 +442,28 @@ bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneNa
 	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive acquired for \"%s\" (source=%p, filters.num=%zu)",
 			  liveSceneName.c_str(), static_cast<void *>(liveSceneRenderSource_),
 			  obs_source_filter_count(liveSceneRenderSource_));
+
+	// --- TEMPORARY SPIKE (2026-08-25) — audio investigation, not a feature ---
+	// Answers one question before building the real audio pipeline: does a
+	// leaf audio source (Mic) that's nested only inside the WRAPPER scene
+	// (not on Program) keep calling obs_source_output_audio() -- i.e. does
+	// obs_source_add_audio_capture_callback() fire at all -- during Filling,
+	// or does it need its own keep-alive the same way video did? Logs the
+	// first callback firing only, nothing else; no ring buffer, no
+	// reinjection. See the plan file for why this has to be verified before
+	// the real per-leaf-source capture + remix + inject pipeline is worth
+	// building at all.
+	audioProbeSource_ = obs_get_source_by_name("Mic");
+	if (audioProbeSource_) {
+		loggedAudioProbeFired_ = false;
+		obs_source_add_audio_capture_callback(audioProbeSource_, &ObsFrontendBridge::AudioProbeCallback, this);
+		TRIGGLOW_LOG_INFO(kComponent, "audio spike: capture callback attached to \"Mic\" (%p)",
+				  static_cast<void *>(audioProbeSource_));
+	} else {
+		TRIGGLOW_LOG_WARN(kComponent, "audio spike: no source named \"Mic\" found, skipping probe");
+	}
+	// --- end spike ---
+
 	return true;
 }
 
@@ -455,6 +477,14 @@ bool ObsFrontendBridge::ReleaseLiveSceneRendering(const std::string & /*liveScen
 	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive released");
 	obs_source_release(liveSceneRenderSource_);
 	liveSceneRenderSource_ = nullptr;
+
+	// --- TEMPORARY SPIKE cleanup (see AcquireLiveSceneRendering) ---
+	if (audioProbeSource_) {
+		obs_source_remove_audio_capture_callback(audioProbeSource_, &ObsFrontendBridge::AudioProbeCallback,
+							 this);
+		obs_source_release(audioProbeSource_);
+		audioProbeSource_ = nullptr;
+	}
 	return true;
 }
 
@@ -492,6 +522,19 @@ void ObsFrontendBridge::RenderLiveSceneCallback(void *param, uint32_t /*cx*/, ui
 		gs_texrender_end(self->liveSceneRenderTarget_);
 	}
 }
+
+// --- TEMPORARY SPIKE (see AcquireLiveSceneRendering) ---
+void ObsFrontendBridge::AudioProbeCallback(void *param, obs_source_t * /*source*/, const struct audio_data *audio_data,
+					   bool muted)
+{
+	auto *self = static_cast<ObsFrontendBridge *>(param);
+	if (!self->loggedAudioProbeFired_) {
+		TRIGGLOW_LOG_INFO(kComponent, "audio spike: capture callback FIRING (frames=%u, muted=%s)",
+				  audio_data ? audio_data->frames : 0, muted ? "yes" : "no");
+		self->loggedAudioProbeFired_ = true;
+	}
+}
+// --- end spike ---
 
 void ObsFrontendBridge::AddDock(const char *id, const char *title, void *qWidget) const
 {

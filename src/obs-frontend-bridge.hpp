@@ -231,6 +231,17 @@ private:
 	// reaching the filter (see VideoDelayFilter::Render()'s own one-shot
 	// logs for that second half of the picture).
 	bool loggedFirstRenderCallback_ = false;
+
+	// --- TEMPORARY SPIKE (2026-08-25, see AcquireLiveSceneRendering) ---
+	// Answers one question before building the real per-leaf-source audio
+	// capture pipeline: does obs_source_add_audio_capture_callback() on a
+	// leaf source (Mic) nested only in the wrapper scene (not on Program)
+	// fire at all during Filling, without any extra keep-alive? Remove this
+	// whole block once that pipeline replaces it.
+	static void AudioProbeCallback(void *param, obs_source_t *source, const struct audio_data *audio_data,
+				       bool muted);
+	obs_source_t *audioProbeSource_ = nullptr;
+	bool loggedAudioProbeFired_ = false;
 };
 
 } // namespace trigglow
