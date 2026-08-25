@@ -199,11 +199,16 @@ obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneNa
 	// obs_get_source_by_name()) - the only owned reference in this function
 	// is wrapperSource itself.
 	obs_source_t *wrapperSource = obs_get_source_by_name(kBufferWrapperSceneName);
-	if (!wrapperSource)
+	if (!wrapperSource) {
+		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: obs_get_source_by_name(\"%s\") found nothing",
+				  kBufferWrapperSceneName);
 		return nullptr;
+	}
 
 	obs_scene_t *wrapperScene = obs_scene_from_source(wrapperSource);
 	if (!wrapperScene) {
+		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: \"%s\" exists but isn't a scene (%p)",
+				  kBufferWrapperSceneName, static_cast<void *>(wrapperSource));
 		obs_source_release(wrapperSource);
 		return nullptr;
 	}
@@ -219,8 +224,20 @@ obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneNa
 		},
 		&ctx);
 
-	obs_source_t *filter = ctx.itemSource ? obs_source_get_filter_by_name(ctx.itemSource, kBufferFilterInstanceName)
-					      : nullptr;
+	if (!ctx.itemSource) {
+		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: wrapper scene %p has no scene-items",
+				  static_cast<void *>(wrapperSource));
+		obs_source_release(wrapperSource);
+		return nullptr;
+	}
+
+	obs_source_t *filter = obs_source_get_filter_by_name(ctx.itemSource, kBufferFilterInstanceName);
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "FindBufferFilter: wrapper's item source %p (\"%s\") has no filter named \"%s\"",
+				  static_cast<void *>(ctx.itemSource), obs_source_get_name(ctx.itemSource),
+				  kBufferFilterInstanceName);
+	}
 
 	obs_source_release(wrapperSource);
 	(void)liveSceneName; // Reserved: current design assumes a single live scene at a time (see header comment).
@@ -243,6 +260,7 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 
 	obs_source_t *wrapperSource = obs_get_source_by_name(kBufferWrapperSceneName);
 	obs_scene_t *wrapperScene = wrapperSource ? obs_scene_from_source(wrapperSource) : nullptr;
+	bool wrapperWasFound = wrapperSource != nullptr;
 	if (!wrapperSource) {
 		wrapperScene = obs_scene_create(kBufferWrapperSceneName);
 		wrapperSource = wrapperScene ? obs_scene_get_source(wrapperScene) : nullptr;
@@ -252,6 +270,9 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 		obs_source_release(liveSource);
 		return false;
 	}
+	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: wrapper scene %s, source=%p liveSource=%p",
+			  wrapperWasFound ? "found existing" : "created new", static_cast<void *>(wrapperSource),
+			  static_cast<void *>(liveSource));
 
 	// Reuse an existing scene-item if the wrapper already has one (e.g. from
 	// a previous session with a different live scene selected), otherwise
@@ -284,6 +305,9 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 		obs_source_release(wrapperSource);
 		return false;
 	}
+	TRIGGLOW_LOG_INFO(kComponent,
+			  "buffer mode: itemSource=%p (name=\"%s\", filters.num check via get_filter_by_name next)",
+			  static_cast<void *>(itemSource), obs_source_get_name(itemSource));
 
 	bool ok = true;
 	obs_source_t *existingFilter = obs_source_get_filter_by_name(itemSource, kBufferFilterInstanceName);
@@ -315,17 +339,25 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const
 {
 	obs_source_t *filter = FindBufferFilter(liveSceneName);
-	if (!filter)
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterEnabled(%s): FindBufferFilter returned null, no-op",
+				  enabled ? "true" : "false");
 		return false;
+	}
 	obs_source_set_enabled(filter, enabled);
+	TRIGGLOW_LOG_INFO(kComponent, "SetBufferFilterEnabled(%s) applied to filter %p", enabled ? "true" : "false",
+			  static_cast<void *>(filter));
 	return true;
 }
 
 bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const
 {
 	obs_source_t *filter = FindBufferFilter(liveSceneName);
-	if (!filter)
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterDelaySeconds(%us): FindBufferFilter returned null, no-op",
+				  seconds);
 		return false;
+	}
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_int(settings, "delay_seconds", seconds);
 	obs_source_update(filter, settings);
@@ -372,7 +404,9 @@ bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneNa
 	obs_source_inc_showing(liveSceneRenderSource_);
 	obs_add_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
 	loggedFirstRenderCallback_ = false;
-	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive acquired for \"%s\"", liveSceneName.c_str());
+	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive acquired for \"%s\" (source=%p, filters.num=%zu)",
+			  liveSceneName.c_str(), static_cast<void *>(liveSceneRenderSource_),
+			  obs_source_filter_count(liveSceneRenderSource_));
 	return true;
 }
 
