@@ -38,29 +38,34 @@ extern "C" {
 // feedback asked whether VRAM was really required and a real "Device
 // Remove/Reset" game crash raised the cost of holding dozens of large GPU
 // textures alive at once): the ring buffer itself lives in ordinary system
-// RAM (Slot::pixels below, one plain byte vector per buffered frame) --
-// there are only ever THREE actual GPU objects total, regardless of how many
-// seconds are buffered:
-//   1. captureTexrender_ -- one reusable render target the live frame is
-//      rendered into each tick (same one every frame, just reset/reused).
-//   2. stagingSlots_[kStagingSlotCount] -- a small (2) rotating pool of
-//      gs_stagesurf_t used for ASYNC GPU->CPU readback (gs_stage_texture +
-//      a deferred gs_stagesurface_map one frame later, so the CPU never
-//      stalls waiting on the copy the way mapping the SAME frame's staging
-//      surface immediately would).
-//   3. playbackTexture_ -- one reusable upload texture: whichever RAM slot
-//      is `delaySeconds` old gets pushed into it via gs_texture_set_image
-//      right before drawing.
-// Memory is still the hard constraint, not CPU: uncompressed RGBA at
-// 1920x1080@60fps is ~475MB PER SECOND of buffered history. EnsureRingSized()
-// picks a buffer budget from the machine's total system RAM
-// (src/hardware-info.hpp) and never captures below a configurable minimum
-// resolution (quality floor, user-chosen) -- if the full requested delay
-// doesn't fit the budget at that floor, the ACTUAL buffered duration
-// shortens instead (flipped 2026-08-25 after live feedback that always
-// honoring the full duration made long delays look terrible). This part of
-// the math didn't change in the RAM migration, only what resource it's
-// measured against.
+// RAM (Slot::pixels below, one plain byte vector per buffered frame), stored
+// as NV12 rather than RGBA since 2026-08-26 (see Slot's comment -- ~2.7x
+// less RAM for the same buffered duration/quality). There are only ever a
+// small FIXED number of actual GPU objects, regardless of how many seconds
+// are buffered:
+//   1. captureTexrender_ -- one reusable RGBA render target the live frame
+//      is rendered into each tick (same one every frame, just reset/reused).
+//   2. nv12Effect_ + yTexrender_/uvTexrender_ -- a tiny custom shader
+//      (see kNv12EffectSource in the .cpp) that converts captureTexrender_'s
+//      RGBA into Y/UV planes via two full-screen-quad passes -- this is the
+//      GPU-side half of the NV12 conversion.
+//   3. stagingSlots_[kStagingSlotCount] -- a small (2) rotating pool of
+//      Y+UV gs_stagesurf_t pairs used for ASYNC GPU->CPU readback
+//      (gs_stage_texture + a deferred gs_stagesurface_map one frame later,
+//      so the CPU never stalls waiting on the copy the way mapping the SAME
+//      frame's staging surface immediately would).
+//   4. yPlaybackTexture_/uvPlaybackTexture_ -- reusable upload textures:
+//      whichever RAM slot is `delaySeconds` old gets pushed into these via
+//      gs_texture_set_image, then nv12Effect_'s "DrawNV12" technique
+//      samples both and writes RGBA straight to the output.
+// Memory is still the hard constraint, not CPU: even at NV12's 1.5
+// bytes/pixel, 1920x1080@60fps is still ~178MB PER SECOND of buffered
+// history. EnsureRingSized() picks a buffer budget from the machine's total
+// system RAM (src/hardware-info.hpp) and never captures below a
+// configurable minimum resolution (quality floor, user-chosen) -- if the
+// full requested delay doesn't fit the budget at that floor, the ACTUAL
+// buffered duration shortens instead (flipped 2026-08-25 after live feedback
+// that always honoring the full duration made long delays look terrible).
 //
 // FilterAudio()/EnsureAudioRingSized() below are a COMPLETE, implemented
 // audio ring buffer (same delay-window logic as video, in sample-space) --
@@ -122,17 +127,28 @@ private:
 	// One buffered historical frame, plain RAM -- NOT a GPU object. See this
 	// file's header comment: the ring itself lives here, in system memory;
 	// the only GPU objects involved (captureTexrender_, stagingSlots_,
-	// playbackTexture_ below) are a small FIXED set shared by every slot,
-	// not one-per-slot.
+	// yPlaybackTexture_/uvPlaybackTexture_ below) are a small FIXED set
+	// shared by every slot, not one-per-slot. Stored as NV12 (Y plane, then
+	// interleaved U/V --
+	// yBytes = bufferWidth_*bufferHeight_, uvBytes = yBytes/2), not RGBA:
+	// 1.5 bytes/pixel instead of 4 (2026-08-26, after live feedback that
+	// RGBA storage alone was eating ~98% of system RAM for a 30s@1080p
+	// buffer) -- ~2.7x less RAM for the same buffered duration/quality, at
+	// the cost of two small extra GPU conversion passes per frame (see
+	// nv12Effect_ below). Chroma subsampling requires even
+	// bufferWidth_/bufferHeight_ -- EnsureRingSized() enforces that.
 	struct Slot {
-		std::vector<uint8_t> pixels; // bufferWidth_*bufferHeight_*4 bytes, tightly packed RGBA.
-		bool valid = false;          // false until first successfully captured.
+		std::vector<uint8_t> pixels;
+		bool valid = false; // false until first successfully captured.
 	};
 
-	// One in-flight (or just-finished) async GPU->CPU readback. See
-	// kStagingSlotCount's comment for why there are exactly two of these.
+	// One in-flight (or just-finished) async GPU->CPU readback -- BOTH
+	// planes of one frame, staged and harvested together in lockstep since
+	// they always come from the same source frame. See kStagingSlotCount's
+	// comment for why there are exactly two of these.
 	struct StagingSlot {
-		gs_stagesurf_t *surface = nullptr;
+		gs_stagesurf_t *ySurface = nullptr;  // GS_R8, full bufferWidth_ x bufferHeight_.
+		gs_stagesurf_t *uvSurface = nullptr; // GS_R8G8, half resolution (chroma subsampled).
 		bool pending = false;       // true from gs_stage_texture() until the deferred harvest reads it back.
 		size_t targetRingIndex = 0; // Which ring_ slot the pending readback belongs to.
 	};
@@ -155,8 +171,9 @@ private:
 	// (via ReleaseGpuObjects()), since gs_stagesurf_t/gs_texture_t can't be
 	// resized in place the way gs_texrender_t can.
 	void EnsureRingSized(uint32_t width, uint32_t height);
-	void ReleaseRing();       // Frees the CPU-side ring_ (Slot::pixels) only.
-	void ReleaseGpuObjects(); // Frees captureTexrender_/stagingSlots_/playbackTexture_.
+	void ReleaseRing();            // Frees the CPU-side ring_ (Slot::pixels) only.
+	void ReleaseGpuObjects();      // Frees the ENTIRE GPU pool, effect included -- destructor only.
+	void ReleaseSizedGpuObjects(); // Frees just the resolution-sized objects -- also used on resize.
 
 	// Resizes audioRing_ for the given channel count/sample rate and the
 	// current configuredDelaySeconds_. Plain CPU memory (no graphics
@@ -196,10 +213,26 @@ private:
 
 	// The fixed, small GPU object pool -- see this file's header comment.
 	// Independent of ring_.size(): a 5s buffer and a 60s buffer both use
-	// exactly these same three objects (well, four counting both staging
-	// slots), just with a bigger RAM ring_ behind them.
-	gs_texrender_t *captureTexrender_ = nullptr;
-	gs_texture_t *playbackTexture_ = nullptr;
+	// exactly this same set of objects, just with a bigger RAM ring_ behind
+	// them.
+	gs_texrender_t *captureTexrender_ = nullptr; // RGBA: obs_source_video_render() renders in here first.
+	// nv12Effect_ converts captureTexrender_'s RGBA into Y (yTexrender_,
+	// GS_R8) and UV (uvTexrender_, GS_R8G8, half resolution) via two small
+	// full-screen-quad shader passes -- see video-delay-filter.cpp's
+	// kNv12EffectSource for the actual conversion math. Public libobs
+	// exposes no compute/dispatch API at all (checked 2026-08-25) and no
+	// built-in RGBA->NV12 conversion a plugin can call, but ordinary pixel
+	// shaders via a custom gs_effect_t are exactly how OBS's own filters
+	// (color correction, chroma key, etc.) do custom per-pixel work, so
+	// that's the mechanism used here too.
+	gs_effect_t *nv12Effect_ = nullptr;
+	gs_texrender_t *yTexrender_ = nullptr;
+	gs_texrender_t *uvTexrender_ = nullptr;
+	// Playback: nv12Effect_'s "DrawNV12" technique samples both of these
+	// (uploaded fresh from the delayed ring slot's RAM each frame) and
+	// writes out RGBA directly -- no separate RGBA reconstruction buffer.
+	gs_texture_t *yPlaybackTexture_ = nullptr;
+	gs_texture_t *uvPlaybackTexture_ = nullptr;
 	// 2, not more: double-buffering is enough headroom for a GPU->CPU copy
 	// to finish one frame later without the CPU ever having to stall on
 	// gs_stagesurface_map() waiting for it -- see Render()'s capture step.

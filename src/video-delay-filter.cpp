@@ -32,34 +32,34 @@ constexpr const char *kFilterId = "trigglow_video_delay_filter";
 constexpr const char *kSettingDelaySeconds = "delay_seconds";
 constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
 
-// RAM budget for the ring buffer. Uncompressed RGBA at 1920x1080@60fps is
-// ~475MB PER SECOND (1920*1080*4 bytes * 60) — a real 30-60s buffer at that
-// resolution would need ~14-28GB, not realistic on top of whatever else the
-// game/OBS/Windows itself is doing. No proper compressed encode/decode
-// buffer yet (a much bigger rewrite — libobs has no public decoder API for
-// that, only obs-encoder.h for producing an OUTPUT stream tied to the main
-// video mix, not something a plugin can feed arbitrary frames to on demand;
-// would need vendoring FFmpeg for both encode AND decode — investigated and
-// explicitly deferred, 2026-08-25, as multi-session work).
+// RAM budget for the ring buffer. Even stored as NV12 (1.5 bytes/pixel --
+// see Slot's comment in video-delay-filter.hpp for why it's NV12 and not
+// RGBA) 1920x1080@60fps is still ~178MB PER SECOND (1920*1080*1.5 bytes *
+// 60) — a real 30-60s buffer at that resolution is still multiple GB, not
+// something to allocate blindly on top of whatever else the game/OBS/
+// Windows itself is doing. No proper compressed encode/decode buffer (a
+// much bigger rewrite — libobs has no public decoder API for that, only
+// obs-encoder.h for producing an OUTPUT stream tied to the main video mix,
+// not something a plugin can feed arbitrary frames to on demand; would need
+// vendoring FFmpeg for both encode AND decode — investigated and explicitly
+// deferred, 2026-08-25, as multi-session work).
 //
 // GetBufferBudget() below picks the actual budget from the machine's total
 // system RAM (src/hardware-info.hpp) where that's available, falling back
 // to kFallbackBufferBytes when it isn't (non-Windows for now, or the query
 // failed).
 //
-// The fraction was 10% in the first RAM-migration pass, which turned out
-// far too conservative in practice (2026-08-25 live feedback: on a 32GB
-// machine it only budgeted ~3.1GB, enough for just ~6.7s of the 30s@1080p
-// the user actually asked for -- nowhere near "doy la libertad" from the
-// original ask that this filter should honor the user's own delay/quality
-// choice as closely as possible, warning rather than silently shrinking
-// it). Raised to 50%: a real 30s@1080p60 buffer needs ~14.2GB
-// (1920*1080*4 bytes * 60fps * 30s) -- 50% of a 32GB machine (~15.9GB)
-// covers that, while still hard-capped by kMaxRecommendedBufferBytes so a
-// 128GB+ workstation doesn't get an unreasonably huge recommendation. Still
-// just a ceiling on the RING, not a standing allocation -- actual RAM use
-// tracks whatever delay/quality the user has picked, so this only matters
-// when someone deliberately asks for a large, high-quality buffer.
+// The fraction was 10% in the first RAM-migration pass (RGBA storage back
+// then), which turned out far too conservative in practice (2026-08-25 live
+// feedback: on a 32GB machine it only budgeted ~3.1GB, enough for just
+// ~6.7s of the 30s@1080p the user actually asked for). Raised to 50% that
+// same day, then NV12 landed the next day (2026-08-26) after 50%-of-RGBA
+// turned out to mean a single 30s@1080p60 buffer alone used ~98% of system
+// RAM with nothing even streaming yet -- genuinely risky, not just
+// "aggressive". NV12's ~2.7x smaller footprint (a 30s@1080p60 buffer is
+// ~5.3GB now, not ~14.2GB) does the real work here; 50% is kept since it
+// now leaves comfortable headroom for that same request instead of nearly
+// exhausting it.
 constexpr uint64_t kFallbackBufferBytes = 2048ULL * 1024 * 1024;
 constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;             // Floor even on a detected low-RAM machine.
 constexpr uint64_t kMaxRecommendedBufferBytes = 24576ULL * 1024 * 1024; // Ceiling even on a very high-RAM machine.
@@ -89,7 +89,10 @@ BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps
 
 	double minScale = std::min(1.0, static_cast<double>(minResolutionHeight) / origHeight);
 
-	uint64_t fullResBytesPerFrame = static_cast<uint64_t>(origWidth) * origHeight * 4;
+	// NV12 (Y + subsampled UV): 1.5 bytes/pixel, not 4 -- see Slot's comment
+	// in video-delay-filter.hpp for why the ring stores NV12 rather than
+	// RGBA.
+	uint64_t fullResBytesPerFrame = (static_cast<uint64_t>(origWidth) * origHeight * 3) / 2;
 	uint64_t fullResTotalBytes = desiredFrames * fullResBytesPerFrame;
 
 	double scale = 1.0;
@@ -101,8 +104,12 @@ BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps
 
 	uint32_t bufferWidth = std::max<uint32_t>(2, static_cast<uint32_t>(origWidth * scale));
 	uint32_t bufferHeight = std::max<uint32_t>(2, static_cast<uint32_t>(origHeight * scale));
+	// NV12 chroma subsampling needs even dimensions -- both inputs to this
+	// mask are already >=2, so the result stays >=2 too.
+	bufferWidth &= ~1u;
+	bufferHeight &= ~1u;
 
-	uint64_t bufferBytesPerFrame = static_cast<uint64_t>(bufferWidth) * bufferHeight * 4;
+	uint64_t bufferBytesPerFrame = (static_cast<uint64_t>(bufferWidth) * bufferHeight * 3) / 2;
 	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, budget / bufferBytesPerFrame);
 	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
 
@@ -154,6 +161,109 @@ constexpr int kUiMaxDelaySeconds = 60;
 // no VRAM concern like video), so this is generously 1 full second per
 // channel rather than trying to shave it down.
 constexpr uint32_t kAudioRingMarginSeconds = 1;
+
+// GPU-side RGBA<->NV12 conversion, compiled once via gs_effect_create() (no
+// file on disk needed -- the whole plugin is one DLL). Ordinary full-screen-
+// quad pixel shaders, the same mechanism any custom OBS filter (color
+// correction, chroma key, etc.) uses for per-pixel work; libobs has no
+// compute/dispatch API at all (confirmed 2026-08-25 grepping graphics.h) so
+// this is the only public way to do the conversion on the GPU.
+//   DrawY   -- samples the RGBA capture (`image`) at full resolution, writes
+//              luma to a GS_R8 target.
+//   DrawUV  -- samples the SAME RGBA capture but into a HALF-resolution
+//              target; `texel` (1/full-res width, 1/full-res height) lets it
+//              box-average each 2x2 source block instead of point-sampling
+//              one corner, avoiding the checkerboard-y chroma artifacts a
+//              naive single-tap downsample would cause. Writes to GS_R8G8.
+//   DrawNV12 -- playback: samples `image` (Y, GS_R8) and `image_uv` (UV,
+//               GS_R8G8, still at half resolution -- bilinear sampling on
+//               `def_sampler` upsamples it smoothly) and reconstructs RGBA.
+// Coefficients are standard BT.601 studio-range (16-235 luma, 16-240
+// chroma), matching what NV12 conventionally means -- good enough for a
+// streaming delay buffer, not broadcast-grade color science.
+constexpr const char *kNv12EffectSource = R"efx(
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d image_uv;
+uniform float2 texel;
+
+sampler_state def_sampler {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData vert_out;
+	vert_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = v_in.uv;
+	return vert_out;
+}
+
+float4 PSDrawY(VertData v_in) : TARGET
+{
+	float3 rgb = image.Sample(def_sampler, v_in.uv).rgb;
+	float y = dot(rgb, float3(0.257, 0.504, 0.098)) + (16.0 / 255.0);
+	return float4(y, y, y, 1.0);
+}
+
+float4 PSDrawUV(VertData v_in) : TARGET
+{
+	float2 base = v_in.uv - texel * 0.5;
+	float3 c0 = image.Sample(def_sampler, base).rgb;
+	float3 c1 = image.Sample(def_sampler, base + float2(texel.x, 0.0)).rgb;
+	float3 c2 = image.Sample(def_sampler, base + float2(0.0, texel.y)).rgb;
+	float3 c3 = image.Sample(def_sampler, base + texel).rgb;
+	float3 rgb = (c0 + c1 + c2 + c3) * 0.25;
+	float u = dot(rgb, float3(-0.148, -0.291, 0.439)) + (128.0 / 255.0);
+	float v = dot(rgb, float3(0.439, -0.368, -0.071)) + (128.0 / 255.0);
+	return float4(u, v, 0.0, 1.0);
+}
+
+float4 PSDrawNV12(VertData v_in) : TARGET
+{
+	float y = image.Sample(def_sampler, v_in.uv).r - (16.0 / 255.0);
+	float2 uv = image_uv.Sample(def_sampler, v_in.uv).rg - (128.0 / 255.0);
+	float3 rgb;
+	rgb.r = 1.164 * y + 1.596 * uv.y;
+	rgb.g = 1.164 * y - 0.392 * uv.x - 0.813 * uv.y;
+	rgb.b = 1.164 * y + 2.017 * uv.x;
+	return float4(saturate(rgb), 1.0);
+}
+
+technique DrawY
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSDrawY(v_in);
+	}
+}
+
+technique DrawUV
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSDrawUV(v_in);
+	}
+}
+
+technique DrawNV12
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSDrawNV12(v_in);
+	}
+}
+)efx";
 } // namespace
 
 const char *VideoDelayFilter::Id()
@@ -247,18 +357,47 @@ void VideoDelayFilter::ReleaseRing()
 
 void VideoDelayFilter::ReleaseGpuObjects()
 {
+	ReleaseSizedGpuObjects();
+	// nv12Effect_ is just compiled shader code -- unlike everything in
+	// ReleaseSizedGpuObjects() it isn't sized to bufferWidth_/bufferHeight_,
+	// so a resolution change (EnsureRingSized's resolutionChanged path)
+	// doesn't need to recompile it. Only the real destructor tears this down.
+	if (nv12Effect_) {
+		gs_effect_destroy(nv12Effect_);
+		nv12Effect_ = nullptr;
+	}
+}
+
+void VideoDelayFilter::ReleaseSizedGpuObjects()
+{
 	if (captureTexrender_) {
 		gs_texrender_destroy(captureTexrender_);
 		captureTexrender_ = nullptr;
 	}
-	if (playbackTexture_) {
-		gs_texture_destroy(playbackTexture_);
-		playbackTexture_ = nullptr;
+	if (yTexrender_) {
+		gs_texrender_destroy(yTexrender_);
+		yTexrender_ = nullptr;
+	}
+	if (uvTexrender_) {
+		gs_texrender_destroy(uvTexrender_);
+		uvTexrender_ = nullptr;
+	}
+	if (yPlaybackTexture_) {
+		gs_texture_destroy(yPlaybackTexture_);
+		yPlaybackTexture_ = nullptr;
+	}
+	if (uvPlaybackTexture_) {
+		gs_texture_destroy(uvPlaybackTexture_);
+		uvPlaybackTexture_ = nullptr;
 	}
 	for (auto &slot : stagingSlots_) {
-		if (slot.surface) {
-			gs_stagesurface_destroy(slot.surface);
-			slot.surface = nullptr;
+		if (slot.ySurface) {
+			gs_stagesurface_destroy(slot.ySurface);
+			slot.ySurface = nullptr;
+		}
+		if (slot.uvSurface) {
+			gs_stagesurface_destroy(slot.uvSurface);
+			slot.uvSurface = nullptr;
 		}
 		slot.pending = false;
 	}
@@ -292,11 +431,11 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	}
 
 	ReleaseRing();
-	// playbackTexture_/stagingSlots_ are fixed-resolution GPU objects (unlike
-	// captureTexrender_, which auto-resizes on gs_texrender_begin) -- they
-	// must be torn down and lazily recreated at the new size in Render().
+	// The playback/staging objects are fixed-resolution GPU objects (unlike
+	// the texrenders, which auto-resize on gs_texrender_begin) -- they must
+	// be torn down and lazily recreated at the new size in Render().
 	if (resolutionChanged) {
-		ReleaseGpuObjects();
+		ReleaseSizedGpuObjects();
 	} else {
 		// Resolution is unchanged but the FRAME COUNT just did (ring_ above
 		// was just cleared/resized) -- any staging slot still mid-readback
@@ -310,7 +449,11 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 
 	bufferWidth_ = fit.bufferWidth;
 	bufferHeight_ = fit.bufferHeight;
-	size_t frameBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_ * 4;
+	// NV12: Y plane (bufferWidth_*bufferHeight_ bytes) + interleaved UV
+	// plane at half resolution ((bufferWidth_/2)*(bufferHeight_/2)*2 bytes,
+	// i.e. bufferWidth_*bufferHeight_/2) -- 1.5 bytes/pixel total. Always an
+	// exact integer since ComputeBufferFit() forces both dimensions even.
+	size_t frameBytes = (static_cast<size_t>(bufferWidth_) * bufferHeight_ * 3) / 2;
 	ring_.resize(static_cast<size_t>(fit.actualFrames));
 	for (auto &slot : ring_)
 		slot.pixels.assign(frameBytes, 0);
@@ -504,64 +647,155 @@ void VideoDelayFilter::Render()
 		gs_matrix_pop();
 		gs_texrender_end(captureTexrender_);
 
-		// --- Capture step 2: harvest whichever staging slot was kicked off
-		// LAST frame (its GPU->CPU copy has now had a full frame to finish,
-		// so mapping it here never stalls the CPU the way mapping the SAME
-		// frame's staging surface immediately would), then kick off a fresh
-		// async readback of what was just rendered above into the OTHER
-		// staging slot. kStagingSlotCount==2 alternates cleanly via parity. ---
-		size_t kickSlotIdx = captureFrameCounter_ % kStagingSlotCount;
-		size_t harvestSlotIdx = (captureFrameCounter_ + 1) % kStagingSlotCount;
-		++captureFrameCounter_;
-
-		StagingSlot &harvest = stagingSlots_[harvestSlotIdx];
-		if (harvest.pending && harvest.surface) {
-			uint8_t *mapped = nullptr;
-			uint32_t linesize = 0;
-			if (gs_stagesurface_map(harvest.surface, &mapped, &linesize)) {
-				Slot &dst = ring_[harvest.targetRingIndex];
-				uint32_t rowBytes = bufferWidth_ * 4;
-				for (uint32_t row = 0; row < bufferHeight_; ++row) {
-					std::memcpy(dst.pixels.data() + static_cast<size_t>(row) * rowBytes,
-						    mapped + static_cast<size_t>(row) * linesize, rowBytes);
-				}
-				dst.valid = true;
-				gs_stagesurface_unmap(harvest.surface);
+		// --- Capture step 2: convert the just-captured RGBA into Y (full
+		// res) and UV (half res) planes via nv12Effect_'s two small
+		// full-screen-quad shader passes -- see this file's header comment
+		// and kNv12EffectSource for why (no compute-shader/RGBA->NV12 API
+		// exists in public libobs). ---
+		gs_texture_t *captured = gs_texrender_get_texture(captureTexrender_);
+		if (!nv12Effect_) {
+			char *errorString = nullptr;
+			nv12Effect_ = gs_effect_create(kNv12EffectSource, "trigglow-nv12-convert.effect", &errorString);
+			if (!nv12Effect_) {
+				TRIGGLOW_LOG_WARN(kComponent, "failed to compile the NV12 conversion shader: %s",
+						  errorString ? errorString : "(no error string)");
 			}
-			harvest.pending = false;
+			bfree(errorString);
 		}
 
-		StagingSlot &kick = stagingSlots_[kickSlotIdx];
-		if (!kick.surface)
-			kick.surface = gs_stagesurface_create(bufferWidth_, bufferHeight_, GS_RGBA);
-		gs_texture_t *captured = gs_texrender_get_texture(captureTexrender_);
-		if (captured && kick.surface) {
-			gs_stage_texture(kick.surface, captured);
-			kick.pending = true;
-			kick.targetRingIndex = writeIndex_;
+		if (captured && nv12Effect_) {
+			uint32_t uvWidth = bufferWidth_ / 2;
+			uint32_t uvHeight = bufferHeight_ / 2;
+
+			if (!yTexrender_)
+				yTexrender_ = gs_texrender_create(GS_R8, GS_ZS_NONE);
+			if (!uvTexrender_)
+				uvTexrender_ = gs_texrender_create(GS_R8G8, GS_ZS_NONE);
+
+			gs_eparam_t *imageParam = gs_effect_get_param_by_name(nv12Effect_, "image");
+			gs_eparam_t *texelParam = gs_effect_get_param_by_name(nv12Effect_, "texel");
+
+			gs_texrender_reset(yTexrender_);
+			if (gs_texrender_begin(yTexrender_, bufferWidth_, bufferHeight_)) {
+				gs_matrix_push();
+				gs_ortho(0.0f, static_cast<float>(bufferWidth_), 0.0f,
+					 static_cast<float>(bufferHeight_), -100.0f, 100.0f);
+				gs_effect_set_texture(imageParam, captured);
+				while (gs_effect_loop(nv12Effect_, "DrawY"))
+					gs_draw_sprite(captured, 0, bufferWidth_, bufferHeight_);
+				gs_matrix_pop();
+				gs_texrender_end(yTexrender_);
+			}
+
+			gs_texrender_reset(uvTexrender_);
+			if (gs_texrender_begin(uvTexrender_, uvWidth, uvHeight)) {
+				struct vec2 texel;
+				vec2_set(&texel, 1.0f / static_cast<float>(bufferWidth_),
+					 1.0f / static_cast<float>(bufferHeight_));
+				gs_matrix_push();
+				gs_ortho(0.0f, static_cast<float>(uvWidth), 0.0f, static_cast<float>(uvHeight), -100.0f,
+					 100.0f);
+				gs_effect_set_texture(imageParam, captured);
+				gs_effect_set_vec2(texelParam, &texel);
+				while (gs_effect_loop(nv12Effect_, "DrawUV"))
+					gs_draw_sprite(captured, 0, uvWidth, uvHeight);
+				gs_matrix_pop();
+				gs_texrender_end(uvTexrender_);
+			}
+
+			// --- Capture step 3: harvest whichever staging slot was kicked
+			// off LAST frame (its GPU->CPU copy has now had a full frame to
+			// finish, so mapping it here never stalls the CPU the way
+			// mapping the SAME frame's staging surface immediately would),
+			// then kick off a fresh async readback of the Y/UV planes just
+			// rendered above into the OTHER staging slot.
+			// kStagingSlotCount==2 alternates cleanly via parity. ---
+			size_t kickSlotIdx = captureFrameCounter_ % kStagingSlotCount;
+			size_t harvestSlotIdx = (captureFrameCounter_ + 1) % kStagingSlotCount;
+			++captureFrameCounter_;
+
+			StagingSlot &harvest = stagingSlots_[harvestSlotIdx];
+			if (harvest.pending && harvest.ySurface && harvest.uvSurface) {
+				Slot &dst = ring_[harvest.targetRingIndex];
+				size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
+
+				uint8_t *mappedY = nullptr;
+				uint32_t linesizeY = 0;
+				if (gs_stagesurface_map(harvest.ySurface, &mappedY, &linesizeY)) {
+					for (uint32_t row = 0; row < bufferHeight_; ++row) {
+						std::memcpy(dst.pixels.data() + static_cast<size_t>(row) * bufferWidth_,
+							    mappedY + static_cast<size_t>(row) * linesizeY,
+							    bufferWidth_);
+					}
+					gs_stagesurface_unmap(harvest.ySurface);
+				}
+
+				uint8_t *mappedUv = nullptr;
+				uint32_t linesizeUv = 0;
+				if (gs_stagesurface_map(harvest.uvSurface, &mappedUv, &linesizeUv)) {
+					uint32_t uvRowBytes = uvWidth * 2; // GS_R8G8: 2 bytes/pixel.
+					for (uint32_t row = 0; row < uvHeight; ++row) {
+						std::memcpy(dst.pixels.data() + yBytes +
+								    static_cast<size_t>(row) * uvRowBytes,
+							    mappedUv + static_cast<size_t>(row) * linesizeUv,
+							    uvRowBytes);
+					}
+					gs_stagesurface_unmap(harvest.uvSurface);
+				}
+
+				dst.valid = true;
+				harvest.pending = false;
+			}
+
+			StagingSlot &kick = stagingSlots_[kickSlotIdx];
+			if (!kick.ySurface)
+				kick.ySurface = gs_stagesurface_create(bufferWidth_, bufferHeight_, GS_R8);
+			if (!kick.uvSurface)
+				kick.uvSurface = gs_stagesurface_create(uvWidth, uvHeight, GS_R8G8);
+
+			gs_texture_t *yTex = gs_texrender_get_texture(yTexrender_);
+			gs_texture_t *uvTex = gs_texrender_get_texture(uvTexrender_);
+			if (yTex && uvTex && kick.ySurface && kick.uvSurface) {
+				gs_stage_texture(kick.ySurface, yTex);
+				gs_stage_texture(kick.uvSurface, uvTex);
+				kick.pending = true;
+				kick.targetRingIndex = writeIndex_;
+			}
 		}
 	}
 
-	// --- Playback: draw whichever slot is configuredDelaySeconds_ old, via
-	// the ONE reusable playback texture (uploaded fresh from RAM each frame,
-	// not one persistent GPU texture per slot) ---
+	// --- Playback: draw whichever slot is configuredDelaySeconds_ old. Both
+	// Y and UV planes get uploaded fresh from RAM into the two reusable
+	// playback textures, then nv12Effect_'s "DrawNV12" technique samples
+	// both and writes RGBA straight out -- no separate RGBA reconstruction
+	// texture needed. ---
 	uint64_t delayFrames = static_cast<uint64_t>(configuredDelaySeconds_) * std::max<uint32_t>(1, currentFps_);
 	delayFrames = std::min(delayFrames, static_cast<uint64_t>(ring_.size() - 1));
 	size_t readIndex = (writeIndex_ + ring_.size() - static_cast<size_t>(delayFrames)) % ring_.size();
 	bool haveEnoughHistory = bufferedCount_ > delayFrames;
 
-	if (haveEnoughHistory && ring_[readIndex].valid) {
-		if (!playbackTexture_)
-			playbackTexture_ =
-				gs_texture_create(bufferWidth_, bufferHeight_, GS_RGBA, 1, nullptr, GS_DYNAMIC);
-		if (playbackTexture_) {
-			gs_texture_set_image(playbackTexture_, ring_[readIndex].pixels.data(), bufferWidth_ * 4, false);
+	if (haveEnoughHistory && ring_[readIndex].valid && nv12Effect_) {
+		uint32_t uvWidth = bufferWidth_ / 2;
+		uint32_t uvHeight = bufferHeight_ / 2;
+		size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
 
-			gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-			gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
-			gs_effect_set_texture(image, playbackTexture_);
-			while (gs_effect_loop(effect, "Draw"))
-				gs_draw_sprite(playbackTexture_, 0, width, height);
+		if (!yPlaybackTexture_)
+			yPlaybackTexture_ =
+				gs_texture_create(bufferWidth_, bufferHeight_, GS_R8, 1, nullptr, GS_DYNAMIC);
+		if (!uvPlaybackTexture_)
+			uvPlaybackTexture_ = gs_texture_create(uvWidth, uvHeight, GS_R8G8, 1, nullptr, GS_DYNAMIC);
+
+		if (yPlaybackTexture_ && uvPlaybackTexture_) {
+			const uint8_t *pixels = ring_[readIndex].pixels.data();
+			gs_texture_set_image(yPlaybackTexture_, pixels, bufferWidth_, false);
+			gs_texture_set_image(uvPlaybackTexture_, pixels + yBytes, uvWidth * 2, false);
+
+			gs_eparam_t *imageParam = gs_effect_get_param_by_name(nv12Effect_, "image");
+			gs_eparam_t *imageUvParam = gs_effect_get_param_by_name(nv12Effect_, "image_uv");
+			gs_effect_set_texture(imageParam, yPlaybackTexture_);
+			gs_effect_set_texture(imageUvParam, uvPlaybackTexture_);
+			while (gs_effect_loop(nv12Effect_, "DrawNV12"))
+				gs_draw_sprite(yPlaybackTexture_, 0, width, height);
 		}
 	}
 	// Else: buffer still filling (first configuredDelaySeconds_ after
