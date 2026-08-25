@@ -105,8 +105,8 @@ void TrigglowDelayDock::BuildUi()
 	root->addLayout(buttonRow);
 
 	auto *hint = new QLabel(
-		QStringLiteral("Beta: retrasa video y audio juntos, sincronizados. Nunca corta el stream una vez "
-			       "lleno el buffer."),
+		QStringLiteral("Beta: solo retrasa video, todavia no el audio. Nunca corta el stream una vez lleno "
+			       "el buffer."),
 		this);
 	hint->setWordWrap(true);
 	hint->setStyleSheet("color: palette(windowText); font-size: 10px;");

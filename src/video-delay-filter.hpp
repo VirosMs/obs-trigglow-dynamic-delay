@@ -27,11 +27,11 @@ extern "C" {
 #include <media-io/audio-io.h> // audio_output_get_channels/sample_rate() — used to size the audio ring
 }
 
-// Delays BOTH video and audio by the same configured number of seconds,
-// with the streaming OUTPUT never touched — no reconnection, ever, at any
-// point. A standard OBS filter (video+audio), attached automatically by
-// BufferModeController to the live scene via ObsFrontendBridge — the user
-// never opens OBS's own Filters dialog for it.
+// Delays video by a configured number of seconds, with the streaming OUTPUT
+// never touched — no reconnection, ever, at any point. A standard OBS
+// VIDEO-ONLY filter, attached automatically by BufferModeController to the
+// live scene via ObsFrontendBridge — the user never opens OBS's own Filters
+// dialog for it.
 //
 // Video mechanism: every video_render call renders the filter's target
 // source into the NEXT slot of a ring buffer of GPU textures
@@ -43,15 +43,19 @@ extern "C" {
 // always honored in time, only the visual resolution of the delayed segment
 // degrades if it doesn't fit at full res.
 //
-// Audio mechanism (added after video was verified live): filter_audio
-// writes each incoming chunk into a per-channel ring buffer of raw float
-// samples, then returns whichever `frames`-sized window is `delaySeconds`
-// old, stamped with the CURRENT (unmodified) timestamp — mirrors video's
-// "old pixels, current instant" approach rather than rewinding the
-// timestamp, which would risk confusing OBS's own AV sync bookkeeping.
-// Audio is CPU-side raw PCM, cheap enough (~69MB for 60s of 5.1 @ 48kHz)
-// that it never needs the resolution-style budget tradeoff video does — the
-// full requested duration is always buffered exactly.
+// FilterAudio()/EnsureAudioRingSized() below are a COMPLETE, implemented
+// audio ring buffer (same delay-window logic as video, in sample-space) --
+// but NOT currently wired into Register()'s output_flags. Found live,
+// 2026-08-25: libobs's obs_source_filter_add() silently refuses to attach
+// ANY filter requesting OBS_SOURCE_AUDIO to a SCENE (obs-scene.c's own
+// registration proves scenes never set that flag on themselves -- their
+// audio goes through a separate audio_render callback), and it does so by
+// just not inserting the filter at all, no error anywhere -- which is
+// exactly what broke VIDEO too the moment this filter started requesting
+// audio, since obs_source_filter_add() rejects the filter as a whole, not
+// per-capability. See Register()'s comment for the real fix audio will
+// need (an audio capture callback + a small source that injects delayed
+// audio into the wrapper scene) once that's built as its own follow-up.
 //
 // Both rings only fill while ObsFrontendBridge::AcquireLiveSceneRendering
 // forces the live scene to stay active in the background (Filling window)

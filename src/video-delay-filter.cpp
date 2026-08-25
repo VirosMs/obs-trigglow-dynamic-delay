@@ -76,14 +76,39 @@ void VideoDelayFilter::Register()
 	obs_source_info info = {};
 	info.id = kFilterId;
 	info.type = OBS_SOURCE_TYPE_FILTER;
-	info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_AUDIO;
+	// VIDEO ONLY -- NOT `| OBS_SOURCE_AUDIO`, even though FilterAudio() below
+	// is fully implemented. Found live, 2026-08-25, by reading libobs's own
+	// obs_source_filter_add() (obs-source.c): it silently REJECTS the whole
+	// filter (no error, no log, `da_insert` just never runs) whenever
+	// filter_compatible(source, filter) is false, and that check is
+	//   (source->info.output_flags & OBS_SOURCE_AV & filter's own flags) == filter's own flags
+	// obs-scene.c's own registration proves scenes only ever set
+	// OBS_SOURCE_VIDEO in THEIR output_flags -- a scene's audio goes through
+	// a completely separate audio_render callback, never advertised via the
+	// flag this check reads. So a filter requesting OBS_SOURCE_AUDIO can
+	// NEVER attach to a scene (our live scene, wrapped for buffer mode),
+	// audio-only or combined -- this is a hard libobs constraint, not
+	// something fixable by changing IDs, instance names, or keep-alive
+	// primitives (all three of which were tried and ruled out first). This
+	// is exactly why the buffer stopped filling the moment OBS_SOURCE_AUDIO
+	// was added: obs_source_filter_add() was silently doing nothing at all,
+	// for BOTH video and audio, every single Enable() press since.
+	//
+	// Real fix for audio needs a different mechanism entirely --
+	// obs_source_add_audio_capture_callback() (a passive tap, works on any
+	// source including scenes, but can't replace/delay what's actually
+	// heard) paired with a small custom source that injects the delayed
+	// audio into the wrapper scene via obs_source_output_audio() -- not a
+	// simple flag flip. Tracked as follow-up work; FilterAudio() stays
+	// implemented and unit-shaped below for when that lands, just not
+	// wired into `output_flags` until it can actually run.
+	info.output_flags = OBS_SOURCE_VIDEO;
 	info.get_name = &VideoDelayFilter::GetName;
 	info.create = &VideoDelayFilter::Create;
 	info.destroy = &VideoDelayFilter::Destroy;
 	info.update = &VideoDelayFilter::UpdateCb;
 	info.video_tick = &VideoDelayFilter::TickCb;
 	info.video_render = &VideoDelayFilter::RenderCb;
-	info.filter_audio = &VideoDelayFilter::FilterAudioCb;
 	info.get_width = &VideoDelayFilter::GetWidthCb;
 	info.get_height = &VideoDelayFilter::GetHeightCb;
 	info.get_properties = &VideoDelayFilter::GetProperties;
