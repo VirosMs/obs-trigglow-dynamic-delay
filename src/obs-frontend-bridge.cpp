@@ -352,16 +352,24 @@ bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneNa
 		return false;
 
 	liveSceneRenderSource_ = liveSource;
-	// Both, not just one: inc_showing is the primitive already confirmed
-	// live to make video rendering (and therefore the attached buffer
-	// filter's video_render) actually fire during Filling. inc_active was
-	// ADDED on top of that for audio (found live, 2026-08-25: swapping to
-	// inc_active INSTEAD of inc_showing broke video's own buffering with
-	// no visible error -- the filter's video_render simply stopped firing,
-	// so it silently fell back to passing the raw live feed through
-	// unmodified). Keep both rather than risk repeating that regression.
+	// inc_showing ONLY -- not inc_active. Tried adding inc_active on top
+	// (hoping it would also keep audio flowing) TWICE now (2026-08-25) and
+	// both times it broke video with no visible error: our draw callback
+	// still fired (confirmed via loggedFirstRenderCallback_ below), but
+	// VideoDelayFilter::Render() never ran at all -- not even its
+	// null-target/zero-size diagnostic branches, meaning render_video()'s
+	// internal reentrancy guard (obs-source.c's `rendering_filter` flag) is
+	// the likely culprit: making the scene "active" (not just "showing")
+	// appears to make some OTHER part of libobs also try to render it the
+	// same frame, and that guard -- a plain bool, not a per-call-stack
+	// flag -- ends up skipping our filter chain entirely, falling back to
+	// obs_source_main_render() which renders the scene's raw children with
+	// no filters applied. inc_showing alone was proven working before any
+	// of this; reverted to just that rather than keep stacking primitives
+	// we can't fully verify from the public headers alone. Audio's own
+	// keep-alive needs, if any, are a separate problem to solve without
+	// touching this proven-working video path again.
 	obs_source_inc_showing(liveSceneRenderSource_);
-	obs_source_inc_active(liveSceneRenderSource_);
 	obs_add_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
 	loggedFirstRenderCallback_ = false;
 	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive acquired for \"%s\"", liveSceneName.c_str());
@@ -374,7 +382,6 @@ bool ObsFrontendBridge::ReleaseLiveSceneRendering(const std::string & /*liveScen
 		return false;
 
 	obs_remove_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
-	obs_source_dec_active(liveSceneRenderSource_);
 	obs_source_dec_showing(liveSceneRenderSource_);
 	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive released");
 	obs_source_release(liveSceneRenderSource_);

@@ -171,16 +171,20 @@ public:
 	//      rendering the live scene directly there would visibly smear it
 	//      into whatever's on screen. Same private-texrender pattern
 	//      VideoDelayFilter::Render() already uses for its ring buffer.
-	//   3. BOTH obs_source_inc_showing() AND obs_source_inc_active() —
-	//      inc_showing is the primitive confirmed live to make video
-	//      rendering fire during Filling; inc_active was added on top for
-	//      audio (leaf sources' audio mixing may depend on the stronger
-	//      "active" state, per obs.h's doc that it also considers children
-	//      showing, unlike plain inc_showing). Tried SWAPPING to inc_active
-	//      alone first (dropping inc_showing) and that regressed video with
-	//      no visible error — confirmed live, 2026-08-25: the filter's
-	//      video_render simply stopped firing, silently falling back to
-	//      passing the raw live feed through unmodified. Keep both.
+	//   3. obs_source_inc_showing() — ONLY this, not obs_source_inc_active()
+	//      too. Tried adding inc_active on top of inc_showing (hoping it'd
+	//      also help audio) and, separately, swapping to inc_active alone —
+	//      both regressed video with no visible error, confirmed live twice
+	//      on 2026-08-25: our draw callback still fired, but
+	//      VideoDelayFilter::Render() never ran at all, not even its own
+	//      diagnostic branches. Best working theory: obs-source.c's
+	//      render_video() guards filter application with a plain bool
+	//      (`rendering_filter`, not per-call-stack), and making the scene
+	//      "active" seems to make something else in libobs also attempt to
+	//      render it the same frame, tripping that guard and falling back
+	//      to obs_source_main_render() — the scene's raw children, no
+	//      filters. inc_showing alone was proven working before any of
+	//      this; stay there rather than stack unverified primitives.
 	// Must be paired 1:1 with ReleaseLiveSceneRendering(); only one live
 	// scene can be held at a time (matches the rest of this design, see the
 	// header comment above).
