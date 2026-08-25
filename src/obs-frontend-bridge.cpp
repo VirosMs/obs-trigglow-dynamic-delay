@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 #include "video-delay-filter.hpp"
 
+#include <cstring>
+
 extern "C" {
 #include <obs.h>
 #include <obs-frontend-api.h>
@@ -187,8 +189,25 @@ namespace {
 // Fixed, well-known names so EnsureBufferWrapperScene()/FindBufferFilter()
 // can relocate the same wrapper scene and filter instance across calls
 // without tracking any extra IDs themselves.
+//
+// kBufferFilterInstanceName is DELIBERATELY NOT "Trigglow Video Delay
+// Buffer" (VideoDelayFilter::GetName()'s return value, i.e. the name OBS's
+// own Filters dialog would default to if a user manually adds this filter
+// type, which is exactly what happened during this plugin's own Phase 1
+// testing on "Multimedia"). Found live, 2026-08-25: OBS enforces globally
+// unique SOURCE names (filters are sources), so obs_source_create() with
+// that name silently produced a differently-named object whenever a
+// same-named filter already existed anywhere else in the scene collection
+// -- every FindBufferFilter() lookup by the original name then failed,
+// SetBufferFilterEnabled/SetBufferFilterDelaySeconds silently no-op'd
+// (neither had any failure logging until today), the filter stayed
+// permanently disabled at its creation default, and every Enable() press
+// created ANOTHER orphaned duplicate instead of reusing the existing one.
+// Using a name no manual "Add Filter" would ever produce avoids the
+// collision entirely, regardless of what else the user has attached
+// elsewhere.
 constexpr const char *kBufferWrapperSceneName = "Trigglow Delay Buffer (no tocar)";
-constexpr const char *kBufferFilterInstanceName = "Trigglow Video Delay Buffer";
+constexpr const char *kBufferFilterInstanceName = "Trigglow Buffer Mode Delay (auto, no tocar)";
 } // namespace
 
 obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneName) const
@@ -317,6 +336,22 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 			obs_source_create(VideoDelayFilter::Id(), kBufferFilterInstanceName, filterSettings, nullptr);
 		obs_data_release(filterSettings);
 		if (filter) {
+			// Defensive: OBS enforces globally unique source names, so a
+			// name collision with something the user created elsewhere
+			// would make obs_source_create() silently return an object
+			// under a DIFFERENT actual name -- exactly what caused this
+			// whole lookup chain to fail live, 2026-08-24/25, before
+			// kBufferFilterInstanceName was changed to something a manual
+			// "Add Filter" could never produce. Kept as a loud safety net
+			// in case that ever happens again for some other reason.
+			const char *actualName = obs_source_get_name(filter);
+			if (!actualName || strcmp(actualName, kBufferFilterInstanceName) != 0) {
+				TRIGGLOW_LOG_ERROR(kComponent,
+						   "buffer mode: created filter got renamed to \"%s\" (wanted \"%s\") "
+						   "-- likely a name collision with something else in this scene "
+						   "collection; buffer mode will NOT be able to find it again",
+						   actualName ? actualName : "(null)", kBufferFilterInstanceName);
+			}
 			obs_source_filter_add(itemSource, filter);
 			// Disabled by default: this filter stays permanently attached
 			// to the live scene's OWN source object (see header comment),
