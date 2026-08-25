@@ -299,6 +299,7 @@ jobs:
           # zip's own root, not release/<config> itself.
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             "/DPluginStageDir=${{ github.workspace }}\release\${{ needs.check-event.outputs.config }}\${{ steps.setup.outputs.pluginName }}" `
+            "/DMyAppVersion=${{ steps.setup.outputs.pluginVersion }}" `
             "${{ github.workspace }}\installers\windows\trigglow-dynamic-delay-setup.iss"
 
       - name: Upload Artifacts 📡

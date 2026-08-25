@@ -17,7 +17,22 @@
 ; a different location, e.g. an already-extracted release zip.)
 
 #define MyAppName "Trigglow Dynamic Delay"
-#define MyAppVersion "0.1.0"
+; Was a bare literal, hand-edited and left stuck at "0.1.0" long after
+; buildspec.json moved on -- the mismatch was invisible for regular commit
+; builds (this .iss's own filename was still whatever it was, downloaded by
+; its literal name) but silently broke the TAGGED release build: the
+; installer landed in release/ as
+; "obs-trigglow-dynamic-delay-0.1.0-windows-x64-setup.exe" while
+; build-project.yaml's Upload Artifacts step (and push.yaml's Rename Files
+; step) glob for "${pluginVersion}-windows-x64*", so the .exe just silently
+; failed to match and never made it into the artifact/release at all
+; (found live, 2026-08-26, missing from the 0.2.0 draft release). Now passed
+; in from CI via `/DMyAppVersion=...`, matching the existing PluginStageDir
+; override pattern below -- falls back to buildspec.json's value at the time
+; of this fix for anyone building locally without passing it explicitly.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.2.0"
+#endif
 #define MyAppPublisher "Trigglow (VirosMs)"
 #define MyAppURL "https://trigglow.virosms.com/dynamic-delay"
 
