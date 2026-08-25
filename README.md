@@ -55,17 +55,27 @@ cmake --preset macos      # or: ubuntu-x86_64
 cmake --build --preset macos --config RelWithDebInfo
 ```
 
-## Installing the compiled plugin in OBS
+## Installing the plugin
+
+**Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.2.0-windows-x64-setup.exe`
+from the [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)
+and run it — it finds your OBS install automatically and copies the files for you. It isn't code-
+signed yet (Early Access), so Windows SmartScreen will warn you before letting it run. **Full guide
+with screenshots for every step, including the SmartScreen warning: `docs/INSTALL_GUIDE.md`.**
+Install it before you go live, not mid-stream — it needs OBS closed to overwrite its files.
+
+**Manual install (any platform, or if you'd rather not run an installer):**
 
 1. Locate the generated binary (`.dll` on Windows inside `build_x64/RelWithDebInfo/`, `.plugin`
-   on macOS, `.so` on Linux).
+   on macOS, `.so` on Linux) — or extract the `.zip` from the same release.
 2. Copy it into the OBS plugins folder:
    - Windows: `C:\Program Files\obs-studio\obs-plugins\64bit\`
    - macOS: `~/Library/Application Support/obs-studio/plugins/`
    - Linux: `~/.config/obs-studio/plugins/`
 3. Restart OBS.
 
-(A one-click installer is out of scope for the MVP — see `docs/ROADMAP.md`.)
+macOS/Linux don't have a one-click installer yet — manual install is the only path there for now
+(see `docs/ROADMAP.md`).
 
 ## Using the plugin
 
@@ -131,8 +141,10 @@ src/
                                      instantiated by plugin-main.cpp; ships in no current build
 docs/
   SPEC.md                  → full technical specification (start here)
+  INSTALL_GUIDE.md          → step-by-step install walkthrough with screenshots (SmartScreen,
+                             installer wizard, enabling the OBS dock)
   BUILD_VALIDATION.md       → what was actually verified in this release, and what wasn't
-  ROADMAP.md                → v0.2, v0.3, and what's out of scope
+  ROADMAP.md                → v0.3, v0.4, and what's out of scope
   STREAM_DECK.md             → detailed Stream Deck guide
   FAQ.md · TROUBLESHOOTING.md
 CMakeLists.txt, CMakePresets.json, buildspec.json, cmake/  → the official template's build system

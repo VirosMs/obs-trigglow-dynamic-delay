@@ -56,17 +56,28 @@ cmake --preset macos      # o: ubuntu-x86_64
 cmake --build --preset macos --config RelWithDebInfo
 ```
 
-## Instalar el plugin compilado en OBS
+## Instalar el plugin
+
+**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.2.0-windows-x64-setup.exe`
+desde la [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest) y
+ejecútalo — detecta tu instalación de OBS automáticamente y copia los archivos por ti. Todavía no
+está firmado (Early Access), así que Windows SmartScreen avisará antes de dejarlo ejecutar. **Guía
+completa con capturas de cada paso, incluido el aviso de SmartScreen: `docs/INSTALL_GUIDE-es.md`.**
+Instálalo antes de salir en directo, no a mitad de un stream — necesita OBS cerrado para
+sobrescribir sus archivos.
+
+**Instalación manual (cualquier plataforma, o si prefieres no ejecutar un instalador):**
 
 1. Localiza el binario generado (`.dll` en Windows dentro de `build_x64/RelWithDebInfo/`, `.plugin`
-   en macOS, `.so` en Linux).
+   en macOS, `.so` en Linux) — o extrae el `.zip` de esa misma release.
 2. Cópialo a la carpeta de plugins de OBS:
    - Windows: `C:\Program Files\obs-studio\obs-plugins\64bit\`
    - macOS: `~/Library/Application Support/obs-studio/plugins/`
    - Linux: `~/.config/obs-studio/plugins/`
 3. Reinicia OBS.
 
-(Un instalador con un solo clic queda fuera del MVP — ver `docs/ROADMAP.md`.)
+macOS/Linux todavía no tienen instalador de un clic — la instalación manual es el único camino ahí
+por ahora (ver `docs/ROADMAP-es.md`).
 
 ## Usar el plugin
 
@@ -135,8 +146,10 @@ src/
                                      build actual
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
+  INSTALL_GUIDE-es.md       → guía de instalación paso a paso con capturas (SmartScreen,
+                             asistente del instalador, activar el panel en OBS)
   BUILD_VALIDATION.md       → qué se verificó de verdad en esta entrega, y qué no
-  ROADMAP.md                → v0.2, v0.3 y qué queda fuera de alcance
+  ROADMAP.md                → v0.3, v0.4 y qué queda fuera de alcance
   STREAM_DECK.md             → guía detallada de Stream Deck
   FAQ.md · TROUBLESHOOTING.md
 CMakeLists.txt, CMakePresets.json, buildspec.json, cmake/  → sistema de build de la plantilla oficial
