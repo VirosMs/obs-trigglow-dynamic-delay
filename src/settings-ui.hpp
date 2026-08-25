@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <QElapsedTimer>
 #include <QWidget>
 
 #include "buffer-mode-controller.hpp"
@@ -67,6 +68,17 @@ private:
 	void ArmFillTimer(uint32_t seconds);
 	void DisarmFillTimer();
 
+	// Live "Ns restantes" countdown shown in stateLabel_ while Filling --
+	// added 2026-08-26 after the MVP-complete pass: before this, Filling
+	// just showed a static "Llenando buffer..." for the whole wait with no
+	// indication of how much longer, which is exactly the kind of silent
+	// wait a user has no way to distinguish from the plugin being stuck.
+	// Ticks fillProgressTimer_ against fillElapsed_/fillTotalSeconds_;
+	// doesn't touch anything RefreshFromStatus already owns (color,
+	// controls-enabled state) since no real status change is happening,
+	// just the passage of time within the same Filling status.
+	void UpdateFillProgress();
+
 	// Shared by liveSceneCombo_ and loadingSceneCombo_ — repopulates
 	// `combo` from bufferController_.ListAvailableScenes() and reselects
 	// `currentValue` without re-triggering signals.
@@ -95,6 +107,13 @@ private:
 	QPushButton *enableButton_ = nullptr;
 	QPushButton *disableButton_ = nullptr;
 	QTimer *fillTimer_ = nullptr;
+
+	// See UpdateFillProgress()'s comment. fillElapsed_ is armed alongside
+	// fillTimer_ in ArmFillTimer(); fillTotalSeconds_ is what the countdown
+	// counts down FROM.
+	QTimer *fillProgressTimer_ = nullptr;
+	QElapsedTimer fillElapsed_;
+	uint32_t fillTotalSeconds_ = 0;
 };
 
 } // namespace trigglow

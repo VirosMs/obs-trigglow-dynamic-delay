@@ -37,6 +37,15 @@ extern "C" {
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
+OBS_MODULE_AUTHOR("Trigglow (VirosMs)")
+
+// Required by OBS's plugin listing (Help > About, and the plugins manager) --
+// was missing entirely before the OBS store submission pass (2026-08-26).
+MODULE_EXPORT const char *obs_module_description(void)
+{
+	return "Delays your stream's video and audio by a configurable number of seconds without ever "
+	       "reconnecting the stream -- built for stream snipers, spoiler-safe reactions, and chat-timing.";
+}
 
 namespace {
 

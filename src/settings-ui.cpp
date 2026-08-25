@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 #include "scene-combo-box.hpp"
 
+#include <algorithm>
+
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -179,6 +181,9 @@ void TrigglowDelayDock::BuildUi()
 	fillTimer_->setSingleShot(true);
 	connect(fillTimer_, &QTimer::timeout, this, [this] { bufferController_.OnFillTimerElapsed(); });
 
+	fillProgressTimer_ = new QTimer(this);
+	connect(fillProgressTimer_, &QTimer::timeout, this, [this] { UpdateFillProgress(); });
+
 	RefreshFitEstimate();
 }
 
@@ -258,7 +263,11 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	loadingSceneCombo_->setEnabled(!busy);
 	secondsSpin_->setEnabled(status.state != BufferModeState::Filling);
 	minResolutionCombo_->setEnabled(!busy);
-	enableButton_->setEnabled(!busy);
+	// Also requires a live scene chosen -- previously Enable was clickable
+	// with no scene selected, which just bounced back into an Error state
+	// ("Elige primero una escena en directo") instead of preventing the
+	// click in the first place (2026-08-26 UX pass).
+	enableButton_->setEnabled(!busy && !status.liveSceneName.empty());
 	disableButton_->setEnabled(busy);
 
 	const QSignalBlocker blockSeconds(secondsSpin_);
@@ -294,12 +303,32 @@ void TrigglowDelayDock::ArmFillTimer(uint32_t seconds)
 		return;
 	fillTimer_->setInterval(static_cast<int>(seconds) * 1000);
 	fillTimer_->start();
+
+	fillTotalSeconds_ = seconds;
+	fillElapsed_.start();
+	if (fillProgressTimer_)
+		fillProgressTimer_->start(250);
+	UpdateFillProgress(); // Show "Ns restantes" immediately, not after the first 250ms tick.
 }
 
 void TrigglowDelayDock::DisarmFillTimer()
 {
 	if (fillTimer_)
 		fillTimer_->stop();
+	if (fillProgressTimer_)
+		fillProgressTimer_->stop();
+}
+
+void TrigglowDelayDock::UpdateFillProgress()
+{
+	if (!stateLabel_ || fillTotalSeconds_ == 0)
+		return;
+	double elapsedSeconds = fillElapsed_.elapsed() / 1000.0;
+	double remaining = std::max(0.0, static_cast<double>(fillTotalSeconds_) - elapsedSeconds);
+	// Only touches the TEXT, never the color/stylesheet -- RefreshFromStatus
+	// already set the amber Filling color once and owns it; this just
+	// updates what number is shown while that same status holds.
+	stateLabel_->setText(QStringLiteral("● Llenando buffer... %1s restantes").arg(remaining, 0, 'f', 0));
 }
 
 void TrigglowDelayDock::RefreshSceneCombo(SceneComboBox *combo, const std::string &currentValue, bool includeNoneOption)
