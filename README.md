@@ -6,7 +6,7 @@ Native OBS Studio plugin that delays your stream's **video and audio together**,
 number of seconds, from a button, a native OBS hotkey, or a Stream Deck — **without the streaming
 output ever being touched.** No reconnection, no cut, at any point, for any reason. No external
 app, no web panel, no separate process: everything lives inside the OBS process.
-**Status: MVP / v0.1.0 — Early Access.**
+**Status: MVP / v0.2.0 — Early Access.**
 
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried
@@ -15,7 +15,7 @@ first release).
 
 ## Usage requirements
 
-**OBS Studio 31.1.0 or newer.** The v0.1.0 binary is built against the OBS 31.1.1 sources (see
+**OBS Studio 31.1.0 or newer.** The v0.2.0 binary is built against the OBS 31.1.1 sources (see
 `buildspec.json`), and it has been verified to load and work correctly on OBS **32.2.2** (OBS's
 plugin compatibility mechanism only rejects plugins built against a version *newer* than the one
 currently running; it has never been tested on versions older than 31.1.1).
@@ -32,7 +32,7 @@ enable `ENABLE_FRONTEND_API` and `ENABLE_QT` and register the new source files.
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows is the priority platform for v0.1.0** (as requested by product); macOS/Linux build green
+**Windows is the priority platform for v0.2.0** (as requested by product); macOS/Linux build green
 in CI on the template's own build system, but have not been run live in this release.
 
 ## Build (Windows)
@@ -92,7 +92,7 @@ before you enabled it.
 
 ## Mapping a Stream Deck button
 
-No dedicated Stream Deck plugin is needed in v0.1.0:
+No dedicated Stream Deck plugin is needed in v0.2.0:
 
 1. In the Stream Deck software, add the **"System" → "Hotkey"** action (the exact name may vary
    slightly depending on your Stream Deck version).

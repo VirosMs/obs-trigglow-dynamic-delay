@@ -6,7 +6,7 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.1.0 — Early Access.**
+OBS. **Estado: MVP / v0.2.0 — Early Access.**
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
@@ -15,7 +15,7 @@ primera entrega).
 
 ## Requisitos de uso
 
-**OBS Studio 31.1.0 o superior.** El binario v0.1.0 se compila contra las fuentes de OBS 31.1.1
+**OBS Studio 31.1.0 o superior.** El binario v0.2.0 se compila contra las fuentes de OBS 31.1.1
 (ver `buildspec.json`) y se ha verificado que carga y funciona correctamente en OBS **32.2.2**
 (el mecanismo de compatibilidad de plugins de OBS rechaza solo los plugins compilados contra una
 versión *más nueva* que la que está corriendo; nunca se ha probado en versiones anteriores a 31.1.1).
@@ -32,7 +32,7 @@ sin modificar su sistema de build (`cmake/`, `CMakePresets.json`, `.github/`) sa
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows es la plataforma prioritaria para v0.1.0** (así lo pidió el producto); macOS/Linux
+**Windows es la plataforma prioritaria para v0.2.0** (así lo pidió el producto); macOS/Linux
 compilan en verde en CI con el propio sistema de build de la plantilla, pero no se han probado en
 directo en esta entrega.
 
@@ -92,7 +92,7 @@ activarlo.
 
 ## Mapear un botón de Stream Deck
 
-No hace falta ningún plugin de Stream Deck propio en v0.1.0:
+No hace falta ningún plugin de Stream Deck propio en v0.2.0:
 
 1. En el software de Stream Deck, añade la acción **"System" → "Hotkey"** (el nombre exacto puede
    variar ligeramente según tu versión de Stream Deck).

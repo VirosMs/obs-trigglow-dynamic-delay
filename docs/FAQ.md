@@ -57,7 +57,7 @@ No. All control lives inside OBS. The Trigglow website is only for downloading i
 documentation.
 
 **Do I need Trigglow's Stream Deck plugin?**
-No — v0.1.0 uses native OBS hotkeys, which Stream Deck can trigger directly with its own "System:
+No — v0.2.0 uses native OBS hotkeys, which Stream Deck can trigger directly with its own "System:
 Hotkey" action. See `docs/STREAM_DECK.md`.
 
 **Is it a finished product?**

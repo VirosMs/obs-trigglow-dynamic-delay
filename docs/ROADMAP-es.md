@@ -2,7 +2,7 @@
 
 # Roadmap — Trigglow Dynamic Delay
 
-## v0.1.0 (MVP — este entregable)
+## v0.2.0 (MVP — este entregable)
 - **Modo buffer** sin reconexión: el output de streaming no se toca nunca, en ningún momento, por
   ningún motivo — el plugin retrasa vídeo y audio acumulándolos en RAM del sistema y cambiando el
   Programa de OBS internamente entre la escena en directo, una escena de carga opcional y una
@@ -26,16 +26,16 @@
 - Windows como plataforma prioritaria; macOS/Linux compilan en verde en CI pero todavía no se han
   probado en directo.
 
-## v0.2.0 (propuesto)
+## v0.3.0 (propuesto)
 - **Compresión** real del buffer. El anillo guarda hoy frames NV12 sin comprimir; esto investiga un
   pipeline de encode/decode basado en FFmpeg (integrando FFmpeg para ambas direcciones, ya que
   `obs_video_encoder_create` solo alimenta el propio pipeline de output de OBS y libobs no expone
   ninguna API pública de decodificación). Ya se investigó y se descartó una vía de compute shader
-  de GPU para v0.1.0 — libobs no tiene API de compute/dispatch en su interfaz gráfica pública — así
+  de GPU para v0.2.0 — libobs no tiene API de compute/dispatch en su interfaz gráfica pública — así
   que esto es un esfuerzo de encode/decode en CPU. Se espera que sea trabajo de varias sesiones,
   dado lo que implica integrar FFmpeg.
 
-## v0.3.0 (propuesto)
+## v0.4.0 (propuesto)
 - Presets de delay guardados (p. ej. "Delay corto 5s", "Delay largo 30s"), seleccionables desde el
   dock y desde hotkeys adicionales.
 - **Verificación en directo** de macOS/Linux — ambos ya compilan en verde en CI; esto trata de

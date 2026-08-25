@@ -11,7 +11,7 @@ store/catalog.
 - On 2026-08-26, the docs were substantially corrected for technical accuracy, not just translated:
   they had previously described an abandoned reconnect-based delay mechanism (change the delay
   value, OBS briefly reconnects the stream to apply it) instead of the no-reconnect buffer mode
-  that v0.1.0 actually ships (see `docs/SPEC.md` §0 and §2 for the full history of that change).
+  that v0.2.0 actually ships (see `docs/SPEC.md` §0 and §2 for the full history of that change).
 - `LICENSE` (GPL-2.0-or-later) is present. This is not actually a licensing inconsistency: the
   `LICENSE` file itself contains the standard GPLv2 text (expected — that's normal practice), and
   the "-or-later" grant comes from the SPDX header in each source file (e.g.

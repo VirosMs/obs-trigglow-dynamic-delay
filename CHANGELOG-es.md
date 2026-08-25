@@ -2,11 +2,17 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
-## v0.1.0 — 2026-08-26 (MVP / Early Access)
+## v0.2.0 — 2026-08-26 (MVP / Early Access)
 
-Primera versión pública. Plugin nativo de OBS Studio (C++, plantilla oficial
-`obsproject/obs-plugintemplate`) que retrasa el vídeo y el audio de tu stream juntos, sin tocar
-nunca el output de streaming — sin reconexión, sin corte, en ningún momento, por ningún motivo.
+Primera versión que refleja el diseño realmente enviado. Plugin nativo de OBS Studio (C++,
+plantilla oficial `obsproject/obs-plugintemplate`) que retrasa el vídeo y el audio de tu stream
+juntos, sin tocar nunca el output de streaming — sin reconexión, sin corte, en ningún momento, por
+ningún motivo.
+
+Antes se publicó un `0.1.0` (2026-08-23) que describía un delay **basado en reconexión**,
+totalmente abandonado durante el desarrollo a favor del modo buffer sin reconexión de más abajo —
+ver `docs/SPEC.md` §0/§2 para el por qué. Los assets de esa release `0.1.0` son de antes de esta
+reescritura por completo; `0.2.0` es la primera release que refleja de verdad lo que se distribuye.
 
 **Incluido:**
 - **Modo buffer** sin reconexión: dos filtros de OBS acumulan vídeo y audio en un anillo de RAM del
@@ -39,7 +45,7 @@ nunca el output de streaming — sin reconexión, sin corte, en ningún momento,
   pero todavía no se ha vuelto a probar específicamente para confirmar que no reaparece — ver
   `docs/SPEC.md` §6.
 
-**Fuera de alcance en v0.1.0:** compresión real del buffer, presets de delay guardados, elegir una
+**Fuera de alcance en v0.2.0:** compresión real del buffer, presets de delay guardados, elegir una
 fuente individual en vez de una escena completa, un plugin de Stream Deck propio de Trigglow,
 instaladores firmados, verificación en directo de macOS/Linux (ambos compilan en verde en CI pero
 no se han probado en directo). Ver `docs/ROADMAP.md`.

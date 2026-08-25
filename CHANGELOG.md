@@ -2,12 +2,17 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
-## v0.1.0 — 2026-08-26 (MVP / Early Access)
+## v0.2.0 — 2026-08-26 (MVP / Early Access)
 
-First public release. Native OBS Studio plugin (C++, official
+First release of the actual, shipped design. Native OBS Studio plugin (C++, official
 `obsproject/obs-plugintemplate` template) that delays your stream's video and audio together,
 without ever touching the streaming output — no reconnection, no cut, at any point, for any
 reason.
+
+A `0.1.0` had been published earlier (2026-08-23) describing a **reconnect-based** delay that was
+fully abandoned during development in favor of the no-reconnect buffer mode below — see
+`docs/SPEC.md` §0/§2 for why. `0.1.0`'s release assets predate this rewrite entirely; `0.2.0` is
+the first release that actually reflects what ships.
 
 **Included:**
 - No-reconnect **buffer mode**: two OBS filters buffer video and audio in a system-RAM ring, and
@@ -37,6 +42,6 @@ reason.
   GPU objects instead and plausibly reduces this risk, but it has not yet been specifically
   re-tested for recurrence — see `docs/SPEC.md` §6.
 
-**Out of scope in v0.1.0:** real buffer compression, saved delay presets, choosing an individual
+**Out of scope in v0.2.0:** real buffer compression, saved delay presets, choosing an individual
 source instead of a whole scene, a dedicated Trigglow Stream Deck plugin, signed installers,
 macOS/Linux live-testing (both build green in CI but haven't been run live). See `docs/ROADMAP.md`.

@@ -2,7 +2,7 @@
 
 # Technical specification — Trigglow Dynamic Delay for OBS
 
-Status: **MVP / v0.1.0 — Early Access**
+Status: **MVP / v0.2.0 — Early Access**
 Last updated: 2026-08-26 (rewritten from scratch — see §0)
 Plugin machine name: `obs-trigglow-dynamic-delay`
 Website: https://trigglow.virosms.com/dynamic-delay
@@ -15,7 +15,7 @@ The original v0.1.0 spec (dated 2026-08-23, preserved in git history) described 
 delay: change the value, and if you're already live, OBS briefly reconnects the stream to apply it.
 That design was built, then abandoned entirely on 2026-08-24 after live testing made the reconnection
 itself feel unacceptable for real streaming use, in favor of **buffer mode**: a delay that never
-touches the streaming output, ever, at any point. Buffer mode is what v0.1.0 actually ships today.
+touches the streaming output, ever, at any point. Buffer mode is what v0.2.0 actually ships today.
 The old spec kept describing the abandoned mechanism (including labeling buffer mode "a v2/v3
 candidate, not fit for a reliable MVP") straight through the entire buffer-mode development — this
 document replaces it with what's actually in the codebase.
@@ -139,7 +139,7 @@ capture Program (the common/default setup), will also show the loading scene and
 content while buffer mode is Active, not the true live feed. This is a real difference from the
 abandoned reconnect design (§2), which only affected the streaming output's own delay and left
 Program/recording untouched. Not currently configurable — a streamer who wants an un-delayed local
-recording alongside a delayed stream isn't served by v0.1.0 as-is.
+recording alongside a delayed stream isn't served by v0.2.0 as-is.
 
 ### 3.4. Freeing the RAM ring on Disable
 
@@ -170,7 +170,7 @@ ever dropping below the chosen quality. The dock shows a live, non-blocking esti
 según el hardware, pero a su elección" (advise based on hardware, but the choice is always theirs):
 this estimate never blocks or clamps the user's picks, it only warns.
 
-## 4. Scope of v0.1.0, as actually shipped
+## 4. Scope of v0.2.0, as actually shipped
 
 Included:
 
@@ -189,7 +189,7 @@ Included:
 - Crash-free error handling (no live scene chosen, live scene resolves to nothing, etc. → `Error`
   state with a clear dock message, never a crash).
 
-Explicitly out of scope for v0.1.0 (see `docs/ROADMAP.md`):
+Explicitly out of scope for v0.2.0 (see `docs/ROADMAP.md`):
 
 - Real video/audio **compression** — the ring buffer stores uncompressed NV12 today. A real
   encode/decode pipeline was investigated (vendoring FFmpeg for both encode AND decode, since

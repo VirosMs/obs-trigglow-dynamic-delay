@@ -2,7 +2,7 @@
 
 # Especificación técnica — Trigglow Dynamic Delay para OBS
 
-Estado: **MVP / v0.1.0 — Early Access**
+Estado: **MVP / v0.2.0 — Early Access**
 Última actualización: 2026-08-26 (reescrita desde cero — ver §0)
 Nombre interno del plugin: `obs-trigglow-dynamic-delay`
 Web: https://trigglow.virosms.com/dynamic-delay
@@ -16,7 +16,7 @@ delay **basado en reconexión**: cambias el valor y, si ya estás en directo, OB
 el stream para aplicarlo. Ese diseño se construyó y luego se abandonó por completo el 2026-08-24,
 después de que las pruebas en directo dejaran claro que la reconexión en sí resultaba inaceptable
 para uso real de streaming, en favor del **modo buffer**: un delay que nunca toca el output de
-streaming, en ningún momento. El modo buffer es lo que v0.1.0 realmente distribuye hoy. La spec
+streaming, en ningún momento. El modo buffer es lo que v0.2.0 realmente distribuye hoy. La spec
 antigua siguió describiendo el mecanismo abandonado (incluso calificando el modo buffer de
 "candidato para v2/v3, no apto para un MVP fiable") durante todo el desarrollo del modo buffer — este
 documento la sustituye por lo que realmente hay en el código.
@@ -143,6 +143,17 @@ En **Disable()**: vuelve a poner en Program la escena que se mostraba antes de E
 ambos filtros y libera el ring de RAM (ver §3.4) — volviendo al comportamiento instantáneo, sin delay,
 sin buffer.
 
+**Efecto secundario importante de cambiar el Programa:** el paso 5 llama a
+`obs_frontend_set_current_scene()` — exactamente la misma función que usa la propia lista de escenas
+de OBS. Esto significa que el modo buffer retrasa **todo lo que observa el Programa**, no solo el
+output de streaming: la grabación local y el Replay Buffer, si cualquiera de los dos está configurado
+para capturar el Programa (la configuración habitual/por defecto), también mostrarán la escena de
+carga y después el contenido delayed mientras el modo buffer esté Active, en vez del directo real.
+Es una diferencia real respecto al diseño de reconexión abandonado (§2), que solo afectaba al delay
+del propio output de streaming y dejaba el Programa/la grabación intactos. Hoy no es configurable —
+un streamer que quiera una grabación local sin delay junto a un stream con delay no está cubierto por
+v0.2.0 tal cual.
+
 ### 3.4. Liberar el ring de RAM al hacer Disable
 
 OBS se salta por completo el `video_render` de un filtro **deshabilitado** — `VideoDelayFilter::Render()`
@@ -173,7 +184,7 @@ estimación en vivo y no bloqueante de qué logrará realmente una combinación 
 calidad) *antes* de que el usuario pulse Enable — "aconsejar según el hardware, pero a su elección":
 esta estimación nunca bloquea ni recorta las elecciones del usuario, solo avisa.
 
-## 4. Alcance de v0.1.0, tal y como se distribuye realmente
+## 4. Alcance de v0.2.0, tal y como se distribuye realmente
 
 Incluido:
 
@@ -194,7 +205,7 @@ Incluido:
 - Manejo de errores sin crashes (ninguna escena en directo elegida, la escena en directo resuelve a
   nada, etc. → estado `Error` con un mensaje claro en el dock, nunca un crash).
 
-Explícitamente fuera de alcance para v0.1.0 (ver `docs/ROADMAP.md`):
+Explícitamente fuera de alcance para v0.2.0 (ver `docs/ROADMAP.md`):
 
 - **Compresión** real de vídeo/audio — el ring buffer almacena NV12 sin comprimir hoy. Se investigó
   un pipeline real de codificación/decodificación (vendorizar FFmpeg tanto para codificar COMO para

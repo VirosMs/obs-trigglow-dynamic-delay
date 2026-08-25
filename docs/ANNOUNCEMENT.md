@@ -1,12 +1,12 @@
-Texto corto de anuncio (Discord / X / Telegram) — v0.1.0
+Texto corto de anuncio (Discord / X / Telegram) — v0.2.0
 =========================================================
 
-🚀 Trigglow Dynamic Delay para OBS — MVP / v0.1.0 ya disponible
+🚀 Trigglow Dynamic Delay para OBS — MVP / v0.2.0 ya disponible
 
 Activa o desactiva un delay en tu stream directamente desde OBS: un botón, una hotkey nativa o tu
 Stream Deck. Sin apps externas, sin paneles aparte — todo vive dentro de OBS.
 
-Qué incluye v0.1.0:
+Qué incluye v0.2.0:
 • Enable / Disable / Toggle instantáneos, con estado visible en un dock nativo
 • Vídeo y audio retrasados juntos, siempre en sync
 • El stream **nunca** se corta ni se reconecta — ni al activar el delay, ni al desactivarlo, ni en
