@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 class QLabel;
 class QSpinBox;
+class QComboBox;
 class QPushButton;
 class QTimer;
 
@@ -78,6 +79,9 @@ private:
 	SceneComboBox *liveSceneCombo_ = nullptr;
 	SceneComboBox *loadingSceneCombo_ = nullptr;
 	QSpinBox *secondsSpin_ = nullptr;
+	// "Calidad minima" -- floor on the delayed video's resolution; see
+	// BufferModeStatus::minResolutionHeight / VideoDelayFilter::EnsureRingSized.
+	QComboBox *minResolutionCombo_ = nullptr;
 	QPushButton *enableButton_ = nullptr;
 	QPushButton *disableButton_ = nullptr;
 	QTimer *fillTimer_ = nullptr;

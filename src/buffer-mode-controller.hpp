@@ -57,6 +57,12 @@ enum class BufferModeState {
 struct BufferModeStatus {
 	BufferModeState state = BufferModeState::Inactive;
 	uint32_t delaySeconds = 5;
+	// Floor on the delayed video's resolution -- VideoDelayFilter never
+	// captures shorter than this, shortening the ACTUAL buffered duration
+	// instead if delaySeconds doesn't fit the VRAM budget at this height.
+	// See VideoDelayFilter::EnsureRingSized. 720 matches
+	// kDefaultMinResolutionHeight.
+	uint32_t minResolutionHeight = 720;
 	std::string liveSceneName;    // Required to Enable(); the streamer's real content.
 	std::string loadingSceneName; // Optional; shown during Filling. Empty = no scene switch while filling.
 	std::string message;          // Human-readable (Spanish), empty outside Error/info states.
@@ -88,6 +94,7 @@ public:
 	void SetLiveScene(std::string sceneName);
 	void SetLoadingScene(std::string sceneName);
 	void SetDelaySeconds(uint32_t seconds);
+	void SetMinResolutionHeight(uint32_t heightPixels);
 
 	BufferModeStatus GetStatus() const { return status_; }
 
@@ -104,9 +111,11 @@ public:
 	// Deliberately never auto-Enable()s on load, same reasoning as
 	// DelayController: this creates/modifies OBS scenes, which should never
 	// happen silently at obs_module_load() time.
-	void LoadSettings(uint32_t delaySeconds, std::string liveSceneName, std::string loadingSceneName);
+	void LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
+			  std::string loadingSceneName);
 	struct SettingsSnapshot {
 		uint32_t delaySeconds;
+		uint32_t minResolutionHeight;
 		std::string liveSceneName;
 		std::string loadingSceneName;
 	};

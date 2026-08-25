@@ -29,30 +29,28 @@ namespace {
 constexpr const char *kComponent = "video-delay-filter";
 constexpr const char *kFilterId = "trigglow_video_delay_filter";
 constexpr const char *kSettingDelaySeconds = "delay_seconds";
+constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
 
 // VRAM budget for the ring buffer. Uncompressed RGBA at 1920x1080@60fps is
 // ~475MB PER SECOND (1920*1080*4 bytes * 60) — a real 30-60s buffer at that
 // resolution would need ~14-28GB, not realistic on top of whatever else OBS
-// is doing. Rather than silently truncating the requested delay duration
-// (the original design — found live, 2026-08-24, to make long delays
-// useless: it just quietly gave you a couple of seconds instead), the ring
-// buffer's CAPTURE resolution shrinks instead — see EnsureRingSized(). The
-// requested delaySeconds is always honored in time; only the visual
-// resolution of the delayed segment degrades once it doesn't fit at full
-// res. 2GB is a moderate default increase from the original 1.5GB (still
-// safe for older/lower-VRAM GPUs) — combined with downscaling this covers
-// the vast majority of realistic delay lengths without needing a proper
-// compressed encode/decode buffer (a much bigger rewrite — libobs has no
-// public decoder API for that, only obs-encoder.h for producing an output
-// stream; would need vendoring FFmpeg or a platform decoder).
+// is doing. 2GB is a moderate default (safe for older/lower-VRAM GPUs)
+// without needing a proper compressed encode/decode buffer (a much bigger
+// rewrite — libobs has no public decoder API for that, only obs-encoder.h
+// for producing an OUTPUT stream, not decoding one back to a texture; would
+// need vendoring FFmpeg or a platform decoder — considered and explicitly
+// deferred, 2026-08-25, as multi-session work).
 constexpr uint64_t kMaxBufferBytes = 2048ULL * 1024 * 1024;
 
-// Never shrink the buffer below this fraction of the source's real
-// resolution, no matter how long a delay is requested — past this point
-// pick fewer frames (shorter effective delay) instead, same as the old
-// clamp-only behavior, as an absolute last resort. Keeps genuinely extreme
-// requests (e.g. 60s at 4K) from producing an unusably tiny image.
-constexpr double kMinBufferScale = 0.15;
+// Quality now wins over duration, not the other way around (flipped
+// 2026-08-25 after live feedback: a 30s buffer downscaled to 727x409 "looks
+// terrible" — correct, that's what honoring the full 30s at this budget
+// actually costs). EnsureRingSized() never captures below
+// configuredMinResolutionHeight_ pixels tall; if the full requested delay
+// doesn't fit the budget at that floor, it shortens the ACTUAL buffered
+// duration instead (same "last resort" trimming the old design used, just
+// now the normal case for long delays instead of a rare edge case).
+constexpr uint32_t kDefaultMinResolutionHeight = 720;
 
 // UI slider cap. The real enforcement is EnsureRingSized()'s budget math —
 // this just keeps the properties panel from offering a wildly unrealistic
@@ -144,10 +142,13 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// N seconds of frames with none old enough yet.
 	uint64_t desiredFrames = static_cast<uint64_t>(configuredDelaySeconds_) * fps + 1;
 
-	// Prefer shrinking the CAPTURE resolution over shrinking the frame
-	// count: the requested delay duration should always be honored, since a
-	// "10s delay" that quietly only buffers 3s defeats the whole feature.
-	// See kMaxBufferBytes's comment.
+	// Quality floor first, duration second (flipped 2026-08-25 -- see
+	// kDefaultMinResolutionHeight's comment): never capture shorter than
+	// configuredMinResolutionHeight_ pixels tall, no matter how long the
+	// requested delay is. Only shrink resolution ABOVE that floor to try to
+	// fit the full requested duration.
+	double minScale = std::min(1.0, static_cast<double>(configuredMinResolutionHeight_) / origHeight);
+
 	uint64_t fullResBytesPerFrame = static_cast<uint64_t>(origWidth) * origHeight * 4;
 	uint64_t fullResTotalBytes = desiredFrames * fullResBytesPerFrame;
 
@@ -155,16 +156,16 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	if (fullResTotalBytes > kMaxBufferBytes && fullResBytesPerFrame > 0) {
 		double idealScale = std::sqrt(static_cast<double>(kMaxBufferBytes) /
 					      static_cast<double>(desiredFrames * fullResBytesPerFrame));
-		scale = std::max(kMinBufferScale, std::min(1.0, idealScale));
+		scale = std::max(minScale, std::min(1.0, idealScale));
 	}
 
 	uint32_t bufferWidth = std::max<uint32_t>(2, static_cast<uint32_t>(origWidth * scale));
 	uint32_t bufferHeight = std::max<uint32_t>(2, static_cast<uint32_t>(origHeight * scale));
 
-	// Last resort, only reached at the kMinBufferScale floor for genuinely
-	// extreme requests (e.g. 60s at 4K): even the shrunk resolution doesn't
-	// fit the full duration, so fall back to trimming frame count too —
-	// same clamp-only behavior the original design always used.
+	// If the full requested duration still doesn't fit at the quality
+	// floor, shorten the ACTUAL buffered seconds instead of ever going
+	// below configuredMinResolutionHeight_ -- this is now the expected path
+	// for any sufficiently long delay, not a rare last resort.
 	uint64_t bufferBytesPerFrame = static_cast<uint64_t>(bufferWidth) * bufferHeight * 4;
 	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, kMaxBufferBytes / bufferBytesPerFrame);
 	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
@@ -302,6 +303,15 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 		configuredDelaySeconds_ = seconds;
 		TRIGGLOW_LOG_INFO(kComponent, "delay set to %us", configuredDelaySeconds_);
 	}
+
+	auto minHeight = static_cast<uint32_t>(obs_data_get_int(settings, kSettingMinResolutionHeight));
+	if (minHeight == 0)
+		minHeight = kDefaultMinResolutionHeight;
+	if (minHeight != configuredMinResolutionHeight_) {
+		configuredMinResolutionHeight_ = minHeight;
+		TRIGGLOW_LOG_INFO(kComponent, "minimum resolution height set to %up", configuredMinResolutionHeight_);
+	}
+
 	// Always reset, even if seconds didn't change: Enable() calls this via
 	// SetBufferFilterDelaySeconds at the start of every cycle, so this gives
 	// fresh Render()/FilterAudio() diagnostics each time instead of only
@@ -472,15 +482,27 @@ obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 	obs_property_t *prop =
 		obs_properties_add_int(props, kSettingDelaySeconds, "Delay (segundos)", 0, kUiMaxDelaySeconds, 1);
 	obs_property_set_long_description(
-		prop, "Segundos de retraso. Siempre se respeta el tiempo pedido; si no cabe entero en el "
-		      "presupuesto de VRAM (~2GB) a la resolucion/FPS de la fuente, el propio buffer se guarda a "
-		      "menor resolucion internamente en vez de acortar el delay (ver el log de OBS).");
+		prop, "Segundos de retraso pedidos. Se respeta la calidad minima (ver mas abajo) por encima del "
+		      "tiempo -- si no caben enteros en el presupuesto de VRAM (~2GB) a esa calidad, el tiempo "
+		      "real de buffer se acorta en su lugar (ver el log de OBS).");
+
+	obs_property_t *qualityProp = obs_properties_add_list(props, kSettingMinResolutionHeight, "Calidad minima",
+							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(qualityProp, "480p", 480);
+	obs_property_list_add_int(qualityProp, "720p", 720);
+	obs_property_list_add_int(qualityProp, "1080p", 1080);
+	obs_property_set_long_description(
+		qualityProp, "Nunca se baja de esta resolucion para el tramo delayed, aunque eso signifique "
+			     "guardar menos segundos de los pedidos. Un valor mas alto guarda menos tiempo real "
+			     "con el mismo presupuesto de VRAM.");
+
 	return props;
 }
 
 void VideoDelayFilter::GetDefaults(obs_data_t *settings)
 {
 	obs_data_set_default_int(settings, kSettingDelaySeconds, 0);
+	obs_data_set_default_int(settings, kSettingMinResolutionHeight, kDefaultMinResolutionHeight);
 }
 
 } // namespace trigglow

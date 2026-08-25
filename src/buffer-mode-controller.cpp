@@ -49,6 +49,14 @@ void BufferModeController::SetDelaySeconds(uint32_t seconds)
 	}
 }
 
+void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
+{
+	status_.minResolutionHeight = heightPixels;
+	NotifyStatusChanged();
+	if (status_.state == BufferModeState::Active)
+		bridge_.SetBufferFilterMinResolutionHeight(status_.liveSceneName, heightPixels);
+}
+
 void BufferModeController::Enable()
 {
 	// Guard against re-entry: pressing Enable again while already
@@ -73,6 +81,7 @@ void BufferModeController::Enable()
 		return;
 	}
 	bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, status_.delaySeconds);
+	bridge_.SetBufferFilterMinResolutionHeight(status_.liveSceneName, status_.minResolutionHeight);
 
 	// Audio: unlike the video filter, these attach to individual leaf audio
 	// sources inside the live scene (Mic, Desktop, etc.), not the scene
@@ -157,9 +166,11 @@ void BufferModeController::Toggle()
 		Disable();
 }
 
-void BufferModeController::LoadSettings(uint32_t delaySeconds, std::string liveSceneName, std::string loadingSceneName)
+void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
+					std::string loadingSceneName)
 {
 	status_.delaySeconds = delaySeconds;
+	status_.minResolutionHeight = minResolutionHeight;
 	status_.liveSceneName = std::move(liveSceneName);
 	status_.loadingSceneName = std::move(loadingSceneName);
 	// Deliberately NOT calling Enable() here even if the user left it on
@@ -169,7 +180,7 @@ void BufferModeController::LoadSettings(uint32_t delaySeconds, std::string liveS
 
 BufferModeController::SettingsSnapshot BufferModeController::SaveSettings() const
 {
-	return {status_.delaySeconds, status_.liveSceneName, status_.loadingSceneName};
+	return {status_.delaySeconds, status_.minResolutionHeight, status_.liveSceneName, status_.loadingSceneName};
 }
 
 void BufferModeController::SetState(BufferModeState state, std::string message)

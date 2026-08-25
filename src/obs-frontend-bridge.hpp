@@ -144,6 +144,11 @@ public:
 	// No-op (returns false) if EnsureBufferWrapperScene hasn't run yet.
 	bool SetBufferFilterDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const;
 
+	// Pushes `heightPixels` into the already-attached filter's minimum
+	// capture resolution floor (see VideoDelayFilter::EnsureRingSized).
+	// No-op (returns false) if EnsureBufferWrapperScene hasn't run yet.
+	bool SetBufferFilterMinResolutionHeight(const std::string &liveSceneName, uint32_t heightPixels) const;
+
 	// Switches Program to the wrapper scene created by EnsureBufferWrapperScene.
 	// Callers don't need to know its literal name. False if it doesn't exist
 	// yet (EnsureBufferWrapperScene hasn't been called/succeeded).

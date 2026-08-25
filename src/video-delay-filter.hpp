@@ -120,6 +120,12 @@ private:
 
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	uint32_t configuredDelaySeconds_ = 0;
+	// Floor on the ring's capture height, in pixels -- quality wins over
+	// duration: EnsureRingSized() never captures shorter than this, and
+	// shortens the ACTUAL buffered seconds instead if the full requested
+	// delay doesn't fit the VRAM budget at this floor. Defaults to 720
+	// (kDefaultMinResolutionHeight); user-configurable via the dock.
+	uint32_t configuredMinResolutionHeight_ = 720;
 
 	std::vector<Slot> ring_;
 	size_t writeIndex_ = 0;

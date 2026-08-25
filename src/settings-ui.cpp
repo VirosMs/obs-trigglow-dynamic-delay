@@ -97,6 +97,19 @@ void TrigglowDelayDock::BuildUi()
 	secondsRow->addWidget(secondsSpin_);
 	root->addLayout(secondsRow);
 
+	auto *qualityRow = new QHBoxLayout();
+	qualityRow->addWidget(new QLabel(QStringLiteral("Calidad minima:"), this));
+	minResolutionCombo_ = new QComboBox(this);
+	minResolutionCombo_->addItem(QStringLiteral("480p"), 480);
+	minResolutionCombo_->addItem(QStringLiteral("720p"), 720);
+	minResolutionCombo_->addItem(QStringLiteral("1080p"), 1080);
+	minResolutionCombo_->setToolTip(
+		QStringLiteral("El tramo delayed nunca baja de esta resolucion, aunque eso signifique guardar "
+			       "menos segundos de los pedidos. Mas calidad = menos tiempo real de buffer con el "
+			       "mismo presupuesto de VRAM."));
+	qualityRow->addWidget(minResolutionCombo_);
+	root->addLayout(qualityRow);
+
 	auto *buttonRow = new QHBoxLayout();
 	enableButton_ = new QPushButton(QStringLiteral("Enable"), this);
 	disableButton_ = new QPushButton(QStringLiteral("Disable"), this);
@@ -123,6 +136,12 @@ void TrigglowDelayDock::BuildUi()
 	});
 	connect(secondsSpin_, QOverload<int>::of(&QSpinBox::valueChanged), this,
 		[this](int value) { bufferController_.SetDelaySeconds(static_cast<uint32_t>(value)); });
+	connect(minResolutionCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+		if (index < 0)
+			return;
+		bufferController_.SetMinResolutionHeight(
+			static_cast<uint32_t>(minResolutionCombo_->itemData(index).toInt()));
+	});
 	connect(enableButton_, &QPushButton::clicked, this, [this] {
 		TRIGGLOW_LOG_INFO(kComponent, "Enable pressed in dock");
 		bufferController_.Enable();
@@ -179,11 +198,17 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	liveSceneCombo_->setEnabled(!busy);
 	loadingSceneCombo_->setEnabled(!busy);
 	secondsSpin_->setEnabled(status.state != BufferModeState::Filling);
+	minResolutionCombo_->setEnabled(!busy);
 	enableButton_->setEnabled(!busy);
 	disableButton_->setEnabled(busy);
 
 	const QSignalBlocker blockSeconds(secondsSpin_);
 	secondsSpin_->setValue(static_cast<int>(status.delaySeconds));
+
+	const QSignalBlocker blockQuality(minResolutionCombo_);
+	int qualityIndex = minResolutionCombo_->findData(static_cast<int>(status.minResolutionHeight));
+	if (qualityIndex >= 0)
+		minResolutionCombo_->setCurrentIndex(qualityIndex);
 
 	const QSignalBlocker blockLive(liveSceneCombo_);
 	int liveIndex = liveSceneCombo_->findText(QString::fromStdString(status.liveSceneName));

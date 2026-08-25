@@ -89,14 +89,19 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 	uint32_t delaySeconds = static_cast<uint32_t>(obs_data_get_int(data, "delay_seconds"));
 	if (delaySeconds == 0 && !obs_data_has_user_value(data, "delay_seconds"))
 		delaySeconds = 5;
+	uint32_t minResolutionHeight = static_cast<uint32_t>(obs_data_get_int(data, "min_resolution_height"));
+	if (minResolutionHeight == 0)
+		minResolutionHeight = 720;
 	const char *liveScene = obs_data_get_string(data, "live_scene");
 	const char *loadingScene = obs_data_get_string(data, "loading_scene");
 
-	controller.LoadSettings(delaySeconds, liveScene ? liveScene : "", loadingScene ? loadingScene : "");
+	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
+				loadingScene ? loadingScene : "");
 	obs_data_release(data);
 
-	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, live=\"%s\", loading=\"%s\")", delaySeconds,
-			  liveScene ? liveScene : "", loadingScene ? loadingScene : "");
+	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\")",
+			  delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
+			  loadingScene ? loadingScene : "");
 }
 
 void SaveBufferSettings(const trigglow::BufferModeController &controller)
@@ -114,6 +119,7 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 
 	obs_data_t *data = obs_data_create();
 	obs_data_set_int(data, "delay_seconds", snapshot.delaySeconds);
+	obs_data_set_int(data, "min_resolution_height", snapshot.minResolutionHeight);
 	obs_data_set_string(data, "live_scene", snapshot.liveSceneName.c_str());
 	obs_data_set_string(data, "loading_scene", snapshot.loadingSceneName.c_str());
 	obs_data_save_json(data, path.toUtf8().constData());

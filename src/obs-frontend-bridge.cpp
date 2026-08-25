@@ -409,6 +409,25 @@ bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveScene
 	return true;
 }
 
+bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &liveSceneName,
+							   uint32_t heightPixels) const
+{
+	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "SetBufferFilterMinResolutionHeight(%u): FindBufferFilter returned null, no-op",
+				  heightPixels);
+		return false;
+	}
+	// obs_source_update() merges onto the filter's existing settings
+	// (obs_data_apply), so this doesn't disturb delay_seconds.
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "min_resolution_height", heightPixels);
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
 bool ObsFrontendBridge::ShowBufferWrapperScene() const
 {
 	return SetCurrentSceneByName(kBufferWrapperSceneName);
