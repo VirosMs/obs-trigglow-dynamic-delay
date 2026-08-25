@@ -72,6 +72,14 @@ Source: "{#PluginStageDir}\data\locale\en-US.ini"; DestDir: "{app}\data\obs-plug
 Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"
 Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay"
 
+[Run]
+; "postinstall skipifsilent" puts this as a checkbox on the Finished page
+; (checked by default) instead of running unconditionally -- the user still
+; gets asked, just via a checkbox instead of a separate prompt. {app} (not
+; GetObsDir again) so this launches whatever folder was actually chosen,
+; even if the user picked a different one than the auto-detected default.
+Filename: "{app}\bin\64bit\obs64.exe"; Description: "{cm:LaunchProgram,OBS Studio}"; Flags: nowait postinstall skipifsilent
+
 [Code]
 function GetObsDir(Param: string): string;
 var
