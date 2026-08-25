@@ -149,6 +149,46 @@ public:
 	// yet (EnsureBufferWrapperScene hasn't been called/succeeded).
 	bool ShowBufferWrapperScene() const;
 
+	// --- Audio delay orchestration ---
+	//
+	// AudioDelayFilter can't be attached to the live SCENE the way
+	// VideoDelayFilter is -- verified live, 2026-08-25, and by reading
+	// obs_source_filter_add()'s real implementation: it silently refuses
+	// any filter requesting OBS_SOURCE_AUDIO on a source whose own
+	// output_flags don't include it, and scenes never advertise audio in
+	// output_flags (their audio goes through a separate .audio_render
+	// callback, not the per-source filter chain). So instead, one instance
+	// is attached to each individual audio-capable LEAF source directly
+	// inside the live scene (Mic, Desktop, etc.) -- those DO advertise
+	// OBS_SOURCE_AUDIO on themselves, so attachment works normally, and
+	// (also verified live) their filter_audio keeps firing on schedule with
+	// NO keep-alive trick needed, unlike video: a leaf source's own
+	// obs_source_output_audio() -> filter-chain pipeline runs continuously
+	// regardless of whether that source is part of the current Program
+	// scene's tree.
+	//
+	// Known limitation: only DIRECT children of the live scene are covered
+	// -- audio from a source nested inside a SUB-scene/group within the
+	// live scene won't get delayed. Acceptable for now; revisit if it turns
+	// out to matter.
+
+	// Idempotent: attaches AudioDelayFilter (disabled by default, matching
+	// SetBufferFilterEnabled's pattern) to every direct child of
+	// `liveSceneName` that advertises OBS_SOURCE_AUDIO and doesn't already
+	// have one. Returns false if liveSceneName doesn't resolve to a real
+	// scene.
+	bool EnsureAudioDelayFilters(const std::string &liveSceneName) const;
+
+	// Enables/disables every AudioDelayFilter attached under liveSceneName
+	// by EnsureAudioDelayFilters(). Returns false if liveSceneName doesn't
+	// resolve to a real scene (not an error if it simply has no audio
+	// children -- that's a normal, silent no-op).
+	bool SetAudioDelayFiltersEnabled(const std::string &liveSceneName, bool enabled) const;
+
+	// Pushes `seconds` into every AudioDelayFilter attached under
+	// liveSceneName. Same not-an-error semantics as SetAudioDelayFiltersEnabled.
+	bool SetAudioDelayFiltersDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const;
+
 	// Nothing calls obs_source_video_render() on a source that isn't part of
 	// whatever's currently on Program/Preview (or nested inside it) — OBS's
 	// per-frame render pass is just "run the registered draw callbacks, then
@@ -213,6 +253,15 @@ private:
 	// pointer valid only for the duration of the calling function.
 	obs_source_t *FindBufferFilter(const std::string &liveSceneName) const;
 
+	// Collects the direct children of `liveSceneName` that advertise
+	// OBS_SOURCE_AUDIO (see EnsureAudioDelayFilters's header comment for
+	// why only direct children, and why this naturally skips nested
+	// scenes/groups without needing to special-case them). Every returned
+	// pointer is a borrowed reference (owned by the scene item), valid only
+	// for the duration of the calling function -- same convention as
+	// FindBufferFilter.
+	std::vector<obs_source_t *> GetAudioCapableChildren(const std::string &liveSceneName) const;
+
 	FrontendEventHandler handler_;
 	bool initialized_ = false;
 
@@ -231,17 +280,6 @@ private:
 	// reaching the filter (see VideoDelayFilter::Render()'s own one-shot
 	// logs for that second half of the picture).
 	bool loggedFirstRenderCallback_ = false;
-
-	// --- TEMPORARY SPIKE (2026-08-25, see AcquireLiveSceneRendering) ---
-	// Answers one question before building the real per-leaf-source audio
-	// capture pipeline: does obs_source_add_audio_capture_callback() on a
-	// leaf source (Mic) nested only in the wrapper scene (not on Program)
-	// fire at all during Filling, without any extra keep-alive? Remove this
-	// whole block once that pipeline replaces it.
-	static void AudioProbeCallback(void *param, obs_source_t *source, const struct audio_data *audio_data,
-				       bool muted);
-	obs_source_t *audioProbeSource_ = nullptr;
-	bool loggedAudioProbeFired_ = false;
 };
 
 } // namespace trigglow

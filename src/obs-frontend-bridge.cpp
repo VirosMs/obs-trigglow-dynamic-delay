@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "obs-frontend-bridge.hpp"
+#include "audio-delay-filter.hpp"
 #include "logging.hpp"
 #include "video-delay-filter.hpp"
 
@@ -208,6 +209,14 @@ namespace {
 // elsewhere.
 constexpr const char *kBufferWrapperSceneName = "Trigglow Delay Buffer (no tocar)";
 constexpr const char *kBufferFilterInstanceName = "Trigglow Buffer Mode Delay (auto, no tocar)";
+
+// Prefix for AudioDelayFilter instance names -- one per audio-capable leaf
+// source inside the live scene, so each needs its own globally-unique name
+// (see the name-collision comment on kBufferFilterInstanceName above; same
+// constraint applies here). Suffixing with the leaf source's own name keeps
+// it both unique and recognizable if a curious user opens that source's
+// Filters dialog.
+constexpr const char *kAudioDelayFilterPrefix = "Trigglow Audio Delay (auto, no tocar) - ";
 } // namespace
 
 obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneName) const
@@ -405,6 +414,122 @@ bool ObsFrontendBridge::ShowBufferWrapperScene() const
 	return SetCurrentSceneByName(kBufferWrapperSceneName);
 }
 
+std::vector<obs_source_t *> ObsFrontendBridge::GetAudioCapableChildren(const std::string &liveSceneName) const
+{
+	std::vector<obs_source_t *> result;
+
+	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
+	if (!liveSource)
+		return result;
+
+	obs_scene_t *liveScene = obs_scene_from_source(liveSource);
+	if (liveScene) {
+		obs_scene_enum_items(
+			liveScene,
+			[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+				obs_source_t *itemSource = obs_sceneitem_get_source(item);
+				if (itemSource && (obs_source_get_output_flags(itemSource) & OBS_SOURCE_AUDIO) != 0)
+					static_cast<std::vector<obs_source_t *> *>(param)->push_back(itemSource);
+				return true; // Keep enumerating -- unlike FindBufferFilter, we want ALL matches.
+			},
+			&result);
+	}
+
+	obs_source_release(liveSource);
+	return result;
+}
+
+bool ObsFrontendBridge::EnsureAudioDelayFilters(const std::string &liveSceneName) const
+{
+	auto children = GetAudioCapableChildren(liveSceneName);
+	if (children.empty()) {
+		// Not a warning: plenty of scenes legitimately have no direct
+		// audio-capable children (audio routed some other way, or a
+		// video-only scene) -- buffer mode still works fine for video only.
+		TRIGGLOW_LOG_INFO(kComponent, "audio delay: \"%s\" has no direct audio-capable children",
+				  liveSceneName.c_str());
+		return false;
+	}
+
+	for (obs_source_t *child : children) {
+		const char *childName = obs_source_get_name(child);
+		std::string filterName = std::string(kAudioDelayFilterPrefix) + (childName ? childName : "?");
+
+		if (obs_source_get_filter_by_name(child, filterName.c_str()))
+			continue; // Already attached.
+
+		obs_data_t *filterSettings = obs_data_create();
+		obs_source_t *filter =
+			obs_source_create(AudioDelayFilter::Id(), filterName.c_str(), filterSettings, nullptr);
+		obs_data_release(filterSettings);
+		if (!filter) {
+			TRIGGLOW_LOG_ERROR(kComponent, "audio delay: obs_source_create failed for \"%s\"",
+					   filterName.c_str());
+			continue;
+		}
+
+		const char *actualName = obs_source_get_name(filter);
+		if (!actualName || filterName != actualName) {
+			// Same defensive check as EnsureBufferWrapperScene's video
+			// filter creation -- see that comment for the full story on
+			// why a name mismatch here means it'll never be found again.
+			TRIGGLOW_LOG_ERROR(kComponent,
+					   "audio delay: created filter got renamed to \"%s\" (wanted \"%s\") -- "
+					   "name collision, this instance will not be manageable",
+					   actualName ? actualName : "(null)", filterName.c_str());
+		}
+
+		obs_source_filter_add(child, filter);
+		obs_source_set_enabled(filter, false); // Disabled by default, same as the video filter.
+		obs_source_release(filter);
+		TRIGGLOW_LOG_INFO(kComponent, "audio delay: attached \"%s\" to \"%s\"", filterName.c_str(),
+				  childName ? childName : "?");
+	}
+
+	return true;
+}
+
+bool ObsFrontendBridge::SetAudioDelayFiltersEnabled(const std::string &liveSceneName, bool enabled) const
+{
+	auto children = GetAudioCapableChildren(liveSceneName);
+	bool foundAny = false;
+
+	for (obs_source_t *child : children) {
+		const char *childName = obs_source_get_name(child);
+		std::string filterName = std::string(kAudioDelayFilterPrefix) + (childName ? childName : "?");
+		obs_source_t *filter = obs_source_get_filter_by_name(child, filterName.c_str());
+		if (!filter)
+			continue;
+		obs_source_set_enabled(filter, enabled);
+		foundAny = true;
+	}
+
+	TRIGGLOW_LOG_INFO(kComponent, "audio delay: SetAudioDelayFiltersEnabled(%s) applied to %s",
+			  enabled ? "true" : "false", foundAny ? "at least one filter" : "no filters (none found)");
+	return foundAny;
+}
+
+bool ObsFrontendBridge::SetAudioDelayFiltersDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const
+{
+	auto children = GetAudioCapableChildren(liveSceneName);
+	bool foundAny = false;
+
+	for (obs_source_t *child : children) {
+		const char *childName = obs_source_get_name(child);
+		std::string filterName = std::string(kAudioDelayFilterPrefix) + (childName ? childName : "?");
+		obs_source_t *filter = obs_source_get_filter_by_name(child, filterName.c_str());
+		if (!filter)
+			continue;
+		obs_data_t *settings = obs_data_create();
+		obs_data_set_int(settings, "delay_seconds", seconds);
+		obs_source_update(filter, settings);
+		obs_data_release(settings);
+		foundAny = true;
+	}
+
+	return foundAny;
+}
+
 bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneName)
 {
 	if (liveSceneRenderSource_) {
@@ -443,27 +568,6 @@ bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneNa
 			  liveSceneName.c_str(), static_cast<void *>(liveSceneRenderSource_),
 			  obs_source_filter_count(liveSceneRenderSource_));
 
-	// --- TEMPORARY SPIKE (2026-08-25) — audio investigation, not a feature ---
-	// Answers one question before building the real audio pipeline: does a
-	// leaf audio source (Mic) that's nested only inside the WRAPPER scene
-	// (not on Program) keep calling obs_source_output_audio() -- i.e. does
-	// obs_source_add_audio_capture_callback() fire at all -- during Filling,
-	// or does it need its own keep-alive the same way video did? Logs the
-	// first callback firing only, nothing else; no ring buffer, no
-	// reinjection. See the plan file for why this has to be verified before
-	// the real per-leaf-source capture + remix + inject pipeline is worth
-	// building at all.
-	audioProbeSource_ = obs_get_source_by_name("Mic");
-	if (audioProbeSource_) {
-		loggedAudioProbeFired_ = false;
-		obs_source_add_audio_capture_callback(audioProbeSource_, &ObsFrontendBridge::AudioProbeCallback, this);
-		TRIGGLOW_LOG_INFO(kComponent, "audio spike: capture callback attached to \"Mic\" (%p)",
-				  static_cast<void *>(audioProbeSource_));
-	} else {
-		TRIGGLOW_LOG_WARN(kComponent, "audio spike: no source named \"Mic\" found, skipping probe");
-	}
-	// --- end spike ---
-
 	return true;
 }
 
@@ -477,14 +581,6 @@ bool ObsFrontendBridge::ReleaseLiveSceneRendering(const std::string & /*liveScen
 	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive released");
 	obs_source_release(liveSceneRenderSource_);
 	liveSceneRenderSource_ = nullptr;
-
-	// --- TEMPORARY SPIKE cleanup (see AcquireLiveSceneRendering) ---
-	if (audioProbeSource_) {
-		obs_source_remove_audio_capture_callback(audioProbeSource_, &ObsFrontendBridge::AudioProbeCallback,
-							 this);
-		obs_source_release(audioProbeSource_);
-		audioProbeSource_ = nullptr;
-	}
 	return true;
 }
 
@@ -522,19 +618,6 @@ void ObsFrontendBridge::RenderLiveSceneCallback(void *param, uint32_t /*cx*/, ui
 		gs_texrender_end(self->liveSceneRenderTarget_);
 	}
 }
-
-// --- TEMPORARY SPIKE (see AcquireLiveSceneRendering) ---
-void ObsFrontendBridge::AudioProbeCallback(void *param, obs_source_t * /*source*/, const struct audio_data *audio_data,
-					   bool muted)
-{
-	auto *self = static_cast<ObsFrontendBridge *>(param);
-	if (!self->loggedAudioProbeFired_) {
-		TRIGGLOW_LOG_INFO(kComponent, "audio spike: capture callback FIRING (frames=%u, muted=%s)",
-				  audio_data ? audio_data->frames : 0, muted ? "yes" : "no");
-		self->loggedAudioProbeFired_ = true;
-	}
-}
-// --- end spike ---
 
 void ObsFrontendBridge::AddDock(const char *id, const char *title, void *qWidget) const
 {

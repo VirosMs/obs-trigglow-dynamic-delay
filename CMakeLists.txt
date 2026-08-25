@@ -50,6 +50,8 @@ target_sources(
     src/logging.hpp
     src/video-delay-filter.cpp
     src/video-delay-filter.hpp
+    src/audio-delay-filter.cpp
+    src/audio-delay-filter.hpp
     src/scene-combo-box.cpp
     src/scene-combo-box.hpp
     src/buffer-mode-controller.cpp

@@ -27,6 +27,7 @@ extern "C" {
 #include <plugin-support.h>
 }
 
+#include "audio-delay-filter.hpp"
 #include "buffer-mode-controller.hpp"
 #include "hotkeys.hpp"
 #include "logging.hpp"
@@ -127,11 +128,12 @@ bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "loading Trigglow Dynamic Delay v%s", PLUGIN_VERSION);
 
-	// Registers the OBS filter that buffer mode orchestrates under the hood
-	// (see obs-frontend-bridge.cpp's EnsureBufferWrapperScene). The user
-	// never adds it manually via the Filters dialog -- see
-	// video-delay-filter.hpp.
+	// Registers the OBS filters that buffer mode orchestrates under the hood
+	// (see obs-frontend-bridge.cpp's EnsureBufferWrapperScene /
+	// EnsureAudioDelayFilters). The user never adds either manually via the
+	// Filters dialog -- see video-delay-filter.hpp / audio-delay-filter.hpp.
 	trigglow::VideoDelayFilter::Register();
+	trigglow::AudioDelayFilter::Register();
 
 	g_state = new PluginState();
 	g_state->bufferController = std::make_unique<trigglow::BufferModeController>(g_state->bridge);

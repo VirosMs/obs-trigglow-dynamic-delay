@@ -43,8 +43,10 @@ void BufferModeController::SetDelaySeconds(uint32_t seconds)
 {
 	status_.delaySeconds = seconds;
 	NotifyStatusChanged();
-	if (status_.state == BufferModeState::Active)
+	if (status_.state == BufferModeState::Active) {
 		bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, seconds);
+		bridge_.SetAudioDelayFiltersDelaySeconds(status_.liveSceneName, seconds);
+	}
 }
 
 void BufferModeController::Enable()
@@ -71,6 +73,17 @@ void BufferModeController::Enable()
 		return;
 	}
 	bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, status_.delaySeconds);
+
+	// Audio: unlike the video filter, these attach to individual leaf audio
+	// sources inside the live scene (Mic, Desktop, etc.), not the scene
+	// itself -- see ObsFrontendBridge::EnsureAudioDelayFilters's comment for
+	// why. No keep-alive needed for these (verified live, 2026-08-25): a
+	// leaf source's own audio pipeline runs continuously regardless of
+	// Program visibility, unlike video rendering. Not treated as fatal if
+	// the live scene simply has no audio sources.
+	bridge_.EnsureAudioDelayFilters(status_.liveSceneName);
+	bridge_.SetAudioDelayFiltersDelaySeconds(status_.liveSceneName, status_.delaySeconds);
+	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, true);
 
 	// Enable the filter AND force the live scene to keep rendering in the
 	// background right now, not once the fill timer elapses: Program is
@@ -123,6 +136,7 @@ void BufferModeController::Disable()
 	}
 
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
+	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, false);
 	if (!sceneBeforeEnable_.empty()) {
 		bridge_.SetCurrentSceneByName(sceneBeforeEnable_);
 		sceneBeforeEnable_.clear();
