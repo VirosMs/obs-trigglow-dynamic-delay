@@ -171,16 +171,16 @@ public:
 	//      rendering the live scene directly there would visibly smear it
 	//      into whatever's on screen. Same private-texrender pattern
 	//      VideoDelayFilter::Render() already uses for its ring buffer.
-	//   3. obs_source_inc_active() — the stronger of libobs's two
-	//      "keep this alive" primitives (obs.h documents it as causing
-	//      children of the source to be considered showing too, unlike
-	//      plain obs_source_inc_showing). Needed so any leaf sources inside
-	//      the live scene keep producing BOTH video and audio while hidden
-	//      behind the loading scene — added after obs_source_inc_showing
-	//      alone was sufficient for video but audio filtering may depend on
-	//      the stronger "active" state; confirm live whether this is enough
-	//      for VideoDelayFilter's audio ring to actually accumulate during
-	//      Filling, same as the video keep-alive bug had to be confirmed.
+	//   3. BOTH obs_source_inc_showing() AND obs_source_inc_active() —
+	//      inc_showing is the primitive confirmed live to make video
+	//      rendering fire during Filling; inc_active was added on top for
+	//      audio (leaf sources' audio mixing may depend on the stronger
+	//      "active" state, per obs.h's doc that it also considers children
+	//      showing, unlike plain inc_showing). Tried SWAPPING to inc_active
+	//      alone first (dropping inc_showing) and that regressed video with
+	//      no visible error — confirmed live, 2026-08-25: the filter's
+	//      video_render simply stopped firing, silently falling back to
+	//      passing the raw live feed through unmodified. Keep both.
 	// Must be paired 1:1 with ReleaseLiveSceneRendering(); only one live
 	// scene can be held at a time (matches the rest of this design, see the
 	// header comment above).

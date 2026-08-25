@@ -352,11 +352,18 @@ bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneNa
 		return false;
 
 	liveSceneRenderSource_ = liveSource;
-	// inc_active, not inc_showing: the stronger of the two, needed so audio
-	// from the live scene's leaf sources also keeps flowing while hidden —
-	// see the header comment on this function.
+	// Both, not just one: inc_showing is the primitive already confirmed
+	// live to make video rendering (and therefore the attached buffer
+	// filter's video_render) actually fire during Filling. inc_active was
+	// ADDED on top of that for audio (found live, 2026-08-25: swapping to
+	// inc_active INSTEAD of inc_showing broke video's own buffering with
+	// no visible error -- the filter's video_render simply stopped firing,
+	// so it silently fell back to passing the raw live feed through
+	// unmodified). Keep both rather than risk repeating that regression.
+	obs_source_inc_showing(liveSceneRenderSource_);
 	obs_source_inc_active(liveSceneRenderSource_);
 	obs_add_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
+	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive acquired for \"%s\"", liveSceneName.c_str());
 	return true;
 }
 
@@ -367,6 +374,8 @@ bool ObsFrontendBridge::ReleaseLiveSceneRendering(const std::string & /*liveScen
 
 	obs_remove_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
 	obs_source_dec_active(liveSceneRenderSource_);
+	obs_source_dec_showing(liveSceneRenderSource_);
+	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive released");
 	obs_source_release(liveSceneRenderSource_);
 	liveSceneRenderSource_ = nullptr;
 	return true;
