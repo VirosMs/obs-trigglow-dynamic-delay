@@ -102,6 +102,12 @@ public:
 	// directly — mirrors DelayController::ListAvailableScenes().
 	std::vector<std::string> ListAvailableScenes() const { return bridge_.ListSceneNames(); }
 
+	// Informational only (bytes) -- what the video buffer's VRAM budget
+	// actually is on this machine right now, detected from real hardware
+	// where possible. Never restricts delaySeconds/minResolutionHeight,
+	// just lets the dock show the user what their choices are working with.
+	uint64_t GetBufferBudgetBytes() const { return bridge_.GetBufferBudgetBytes(); }
+
 	// Called once by the dock's fill timer after status_.delaySeconds has
 	// elapsed since Enable(). No-op if we're no longer Filling (e.g. the
 	// user pressed Disable before the timer fired).

@@ -37,11 +37,12 @@ extern "C" {
 // source into the NEXT slot of a ring buffer of GPU textures
 // (gs_texrender_t), then draws whichever slot is `delaySeconds` old. Memory
 // is the hard constraint, not CPU: uncompressed RGBA at 1920x1080@60fps is
-// ~475MB PER SECOND. Rather than silently truncating the requested delay
-// duration to whatever fits, EnsureRingSized() shrinks the ring's CAPTURE
-// resolution instead (kMaxBufferBytes budget) — the requested seconds are
-// always honored in time, only the visual resolution of the delayed segment
-// degrades if it doesn't fit at full res.
+// ~475MB PER SECOND. EnsureRingSized() picks a buffer budget from the real
+// GPU's VRAM (src/gpu-info.hpp) and never captures below a configurable
+// minimum resolution (quality floor, user-chosen) -- if the full requested
+// delay doesn't fit the budget at that floor, the ACTUAL buffered duration
+// shortens instead (flipped 2026-08-25 after live feedback that always
+// honoring the full duration made long delays look terrible).
 //
 // FilterAudio()/EnsureAudioRingSized() below are a COMPLETE, implemented
 // audio ring buffer (same delay-window logic as video, in sample-space) --
@@ -70,6 +71,14 @@ public:
 
 	// Registers this filter type with OBS. Call once from obs_module_load().
 	static void Register();
+
+	// The VRAM budget EnsureRingSized() is actually using right now (bytes)
+	// -- computed once from the real GPU's detected VRAM (src/gpu-info.hpp)
+	// or a safe fallback if that's unavailable. Exposed so the dock can show
+	// the user what their hardware allows, per BufferModeController's
+	// "aconsejar segun el hardware, pero a su eleccion" requirement -- this
+	// never restricts delaySeconds/minResolutionHeight, it's informational.
+	static uint64_t GetBufferBudgetBytes();
 
 private:
 	// One buffered historical frame.

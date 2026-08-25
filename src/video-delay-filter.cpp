@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "video-delay-filter.hpp"
+#include "gpu-info.hpp"
 #include "logging.hpp"
 
 #include <algorithm>
@@ -34,13 +35,46 @@ constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
 // VRAM budget for the ring buffer. Uncompressed RGBA at 1920x1080@60fps is
 // ~475MB PER SECOND (1920*1080*4 bytes * 60) — a real 30-60s buffer at that
 // resolution would need ~14-28GB, not realistic on top of whatever else OBS
-// is doing. 2GB is a moderate default (safe for older/lower-VRAM GPUs)
-// without needing a proper compressed encode/decode buffer (a much bigger
+// is doing. No proper compressed encode/decode buffer yet (a much bigger
 // rewrite — libobs has no public decoder API for that, only obs-encoder.h
-// for producing an OUTPUT stream, not decoding one back to a texture; would
-// need vendoring FFmpeg or a platform decoder — considered and explicitly
-// deferred, 2026-08-25, as multi-session work).
-constexpr uint64_t kMaxBufferBytes = 2048ULL * 1024 * 1024;
+// for producing an OUTPUT stream tied to the main video mix, not something
+// a plugin can feed arbitrary frames to on demand; would need vendoring
+// FFmpeg for both encode AND decode — investigated and explicitly deferred,
+// 2026-08-25, as multi-session work).
+//
+// GetBufferBudget() below picks the actual budget from the real GPU's VRAM
+// (src/gpu-info.hpp) where that's available, falling back to
+// kFallbackBufferBytes when it isn't (non-Windows for now, or the query
+// failed) -- these bounds keep that recommendation sane on both very small
+// and very large GPUs.
+constexpr uint64_t kFallbackBufferBytes = 2048ULL * 1024 * 1024;
+constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;            // Floor even on a detected low-VRAM GPU.
+constexpr uint64_t kMaxRecommendedBufferBytes = 6144ULL * 1024 * 1024; // Ceiling even on a monster GPU.
+constexpr double kVramFractionForBuffer = 0.15; // Don't hog more than ~15% of total VRAM -- OBS/the game need the rest.
+
+uint64_t GetBufferBudget()
+{
+	// Computed once, not per-frame: DXGI adapter enumeration is cheap but
+	// there's no reason to repeat it every EnsureRingSized() call, and VRAM
+	// doesn't change mid-session. Thread-safe init (C++11 magic statics);
+	// EnsureRingSized only ever runs on the video render thread anyway.
+	static const uint64_t budget = [] {
+		uint64_t vram = QueryDedicatedVramBytes();
+		if (vram == 0) {
+			TRIGGLOW_LOG_INFO(kComponent, "VRAM detection unavailable, using the %lluMB fallback budget",
+					  static_cast<unsigned long long>(kFallbackBufferBytes / (1024 * 1024)));
+			return kFallbackBufferBytes;
+		}
+		uint64_t recommended = std::clamp<uint64_t>(static_cast<uint64_t>(vram * kVramFractionForBuffer),
+							    kMinBufferBytes, kMaxRecommendedBufferBytes);
+		TRIGGLOW_LOG_INFO(kComponent, "detected %lluMB VRAM, using a %lluMB buffer budget (~%.0f%%)",
+				  static_cast<unsigned long long>(vram / (1024 * 1024)),
+				  static_cast<unsigned long long>(recommended / (1024 * 1024)),
+				  kVramFractionForBuffer * 100.0);
+		return recommended;
+	}();
+	return budget;
+}
 
 // Quality now wins over duration, not the other way around (flipped
 // 2026-08-25 after live feedback: a 30s buffer downscaled to 727x409 "looks
@@ -67,6 +101,11 @@ constexpr uint32_t kAudioRingMarginSeconds = 1;
 const char *VideoDelayFilter::Id()
 {
 	return kFilterId;
+}
+
+uint64_t VideoDelayFilter::GetBufferBudgetBytes()
+{
+	return GetBufferBudget();
 }
 
 void VideoDelayFilter::Register()
@@ -141,6 +180,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// +1 so a full N-second delay has a valid slot to read from, not just
 	// N seconds of frames with none old enough yet.
 	uint64_t desiredFrames = static_cast<uint64_t>(configuredDelaySeconds_) * fps + 1;
+	uint64_t budget = GetBufferBudget();
 
 	// Quality floor first, duration second (flipped 2026-08-25 -- see
 	// kDefaultMinResolutionHeight's comment): never capture shorter than
@@ -153,8 +193,8 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	uint64_t fullResTotalBytes = desiredFrames * fullResBytesPerFrame;
 
 	double scale = 1.0;
-	if (fullResTotalBytes > kMaxBufferBytes && fullResBytesPerFrame > 0) {
-		double idealScale = std::sqrt(static_cast<double>(kMaxBufferBytes) /
+	if (fullResTotalBytes > budget && fullResBytesPerFrame > 0) {
+		double idealScale = std::sqrt(static_cast<double>(budget) /
 					      static_cast<double>(desiredFrames * fullResBytesPerFrame));
 		scale = std::max(minScale, std::min(1.0, idealScale));
 	}
@@ -167,7 +207,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// below configuredMinResolutionHeight_ -- this is now the expected path
 	// for any sufficiently long delay, not a rare last resort.
 	uint64_t bufferBytesPerFrame = static_cast<uint64_t>(bufferWidth) * bufferHeight * 4;
-	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, kMaxBufferBytes / bufferBytesPerFrame);
+	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, budget / bufferBytesPerFrame);
 	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
 
 	bool resolutionChanged = !ring_.empty() && (ring_[0].width != bufferWidth || ring_[0].height != bufferHeight);
@@ -180,7 +220,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 				  "the %lluMB budget",
 				  bufferWidth, bufferHeight, scale * 100.0, origWidth, origHeight,
 				  configuredDelaySeconds_, fps,
-				  static_cast<unsigned long long>(kMaxBufferBytes / (1024 * 1024)));
+				  static_cast<unsigned long long>(budget / (1024 * 1024)));
 	}
 	if (actualFrames < desiredFrames) {
 		TRIGGLOW_LOG_WARN(kComponent, "even at %ux%u this still doesn't fit the full %us; clamped to ~%.1fs",
@@ -483,8 +523,8 @@ obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 		obs_properties_add_int(props, kSettingDelaySeconds, "Delay (segundos)", 0, kUiMaxDelaySeconds, 1);
 	obs_property_set_long_description(
 		prop, "Segundos de retraso pedidos. Se respeta la calidad minima (ver mas abajo) por encima del "
-		      "tiempo -- si no caben enteros en el presupuesto de VRAM (~2GB) a esa calidad, el tiempo "
-		      "real de buffer se acorta en su lugar (ver el log de OBS).");
+		      "tiempo -- si no caben enteros en el presupuesto de VRAM (calculado segun tu GPU) a esa "
+		      "calidad, el tiempo real de buffer se acorta en su lugar (ver el log de OBS).");
 
 	obs_property_t *qualityProp = obs_properties_add_list(props, kSettingMinResolutionHeight, "Calidad minima",
 							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);

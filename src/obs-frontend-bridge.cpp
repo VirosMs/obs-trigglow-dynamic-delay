@@ -648,6 +648,11 @@ void ObsFrontendBridge::AddDock(const char *id, const char *title, void *qWidget
 	}
 }
 
+uint64_t ObsFrontendBridge::GetBufferBudgetBytes() const
+{
+	return VideoDelayFilter::GetBufferBudgetBytes();
+}
+
 void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, void *privateData)
 {
 	auto *self = static_cast<ObsFrontendBridge *>(privateData);

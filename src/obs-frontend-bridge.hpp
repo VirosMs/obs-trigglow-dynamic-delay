@@ -101,6 +101,11 @@ public:
 	// from delay-controller.hpp / hotkeys.hpp without pulling in Qt.
 	void AddDock(const char *id, const char *title, void *qWidget) const;
 
+	// Passthrough to VideoDelayFilter::GetBufferBudgetBytes() so settings-ui
+	// never needs to include video-delay-filter.hpp itself. See that
+	// method's comment.
+	uint64_t GetBufferBudgetBytes() const;
+
 	// --- Scene switching (optional "reconnect placeholder" scene, see
 	// docs/product roadmap issue #173) ---
 
