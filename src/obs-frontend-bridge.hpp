@@ -220,6 +220,13 @@ private:
 	// frame. Its contents are never read — see AcquireLiveSceneRendering's
 	// comment for why we can't just render straight to the real output.
 	gs_texrender_t *liveSceneRenderTarget_ = nullptr;
+
+	// One-shot: logs the first time RenderLiveSceneCallback actually fires
+	// after an Acquire, so a "the buffer never fills" bug report can tell
+	// whether the draw callback itself never ran versus it running but not
+	// reaching the filter (see VideoDelayFilter::Render()'s own one-shot
+	// logs for that second half of the picture).
+	bool loggedFirstRenderCallback_ = false;
 };
 
 } // namespace trigglow

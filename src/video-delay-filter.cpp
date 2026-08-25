@@ -277,6 +277,13 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 		configuredDelaySeconds_ = seconds;
 		TRIGGLOW_LOG_INFO(kComponent, "delay set to %us", configuredDelaySeconds_);
 	}
+	// Always reset, even if seconds didn't change: Enable() calls this via
+	// SetBufferFilterDelaySeconds at the start of every cycle, so this gives
+	// fresh Render()/FilterAudio() diagnostics each time instead of only
+	// the very first time this filter instance was ever created.
+	loggedNoTarget_ = false;
+	loggedZeroSize_ = false;
+	loggedFirstRender_ = false;
 }
 
 void VideoDelayFilter::Tick(float /*secondsSinceLastTick*/)
@@ -290,6 +297,11 @@ void VideoDelayFilter::Render()
 {
 	obs_source_t *target = obs_filter_get_target(filterSource_);
 	if (!target) {
+		if (!loggedNoTarget_) {
+			TRIGGLOW_LOG_WARN(kComponent, "Render(): obs_filter_get_target() returned null -- "
+						      "filter not properly attached to anything right now");
+			loggedNoTarget_ = true;
+		}
 		obs_source_skip_video_filter(filterSource_);
 		return;
 	}
@@ -297,8 +309,19 @@ void VideoDelayFilter::Render()
 	uint32_t width = obs_source_get_base_width(target);
 	uint32_t height = obs_source_get_base_height(target);
 	if (width == 0 || height == 0) {
+		if (!loggedZeroSize_) {
+			TRIGGLOW_LOG_WARN(kComponent, "Render(): target's base size is %ux%u, skipping until it's real",
+					  width, height);
+			loggedZeroSize_ = true;
+		}
 		obs_source_skip_video_filter(filterSource_);
 		return;
+	}
+
+	if (!loggedFirstRender_) {
+		TRIGGLOW_LOG_INFO(kComponent, "Render(): first successful render this cycle, target %ux%u", width,
+				  height);
+		loggedFirstRender_ = true;
 	}
 
 	EnsureRingSized(width, height);

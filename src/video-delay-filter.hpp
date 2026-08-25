@@ -137,6 +137,17 @@ private:
 	// can't be a stack buffer — resized to match each call's audio->frames.
 	std::vector<std::vector<float>> audioOutputChunks_;
 	obs_audio_data audioOutput_ = {};
+
+	// One-shot diagnostic flags: Render() used to fail completely silently
+	// on its early-return paths (obs_filter_get_target() null, or the
+	// target's base size being 0x0), which made a real live bug (2026-08-25:
+	// the buffer never filled, no error anywhere) take multiple round-trips
+	// to even locate. Logged once per Update() (i.e. once per Enable()
+	// cycle, since Enable() always pushes a fresh delay via
+	// SetBufferFilterDelaySeconds) rather than every frame.
+	bool loggedNoTarget_ = false;
+	bool loggedZeroSize_ = false;
+	bool loggedFirstRender_ = false;
 };
 
 } // namespace trigglow

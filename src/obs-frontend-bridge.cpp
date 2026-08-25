@@ -363,6 +363,7 @@ bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneNa
 	obs_source_inc_showing(liveSceneRenderSource_);
 	obs_source_inc_active(liveSceneRenderSource_);
 	obs_add_main_render_callback(&ObsFrontendBridge::RenderLiveSceneCallback, this);
+	loggedFirstRenderCallback_ = false;
 	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: keep-alive acquired for \"%s\"", liveSceneName.c_str());
 	return true;
 }
@@ -391,6 +392,11 @@ void ObsFrontendBridge::RenderLiveSceneCallback(void *param, uint32_t /*cx*/, ui
 	uint32_t height = obs_source_get_base_height(self->liveSceneRenderSource_);
 	if (width == 0 || height == 0)
 		return;
+
+	if (!self->loggedFirstRenderCallback_) {
+		TRIGGLOW_LOG_INFO(kComponent, "buffer mode: RenderLiveSceneCallback firing (%ux%u)", width, height);
+		self->loggedFirstRenderCallback_ = true;
+	}
 
 	if (!self->liveSceneRenderTarget_)
 		self->liveSceneRenderTarget_ = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
