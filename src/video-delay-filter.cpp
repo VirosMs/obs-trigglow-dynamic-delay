@@ -45,15 +45,25 @@ constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
 // GetBufferBudget() below picks the actual budget from the machine's total
 // system RAM (src/hardware-info.hpp) where that's available, falling back
 // to kFallbackBufferBytes when it isn't (non-Windows for now, or the query
-// failed) -- these bounds keep that recommendation sane on both a modest
-// 8GB machine and a 64GB+ workstation. The fraction is deliberately lower
-// than VRAM used to get (15%): unlike a dedicated GPU's VRAM, system RAM is
-// also what the game itself, Windows, and everything else running is
-// fighting over, so this leaves much more headroom.
+// failed).
+//
+// The fraction was 10% in the first RAM-migration pass, which turned out
+// far too conservative in practice (2026-08-25 live feedback: on a 32GB
+// machine it only budgeted ~3.1GB, enough for just ~6.7s of the 30s@1080p
+// the user actually asked for -- nowhere near "doy la libertad" from the
+// original ask that this filter should honor the user's own delay/quality
+// choice as closely as possible, warning rather than silently shrinking
+// it). Raised to 50%: a real 30s@1080p60 buffer needs ~14.2GB
+// (1920*1080*4 bytes * 60fps * 30s) -- 50% of a 32GB machine (~15.9GB)
+// covers that, while still hard-capped by kMaxRecommendedBufferBytes so a
+// 128GB+ workstation doesn't get an unreasonably huge recommendation. Still
+// just a ceiling on the RING, not a standing allocation -- actual RAM use
+// tracks whatever delay/quality the user has picked, so this only matters
+// when someone deliberately asks for a large, high-quality buffer.
 constexpr uint64_t kFallbackBufferBytes = 2048ULL * 1024 * 1024;
-constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;            // Floor even on a detected low-RAM machine.
-constexpr uint64_t kMaxRecommendedBufferBytes = 8192ULL * 1024 * 1024; // Ceiling even on a very high-RAM machine.
-constexpr double kRamFractionForBuffer = 0.10;                         // Don't hog more than ~10% of total system RAM.
+constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;             // Floor even on a detected low-RAM machine.
+constexpr uint64_t kMaxRecommendedBufferBytes = 24576ULL * 1024 * 1024; // Ceiling even on a very high-RAM machine.
+constexpr double kRamFractionForBuffer = 0.50;                          // Don't hog more than ~50% of total system RAM.
 
 // Pure math shared by EnsureRingSized() (actually resizes the ring) and
 // VideoDelayFilter::EstimateBufferFit() (predicts the outcome without one --
