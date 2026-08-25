@@ -389,6 +389,27 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 		return false;
 	}
 	obs_source_set_enabled(filter, enabled);
+
+	if (!enabled) {
+		// OBS bypasses a disabled filter's video_render entirely (that's
+		// the whole point of disabling it here on Disable()) -- meaning
+		// VideoDelayFilter::Render() never runs again to shrink/free its
+		// RAM ring on its own. Without this, a 30s@1080p buffer just sits
+		// there in memory even after the user presses Disable (found live,
+		// 2026-08-26). "release_buffers" is a proc handler VideoDelayFilter
+		// registers on itself for exactly this -- see its Create()/
+		// ReleaseBuffersProc for why it hops onto the graphics thread
+		// instead of clearing the ring right here.
+		calldata_t cd = {};
+		proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+		if (!procHandler || !proc_handler_call(procHandler, "release_buffers", &cd)) {
+			TRIGGLOW_LOG_WARN(kComponent,
+					  "SetBufferFilterEnabled(false): release_buffers proc call failed, "
+					  "RAM ring may not have been freed");
+		}
+		calldata_free(&cd);
+	}
+
 	TRIGGLOW_LOG_INFO(kComponent, "SetBufferFilterEnabled(%s) applied to filter %p", enabled ? "true" : "false",
 			  static_cast<void *>(filter));
 	return true;

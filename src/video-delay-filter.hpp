@@ -195,6 +195,17 @@ private:
 	static obs_properties_t *GetProperties(void *data);
 	static void GetDefaults(obs_data_t *settings);
 
+	// "release_buffers" proc handler, registered on the filter's own
+	// obs_source_t in Create() -- ObsFrontendBridge::SetBufferFilterEnabled
+	// calls it when Disable() runs, since OBS bypasses a disabled filter's
+	// video_render entirely (Render() otherwise never runs again to shrink/
+	// free its RAM ring). ReleaseBuffersProc can be invoked from ANY thread
+	// (in practice the Qt dock's button-click thread), but ring_ is only
+	// ever touched from the graphics/video thread, so it hops onto that
+	// thread via obs_queue_task rather than clearing ring_ directly.
+	static void ReleaseBuffersProc(void *data, calldata_t *params);
+	static void ReleaseBuffersTask(void *param);
+
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	uint32_t configuredDelaySeconds_ = 0;
 	// Floor on the ring's capture height, in pixels -- quality wins over

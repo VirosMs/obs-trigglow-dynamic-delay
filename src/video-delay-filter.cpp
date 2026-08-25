@@ -831,12 +831,38 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 {
 	auto *filter = new VideoDelayFilter(source);
 	filter->Update(settings);
+
+	proc_handler_t *procHandler = obs_source_get_proc_handler(source);
+	if (procHandler)
+		proc_handler_add(procHandler, "void release_buffers()", &VideoDelayFilter::ReleaseBuffersProc, filter);
+
 	return filter;
 }
 
 void VideoDelayFilter::Destroy(void *data)
 {
 	delete static_cast<VideoDelayFilter *>(data);
+}
+
+void VideoDelayFilter::ReleaseBuffersProc(void *data, calldata_t * /*params*/)
+{
+	// Called from ObsFrontendBridge::SetBufferFilterEnabled(false), which in
+	// practice runs on whatever thread pressed Disable (the Qt dock's
+	// button-click thread) -- but ring_ is only ever touched from the
+	// graphics/video thread (inside Render()/EnsureRingSized()), so clearing
+	// it right here would race a Render() call still in flight. Queueing
+	// onto OBS_TASK_GRAPHICS instead runs it strictly after any such call
+	// (the filter's already disabled by the time this fires, so nothing
+	// else gets queued behind it). wait=true: Disable() should block until
+	// the RAM is actually freed, not just "eventually".
+	obs_queue_task(OBS_TASK_GRAPHICS, &VideoDelayFilter::ReleaseBuffersTask, data, true);
+}
+
+void VideoDelayFilter::ReleaseBuffersTask(void *param)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(param);
+	filter->ReleaseRing();
+	TRIGGLOW_LOG_INFO(kComponent, "released the RAM ring buffer (filter disabled)");
 }
 
 void VideoDelayFilter::UpdateCb(void *data, obs_data_t *settings)
