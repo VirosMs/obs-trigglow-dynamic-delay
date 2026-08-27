@@ -6,7 +6,16 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.2.0 — Early Access.**
+OBS. **Estado: MVP / v0.3.0 — Early Access.**
+
+A partir de v0.3.0, el ring buffer de RAM se comprime de verdad con MJPEG en Windows y Linux
+(FFmpeg vendorizado), con un fallback automático y seguro a almacenamiento sin comprimir si el codec
+no está disponible — esto nunca baja la calidad mínima elegida. Los slots del ring también reservan
+ahora RAM a un tamaño presupuestado en vez del techo bruto completo, creciendo solo cuando un frame
+concreto necesita más espacio. Medido en una sesión real de 30s@1080p60: el uso de RAM del buffer
+pasó de ~6.3GB a ~2.9GB. El ratio de compresión exacto depende mucho del contenido y todavía no se
+ha medido contra gameplay real (macOS todavía no forma parte de esto — sigue funcionando exactamente
+igual que antes, sin comprimir). Ver `docs/SPEC.md` para el detalle técnico completo.
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
@@ -15,7 +24,7 @@ primera entrega).
 
 ## Requisitos de uso
 
-**OBS Studio 31.1.0 o superior.** El binario v0.2.0 se compila contra las fuentes de OBS 31.1.1
+**OBS Studio 31.1.0 o superior.** El binario v0.3.0 se compila contra las fuentes de OBS 31.1.1
 (ver `buildspec.json`) y se ha verificado que carga y funciona correctamente en OBS **32.2.2**
 (el mecanismo de compatibilidad de plugins de OBS rechaza solo los plugins compilados contra una
 versión *más nueva* que la que está corriendo; nunca se ha probado en versiones anteriores a 31.1.1).
@@ -32,7 +41,7 @@ sin modificar su sistema de build (`cmake/`, `CMakePresets.json`, `.github/`) sa
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows es la plataforma prioritaria para v0.2.0** (así lo pidió el producto); macOS/Linux
+**Windows es la plataforma prioritaria para v0.3.0** (así lo pidió el producto); macOS/Linux
 compilan en verde en CI con el propio sistema de build de la plantilla, pero no se han probado en
 directo en esta entrega.
 
@@ -58,7 +67,7 @@ cmake --build --preset macos --config RelWithDebInfo
 
 ## Instalar el plugin
 
-**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.2.0-windows-x64-setup.exe`
+**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.3.0-windows-x64-setup.exe`
 desde la [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest) y
 ejecútalo — detecta tu instalación de OBS automáticamente y copia los archivos por ti. Todavía no
 está firmado (Early Access), así que Windows SmartScreen avisará antes de dejarlo ejecutar. **Guía
@@ -103,7 +112,7 @@ activarlo.
 
 ## Mapear un botón de Stream Deck
 
-No hace falta ningún plugin de Stream Deck propio en v0.2.0:
+No hace falta ningún plugin de Stream Deck propio en v0.3.0:
 
 1. En el software de Stream Deck, añade la acción **"System" → "Hotkey"** (el nombre exacto puede
    variar ligeramente según tu versión de Stream Deck).
@@ -141,7 +150,7 @@ src/
                                      BufferModeController
   logging.{hpp,cpp}                → wrapper de logging con prefijo de componente
   delay-controller.{hpp,cpp}       → lógica heredada del modo reconexión del diseño original
-                                     abandonado (ver `docs/SPEC.md` §5) — presente en el repo pero
+                                     abandonado (ver `docs/SPEC.md` §6) — presente en el repo pero
                                      nunca instanciada por plugin-main.cpp; no se envía en ningún
                                      build actual
 docs/
@@ -163,4 +172,8 @@ plugin, lo que obliga a publicar el código fuente de cualquier binario distribu
 
 Por eso este proyecto vive en **su propio repositorio, separado del monorepo principal de
 Trigglow** (que permanece privado) — publicar solo el plugin aquí cumple la GPL sin exponer el resto
-del producto. Detalle completo de esta decisión en `docs/SPEC.md` §8.
+del producto. Detalle completo de esta decisión en `docs/SPEC.md` §9.
+
+`main` es una rama protegida en GitHub: las fusiones requieren un pull request, incluso para el
+propio dueño del repositorio (sin pushes directos, sin force-push, sin borrar la rama). El trabajo
+del día a día ocurre en `develop`; los PRs van de `develop` a `main`.

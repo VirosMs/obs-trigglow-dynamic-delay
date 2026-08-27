@@ -2,6 +2,41 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.3.0 — 2026-08-27 (Early Access)
+
+Compresión real del buffer. El ring buffer ahora codifica cada frame con MJPEG (todo-intra, acorde
+a los resets abruptos y las lecturas por índice del ring) antes de guardarlo, y lo decodifica de
+vuelta al reproducirlo — reduciendo el uso real de RAM por encima del ya logrado con NV12 en
+v0.2.0, sin bajar nunca la calidad mínima que elijas.
+
+**Incluido:**
+- FFmpeg (avcodec/avutil) vendorizado y enlazado en Windows + Linux; cada slot del ring se
+  codifica en MJPEG al capturarlo y se decodifica al reproducirlo.
+- Fallback automático y seguro a NV12 sin comprimir (idéntico a v0.2.0) siempre que el codec no
+  pueda abrirse o un frame concreto falle al codificar/decodificar — la compresión nunca es un
+  requisito imprescindible para que el buffer funcione.
+- Los slots del ring ahora reservan RAM según un tamaño presupuestado (comprimido) en vez del
+  techo crudo completo, creciendo un slot concreto solo cuando un frame realmente necesita más
+  sitio. Medido en vivo a 30s@1080p: **~2,9GB en total con el buffer activo, frente a los ~6,3GB**
+  de antes de esta versión — el contenido real de gameplay comprime algo peor que el ratio
+  asumido, así que esto varía según lo que se vea en pantalla.
+- macOS todavía no forma parte de esta versión — no hay ningún build estático de FFmpeg de
+  confianza equivalente disponible ahí hoy (ver `docs/ROADMAP.md`); el plugin sigue funcionando
+  exactamente igual que en v0.2.0 en macOS, sin comprimir.
+
+**Limitaciones conocidas (no son bugs):**
+- El ratio de compresión real todavía no se ha medido contra gameplay real prolongado — el único
+  número registrado hasta ahora (muy alto) vino de una escena de carga mayormente estática y no es
+  representativo. El uso real de RAM en la práctica puede ser mayor o menor que los ~2,9GB medidos
+  aquí según el contenido.
+- Un slot que en algún momento necesitó más sitio del presupuestado mantiene esa capacidad mayor
+  durante el resto de la sesión (por diseño, para evitar una reasignación en cada frame) — el RAM
+  solo puede crecer durante una sesión, nunca bajar, hasta que Disable() libera el buffer entero.
+
+**Cambios en el repo:** `main` ahora es una rama protegida (pull request obligatorio, incluso para
+el mantenedor) — el desarrollo ocurre en `develop`, integrado vía PR. Ver `README.md` si vas a
+contribuir.
+
 ## v0.2.0 — 2026-08-26 (MVP / Early Access)
 
 Primera versión que refleja el diseño realmente enviado. Plugin nativo de OBS Studio (C++,
@@ -38,12 +73,13 @@ reescritura por completo; `0.2.0` es la primera release que refleja de verdad lo
 **Limitaciones conocidas (no son bugs):**
 - El ring buffer almacena frames NV12 sin comprimir — una compresión real de vídeo/audio (un
   pipeline de encode/decode basado en FFmpeg) se investigó y se aplazó explícitamente como trabajo
-  futuro; ver `docs/SPEC.md` §4.
+  futuro; ver `docs/SPEC.md` §5 (la compresión de vídeo se entregó en v0.3.0 más abajo — ver
+  `docs/SPEC.md` §4 — la de audio sigue aplazada).
 - Un diseño anterior con una textura de GPU persistente por frame almacenado produjo un crash real
   de "Device Remove/Reset" al pulsar Disable durante pruebas en directo. La reescritura actual a
   RAM/NV12 usa un pool pequeño y fijo de objetos GPU en su lugar y probablemente reduce ese riesgo,
   pero todavía no se ha vuelto a probar específicamente para confirmar que no reaparece — ver
-  `docs/SPEC.md` §6.
+  `docs/SPEC.md` §7.
 
 **Fuera de alcance en v0.2.0:** compresión real del buffer, presets de delay guardados, elegir una
 fuente individual en vez de una escena completa, un plugin de Stream Deck propio de Trigglow,

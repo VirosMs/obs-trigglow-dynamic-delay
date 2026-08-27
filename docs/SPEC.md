@@ -2,7 +2,7 @@
 
 # Technical specification — Trigglow Dynamic Delay for OBS
 
-Status: **MVP / v0.2.0 — Early Access**
+Status: **MVP / v0.3.0 — Early Access**
 Last updated: 2026-08-26 (rewritten from scratch — see §0)
 Plugin machine name: `obs-trigglow-dynamic-delay`
 Website: https://trigglow.virosms.com/dynamic-delay
@@ -64,7 +64,7 @@ approach, but one that causes a brief, visible reconnection on the destination p
 delay changes while live. Live testing made clear that reconnecting on every change wasn't an
 acceptable user experience for a "streamer can react instantly" tool, so it was dropped entirely
 in favor of buffer mode below. (The `delay-controller.*`/`hotkeys.*` reconnect-mode code is still in
-this repo, dormant — see §5 — in case a lower-resource opt-in mode is ever wanted later, but it is
+this repo, dormant — see §6 — in case a lower-resource opt-in mode is ever wanted later, but it is
 not instantiated by `plugin-main.cpp` and ships in no current build.)
 
 ## 3. How buffer mode actually works
@@ -96,7 +96,7 @@ textures. This replaced an earlier design (one persistent GPU texture per buffer
 feedback questioned whether that much VRAM was really required, and after a real "Device Remove/Reset"
 game crash on Disable raised the cost of holding dozens of large GPU textures alive at once — not
 conclusively proven to be caused by that design, but plausibly reduced by moving to a fixed, small GPU
-footprint (see §6).
+footprint (see §7).
 
 ### 3.2. `AudioDelayFilter` — audio
 
@@ -139,7 +139,7 @@ capture Program (the common/default setup), will also show the loading scene and
 content while buffer mode is Active, not the true live feed. This is a real difference from the
 abandoned reconnect design (§2), which only affected the streaming output's own delay and left
 Program/recording untouched. Not currently configurable — a streamer who wants an un-delayed local
-recording alongside a delayed stream isn't served by v0.2.0 as-is.
+recording alongside a delayed stream isn't served as-is.
 
 ### 3.4. Freeing the RAM ring on Disable
 
@@ -170,7 +170,100 @@ ever dropping below the chosen quality. The dock shows a live, non-blocking esti
 según el hardware, pero a su elección" (advise based on hardware, but the choice is always theirs):
 this estimate never blocks or clamps the user's picks, it only warns.
 
-## 4. Scope of v0.2.0, as actually shipped
+## 4. v0.3.0: real MJPEG compression of the RAM ring
+
+§3.5's RAM budget math above still assumes an uncompressed NV12 ring for §3's core mechanism —
+that was accurate for v0.2.0, but as of v0.3.0 each ring slot (`VideoDelayFilter::Slot`,
+`src/video-delay-filter.hpp`) is additionally MJPEG-compressed on capture and decompressed on
+playback, on the platforms where that's available. This section describes that pipeline; §3's
+description of the capture/playback loop and the fixed GPU object pool is otherwise unchanged.
+
+**Platform scope:** only where `TRIGGLOW_HAVE_FFMPEG` is defined — Windows and Linux, via a vendored,
+pinned-release BtbN LGPL-shared FFmpeg build (`avcodec`/`avutil`/`swresample`; never "latest", to keep
+builds reproducible). No equivalent trusted static FFmpeg build exists for macOS yet, so macOS isn't
+part of this: it keeps working exactly as it did in v0.2.0, uncompressed. Everywhere the codec isn't
+available (macOS today, or a build without FFmpeg linked), every code path below falls back to the
+pre-v0.3.0 raw-NV12 behavior automatically — compression is an addition on top of the existing
+mechanism, never a new requirement for it to work.
+
+### 4.1. Why MJPEG, all-intra
+
+The ring's core invariant (§3.1, §3.4) is that any slot can be independently overwritten, evicted, or
+read by plain index arithmetic at any moment — `EnsureRingSized()` can resize/clear the whole ring
+abruptly on a resolution or delay change, and playback reads whichever slot is `delaySeconds` old with
+no notion of "the frame before it" ever entering into that. A real predictive/GOP codec (P/B frames
+referencing prior frames, keyframe-seek logic, a decode order distinct from display order) carries
+exactly the kind of frame-to-frame state-machine assumptions that don't map onto that: decoding slot
+N would require also holding onto whatever slot N depended on, even after the ring has moved on or
+resized past it. MJPEG sidesteps this by construction — every frame is encoded and decoded
+independently (all-intra, no inter-frame prediction at all), so a slot's compressed bytes are
+self-contained and bitstream-independent, exactly matching the ring's "any slot, any time" contract.
+The tradeoff is a worse compression ratio than a real GOP structure would achieve; that's accepted
+as the cost of fitting this specific architecture rather than a general-purpose delivery codec.
+
+### 4.2. Encode/decode flow
+
+The capture step in `VideoDelayFilter::Render()` is unchanged through the async GPU→CPU readback
+(§3.1, steps 1–3): the harvested Y/UV bytes for the current tick land in `scratchNv12_`, one frame's
+worth of tightly-packed raw NV12, reused every tick as scratch space. From there:
+
+- **Encode (capture):** `EncodeScratchNv12Into()` de-interleaves `scratchNv12_`'s NV12 UV plane into
+  two separate, tightly-packed U and V scratch buffers (`encodeScratchU_`/`encodeScratchV_`) — MJPEG's
+  encoder wants planar 4:2:0, and NV12 is semi-planar (interleaved UV), a different memory layout.
+  Those planes are copied into a reused `AVFrame` (`encodeFrame_`, `AV_PIX_FMT_YUV420P` with
+  `AVCOL_RANGE_JPEG`) and pushed through `encoderCtx_`, the MJPEG `AVCodecContext` opened by
+  `EnsureCodecContextsOpen()` at the ring's current `bufferWidth_`/`bufferHeight_`, fixed quality via
+  `AV_CODEC_FLAG_QSCALE` (`qmin`/`qmax` both set to `kMjpegQuality = 5` — a commonly-cited MJPEG sweet
+  spot, visually close to lossless while still compressing meaningfully; not yet a dock setting). The
+  resulting packet's bytes are copied into the destination `Slot`'s `pixels`, with `usedBytes` set to
+  the packet size and `compressed = true`.
+- **Decode (playback):** `DecodeSlotIntoScratchNv12()` reverses this — feeds the slot's MJPEG packet
+  (`src.compressed` must be true) through `decoderCtx_` and writes the decoded planes back into
+  `scratchNv12_` as plain NV12 bytes, ready for the existing `gs_texture_set_image()` playback upload
+  (§3.1, step 5) exactly as if that slot had never been compressed at all.
+- **Fallback:** either function returns `false` (destination untouched) if the relevant codec context
+  isn't open — not found in the linked FFmpeg, or `avcodec_open2()` failed at this resolution — or a
+  specific frame genuinely fails to encode/decode. Callers then store/read `scratchNv12_` raw, exactly
+  the same code path platforms without `TRIGGLOW_HAVE_FFMPEG` always use. Compression is therefore
+  never a hard requirement for the ring to work at all — only ever a RAM optimization on top of it.
+
+### 4.3. Budgeted allocation, grow-only
+
+Compressing the bytes stored inside a slot only pays off in practice if the slot's own memory
+allocation shrinks too — otherwise a smaller `usedBytes` inside a still-full-size `pixels` vector is a
+paper win, not a real one. `EnsureRingSized()` now allocates each slot's `pixels` at a **budgeted**
+size — `frameBytes / kAssumedCompressionRatio` — instead of the full raw NV12 ceiling.
+`kAssumedCompressionRatio` is a conservative, deliberately-chosen-up-front constant: `3.0` on
+`TRIGGLOW_HAVE_FFMPEG` platforms (chosen conservative because OBS capture content is disproportionately
+full of exactly what compresses worst — sharp UI/HUD edges, on-screen text — even though MJPEG on
+natural video often does much better), and `1.0` (no assumed compression at all) everywhere else,
+which keeps that platform's allocation identical to pre-v0.3.0 behavior.
+
+`EncodeScratchNv12Into()` and the raw-storage fallback both grow a slot's `pixels` past its budget with
+a plain `resize()` whenever one particular frame genuinely needs more room than assumed — hard-to-
+compress content, or the codec unavailable/failed for that frame. That growth is **permanent** for the
+rest of the slot's lifetime: capacity is never shrunk back down, to avoid paying a realloc+memcpy on
+every single frame. This is a deliberate one-way ratchet, not a bug — worst case, a slot that
+consistently compresses worse than assumed eventually grows to the full raw size (identical to storing
+everything uncompressed), and the only way to release that growth is releasing the whole ring
+(`Disable()`, or a resolution change that reallocates `ring_` from scratch).
+
+### 4.4. Measured result, and what's still open
+
+Real, live measurement — 30 seconds of buffered 1080p60 video, buffer `Active` — showed total RAM
+usage for the ring going from **~6.3GB** (before the budgeted-allocation change, i.e. compressing the
+bytes but still reserving the full raw ceiling per slot) to **~2.9GB** (after it) on the same machine,
+the same session: a real **~2.2x** reduction, measured directly rather than assumed.
+
+Left open: the actual per-frame MJPEG compression ratio has **not** been measured against sustained
+real gameplay content yet. The one ratio logged so far (`loggedFirstEncode_`, first successful encode
+after `EnsureCodecContextsOpen()`) came from a mostly-static loading-scene frame and is explicitly not
+representative of real content — it should not be read as a typical or expected number. The honest
+statement is that the real compression ratio depends heavily on what's on screen and is still an open
+measurement, not that `kAssumedCompressionRatio`'s `3.0` (or any other specific number) is what
+gameplay actually achieves.
+
+## 5. Scope of v0.2.0, as actually shipped
 
 Included:
 
@@ -196,14 +289,15 @@ Explicitly out of scope for v0.2.0 (see `docs/ROADMAP.md`):
   `obs_video_encoder_create` can only feed OBS's own output pipeline and libobs has no public decoder
   API at all) and explicitly deferred as multi-session future work. A GPU-compute-shader path was also
   investigated and ruled out — libobs exposes no compute/dispatch API in its public graphics API,
-  confirmed by an exhaustive `graphics.h` review.
+  confirmed by an exhaustive `graphics.h` review. (Video compression on Windows/Linux is what v0.3.0
+  actually adds — see §4; audio compression remains out of scope.)
 - Saved delay presets.
 - Choosing an individual source instead of a whole scene as "live".
 - A dedicated Trigglow Stream Deck plugin (the native-hotkey path already works today).
 - Signed installers (the current Windows installer is unsigned — Early Access).
 - macOS/Linux **live-tested** (both already build green in CI; neither has been run live yet).
 
-## 5. Legacy reconnect-mode code
+## 6. Legacy reconnect-mode code
 
 `delay-controller.*` and the reconnect-specific hotkey wiring from §2's abandoned first design are
 still present in this repo, unused — `plugin-main.cpp` no longer instantiates `DelayController` or
@@ -211,7 +305,7 @@ wires its hotkeys/dock. Kept rather than deleted in case a lower-resource, opt-i
 wanted later (buffer mode trades RAM for zero reconnection; some users on very constrained hardware
 might prefer the old trade-off) — not a promise that it will return, just not thrown away.
 
-## 6. Known risk, not yet confirmed resolved
+## 7. Known risk, not yet confirmed resolved
 
 A real "Device Remove/Reset" GPU crash was observed live when pressing Disable, under the earlier
 one-GPU-texture-per-buffered-frame design. It was never conclusively root-caused to this plugin before
@@ -220,13 +314,14 @@ GPU objects instead of dozens of large ones scaling with delay length), but this
 confirmed fix. Treat it as a real, live-testable risk area rather than a resolved issue until it's been
 specifically re-tested for recurrence.
 
-## 7. Architecture
+## 8. Architecture
 
 ```
 plugin-main.cpp              → obs_module_load/unload, wiring for all components
 buffer-mode-controller.*      → the state machine described in §3.3 (Inactive/Filling/Active/Error)
 obs-frontend-bridge.*         → the only layer that touches obs-frontend-api.h + filter/scene wiring
 video-delay-filter.*          → §3.1 -- the RAM/NV12 ring buffer and its small fixed GPU object pool
+                                (§4 -- v0.3.0 MJPEG compression, Windows/Linux only)
 audio-delay-filter.*          → §3.2 -- per-leaf-source audio delay ring
 hardware-info.*               → total system RAM query (replaces the earlier VRAM/DXGI query)
 scene-combo-box.*             → dock combo box populated from obs_frontend_get_scene_names()
@@ -235,14 +330,14 @@ settings-ui.*                 → the Qt dock (live/loading scene, seconds, qual
 hotkeys.*                     → registration of the 3 native OBS hotkeys, wired to
                                 BufferModeController's Enable()/Disable()/Toggle()
 logging.*                     → logging wrapper with a component prefix
-delay-controller.*            → §5 -- legacy reconnect-mode logic, present but unused
+delay-controller.*            → §6 -- legacy reconnect-mode logic, present but unused
 ```
 
 Design principle: **`BufferModeController` is the only owner of state**. The dock and the hotkeys both
 call the same public methods (`Enable()`, `Disable()`, `Toggle()`) — there is no separate code path for
 "button" vs. "hotkey", which halves the state-sync bug surface.
 
-## 8. License and repository
+## 9. License and repository
 
 This project is built on the official `obsproject/obs-plugintemplate`, distributed under
 **GPL-2.0-or-later** (see `LICENSE`). This isn't a branding choice: **`libobs`, the library any OBS

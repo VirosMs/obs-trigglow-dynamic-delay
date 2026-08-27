@@ -78,7 +78,7 @@
 - Check `docs/BUILD_VALIDATION.md` — it documents what's been verified (real CI builds against the
   real OBS SDK and Qt6 on Windows/macOS/Ubuntu, plus live testing inside a real OBS instance on
   Windows) and what hasn't (live testing on macOS/Linux, a confirmed fix for the GPU
-  Device-Remove/Reset risk described in `docs/SPEC.md` §6, and any dedicated automated test suite).
+  Device-Remove/Reset risk described in `docs/SPEC.md` §7, and any dedicated automated test suite).
 - A compile error on your own machine is valuable information — it's likely a difference between
   your exact OBS/Qt version and the ones pinned in `buildspec.json`. Open an issue in the repository
   with the full error log.

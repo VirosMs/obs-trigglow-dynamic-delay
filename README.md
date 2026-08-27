@@ -6,7 +6,15 @@ Native OBS Studio plugin that delays your stream's **video and audio together**,
 number of seconds, from a button, a native OBS hotkey, or a Stream Deck — **without the streaming
 output ever being touched.** No reconnection, no cut, at any point, for any reason. No external
 app, no web panel, no separate process: everything lives inside the OBS process.
-**Status: MVP / v0.2.0 — Early Access.**
+**Status: MVP / v0.3.0 — Early Access.**
+
+As of v0.3.0, the RAM ring buffer is real MJPEG-compressed on Windows and Linux (vendored FFmpeg),
+with an automatic, safe fallback to uncompressed storage if the codec isn't available — no quality
+floor is ever lowered because of this. Ring slots also now reserve RAM at a budgeted size instead of
+the full raw ceiling, growing only when a frame actually needs more room. Measured on a real 30s@1080p60
+session: RAM usage for the buffer went from ~6.3GB to ~2.9GB. The exact compression ratio depends
+heavily on content and hasn't been measured against real gameplay yet (macOS isn't part of this yet —
+it keeps working exactly as before, uncompressed). See `docs/SPEC.md` for the full technical detail.
 
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried
@@ -15,7 +23,7 @@ first release).
 
 ## Usage requirements
 
-**OBS Studio 31.1.0 or newer.** The v0.2.0 binary is built against the OBS 31.1.1 sources (see
+**OBS Studio 31.1.0 or newer.** The v0.3.0 binary is built against the OBS 31.1.1 sources (see
 `buildspec.json`), and it has been verified to load and work correctly on OBS **32.2.2** (OBS's
 plugin compatibility mechanism only rejects plugins built against a version *newer* than the one
 currently running; it has never been tested on versions older than 31.1.1).
@@ -32,7 +40,7 @@ enable `ENABLE_FRONTEND_API` and `ENABLE_QT` and register the new source files.
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows is the priority platform for v0.2.0** (as requested by product); macOS/Linux build green
+**Windows is the priority platform for v0.3.0** (as requested by product); macOS/Linux build green
 in CI on the template's own build system, but have not been run live in this release.
 
 ## Build (Windows)
@@ -57,7 +65,7 @@ cmake --build --preset macos --config RelWithDebInfo
 
 ## Installing the plugin
 
-**Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.2.0-windows-x64-setup.exe`
+**Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.3.0-windows-x64-setup.exe`
 from the [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)
 and run it — it finds your OBS install automatically and copies the files for you. It isn't code-
 signed yet (Early Access), so Windows SmartScreen will warn you before letting it run. **Full guide
@@ -102,7 +110,7 @@ before you enabled it.
 
 ## Mapping a Stream Deck button
 
-No dedicated Stream Deck plugin is needed in v0.2.0:
+No dedicated Stream Deck plugin is needed in v0.3.0:
 
 1. In the Stream Deck software, add the **"System" → "Hotkey"** action (the exact name may vary
    slightly depending on your Stream Deck version).
@@ -137,7 +145,7 @@ src/
                                      BufferModeController
   logging.{hpp,cpp}                → logging wrapper with a component prefix
   delay-controller.{hpp,cpp}       → legacy reconnect-mode logic from the abandoned first design
-                                     (see `docs/SPEC.md` §5) — present in the repo but never
+                                     (see `docs/SPEC.md` §6) — present in the repo but never
                                      instantiated by plugin-main.cpp; ships in no current build
 docs/
   SPEC.md                  → full technical specification (start here)
@@ -158,4 +166,8 @@ plugin, which requires publishing the source code of any distributed binary.
 
 That's why this project lives in **its own repository, separate from Trigglow's main monorepo**
 (which stays private) — publishing only the plugin here satisfies the GPL without exposing the
-rest of the product. Full detail on this decision in `docs/SPEC.md` §8.
+rest of the product. Full detail on this decision in `docs/SPEC.md` §9.
+
+`main` is a protected branch on GitHub: merges require a pull request, even for the repo owner (no
+direct pushes, no force-push, no branch deletion). Day-to-day work happens on `develop`; PRs go
+`develop` → `main`.

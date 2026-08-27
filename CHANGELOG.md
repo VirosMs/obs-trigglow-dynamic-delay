@@ -2,6 +2,41 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.3.0 — 2026-08-27 (Early Access)
+
+Real buffer compression. The ring buffer now encodes each frame with MJPEG (all-intra, matching
+the ring's abrupt resets and index-based reads) before storing it, and decodes it back on
+playback — cutting real RAM usage on top of the v0.2.0 NV12 storage, without lowering the quality
+floor you choose.
+
+**Included:**
+- FFmpeg (avcodec/avutil) vendored and linked on Windows + Linux; each ring slot is MJPEG-encoded
+  on capture and decoded on playback.
+- Automatic, safe fallback to uncompressed NV12 (identical to v0.2.0) whenever the codec can't
+  open or a specific frame fails to encode/decode — compression is never a hard requirement for
+  the buffer to work.
+- Ring slots now reserve RAM based on a budgeted (compressed) size instead of the full raw
+  ceiling, growing a given slot only when a specific frame genuinely needs more room. Measured
+  live at 30s@1080p: **~2.9GB total with the buffer active, down from ~6.3GB** before this
+  release — real gameplay content compresses somewhat worse than the assumed ratio, so this
+  varies with what's on screen.
+- macOS is not part of this release yet — no equivalent trusted static FFmpeg build is available
+  there today (see `docs/ROADMAP.md`); the plugin keeps working exactly as in v0.2.0 on macOS,
+  uncompressed.
+
+**Known limitations (not bugs):**
+- The real compression ratio hasn't been measured against sustained real gameplay yet — the one
+  number logged so far (very high) came from a mostly-static loading scene and isn't
+  representative. RAM usage in practice may be higher or lower than the ~2.9GB measured here
+  depending on content.
+- A slot that once needed more room than its budgeted allocation keeps that larger capacity for
+  the rest of the session (by design, to avoid a reallocation every single frame) — RAM can only
+  grow during a session, never shrink back down, until Disable() releases the whole buffer.
+
+**Repo changes:** `main` is now a protected branch (pull request required, even for the
+maintainer) — development happens on `develop`, merged via PR. See `README.md` if you're
+contributing.
+
 ## v0.2.0 — 2026-08-26 (MVP / Early Access)
 
 First release of the actual, shipped design. Native OBS Studio plugin (C++, official
@@ -36,11 +71,12 @@ the first release that actually reflects what ships.
 **Known limitations (not bugs):**
 - The ring buffer stores uncompressed NV12 frames — real video/audio compression (an FFmpeg-based
   encode/decode pipeline) was investigated and explicitly deferred as future work; see
-  `docs/SPEC.md` §4.
+  `docs/SPEC.md` §5 (video compression shipped in v0.3.0 below — see `docs/SPEC.md` §4 — audio
+  compression remains deferred).
 - An earlier one-GPU-texture-per-buffered-frame design produced a real "Device Remove/Reset" GPU
   crash on Disable during live testing. The current RAM/NV12 rewrite uses a small, fixed pool of
   GPU objects instead and plausibly reduces this risk, but it has not yet been specifically
-  re-tested for recurrence — see `docs/SPEC.md` §6.
+  re-tested for recurrence — see `docs/SPEC.md` §7.
 
 **Out of scope in v0.2.0:** real buffer compression, saved delay presets, choosing an individual
 source instead of a whole scene, a dedicated Trigglow Stream Deck plugin, signed installers,

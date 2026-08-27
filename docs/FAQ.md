@@ -35,6 +35,15 @@ your machine's detected RAM budget (roughly half of total system RAM, floored at
 24GB) at your chosen quality — if 60s at your chosen quality doesn't fit, the dock's live estimate
 will tell you before you enable it, and the plugin buffers as many seconds as actually fit instead.
 
+**Does it compress the buffer now? Does that lower quality?**
+As of v0.3.0, yes — on Windows and Linux, each buffered frame is now MJPEG-compressed in RAM and
+decompressed back on playback, with an automatic, safe fallback to uncompressed storage if the codec
+isn't available for any reason. No quality loss: the quality floor you pick (480p/720p/1080p) works
+exactly as before, this only changes how the buffered frames are stored in memory. On a real 30s@1080p60
+test session, this cut the buffer's RAM usage roughly in half (~6.3GB → ~2.9GB). The exact reduction
+depends heavily on what's on screen and hasn't been measured against sustained real gameplay yet — see
+`docs/SPEC.md` §4. macOS isn't part of this yet and keeps working exactly as before, uncompressed.
+
 **Does it affect local recording or the Replay Buffer?**
 Indirectly, yes, and this is worth understanding: buffer mode works by switching what OBS's Program
 is showing, and both local recording and the Replay Buffer capture that same Program output — so if
@@ -57,11 +66,11 @@ No. All control lives inside OBS. The Trigglow website is only for downloading i
 documentation.
 
 **Do I need Trigglow's Stream Deck plugin?**
-No — v0.2.0 uses native OBS hotkeys, which Stream Deck can trigger directly with its own "System:
-Hotkey" action. See `docs/STREAM_DECK.md`.
+No — the plugin uses native OBS hotkeys, which Stream Deck can trigger directly with its own
+"System: Hotkey" action. See `docs/STREAM_DECK.md`.
 
 **Is it a finished product?**
 No — it's explicitly marked as **MVP / Early Access**. It's functional and meant for real live use,
 but with a deliberately limited scope (see `docs/ROADMAP.md` for what comes next), and one risk
 area — a GPU crash observed under an earlier design — that's believed reduced but not yet
-specifically re-confirmed (`docs/SPEC.md` §6).
+specifically re-confirmed (`docs/SPEC.md` §7).
