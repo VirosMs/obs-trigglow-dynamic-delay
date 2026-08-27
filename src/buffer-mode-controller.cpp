@@ -25,7 +25,15 @@ namespace {
 constexpr const char *kComponent = "buffer-mode-controller";
 }
 
-BufferModeController::BufferModeController(ObsFrontendBridge &bridge) : bridge_(bridge) {}
+BufferModeController::BufferModeController(ObsFrontendBridge &bridge) : bridge_(bridge)
+{
+	// The only subscriber to ObsFrontendBridge's frontend-event callback in
+	// the currently-active (buffer-mode) code path -- DelayController owned
+	// this before buffer mode replaced it as the only instantiated
+	// controller (see plugin-main.cpp), leaving it wired to nothing. See
+	// SetSceneListRefreshCallback's comment for why this is needed.
+	bridge_.Init([this](FrontendEvent event) { OnFrontendEvent(event); });
+}
 
 void BufferModeController::SetLiveScene(std::string sceneName)
 {
@@ -194,6 +202,12 @@ void BufferModeController::NotifyStatusChanged()
 {
 	if (onStatusChanged_)
 		onStatusChanged_(status_);
+}
+
+void BufferModeController::OnFrontendEvent(FrontendEvent event)
+{
+	if (event == FrontendEvent::FinishedLoading && onSceneListRefresh_)
+		onSceneListRefresh_();
 }
 
 } // namespace trigglow

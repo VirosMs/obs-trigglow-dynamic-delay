@@ -4,13 +4,14 @@
 
 Esto explica el instalador de Windows de principio a fin, incluido el aviso de SmartScreen de
 Microsoft Edge que verás porque el instalador todavía no está firmado (Early Access — ver
-`docs/ROADMAP-es.md`). Las capturas de abajo son de una instalación real; la interfaz del
-instalador es visualmente idéntica entre versiones, así que algunas pueden seguir mostrando un
-número de versión anterior en la esquina.
+`docs/ROADMAP-es.md`). Las capturas de abajo son de una instalación real en una versión anterior,
+antes de que v0.3.1 añadiera el icono/banner de Trigglow que ves hoy en el instalador — los pasos y
+la disposición son iguales, solo el estilo genérico y el número de versión de la esquina están
+desactualizados.
 
 ## 1. Descarga
 
-Consigue `obs-trigglow-dynamic-delay-0.3.0-windows-x64-setup.exe` desde la
+Consigue `obs-trigglow-dynamic-delay-0.3.1-windows-x64-setup.exe` desde la
 [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). ¿Prefieres
 instalarlo a mano? El `.zip` de esa misma release solo trae los archivos del plugin — ver
 "Installing the compiled plugin in OBS" en `README-es.md`.
@@ -56,7 +57,8 @@ Es un asistente estándar de siguiente-siguiente-siguiente:
    ![Selector de idioma](images/installer-1-language.png)
 
 2. Pantalla de bienvenida — confirma la versión que se va a instalar (esta captura muestra la
-   0.2.0; el asistente de la 0.3.0 se ve idéntico, solo con el número de versión más nuevo):
+   0.2.0 y el estilo genérico de Inno Setup; desde v0.3.1 verás el icono y el banner de Trigglow en
+   su lugar, además de la versión actual, pero con la misma disposición y botones):
 
    ![Pantalla de bienvenida, versión 0.2.0](images/installer-2-welcome.png)
 

@@ -2,7 +2,7 @@
 
 # Technical specification — Trigglow Dynamic Delay for OBS
 
-Status: **MVP / v0.3.0 — Early Access**
+Status: **MVP / v0.3.1 — Early Access**
 Last updated: 2026-08-26 (rewritten from scratch — see §0)
 Plugin machine name: `obs-trigglow-dynamic-delay`
 Website: https://trigglow.virosms.com/dynamic-delay
@@ -140,6 +140,20 @@ content while buffer mode is Active, not the true live feed. This is a real diff
 abandoned reconnect design (§2), which only affected the streaming output's own delay and left
 Program/recording untouched. Not currently configurable — a streamer who wants an un-delayed local
 recording alongside a delayed stream isn't served as-is.
+
+**v0.3.1: restoring the dock's scene selectors on a fresh OBS start.** `LoadSettings()` (called from
+`plugin-main.cpp`'s `obs_module_load()`) restores `liveSceneName`/`loadingSceneName` from disk
+correctly on every OBS start, but `TrigglowDelayDock`'s constructor — which runs immediately
+afterward, still inside `obs_module_load()` — populates its scene combo boxes by calling
+`ListAvailableScenes()` right then. Found live, 2026-08-27: OBS hasn't finished loading the scene
+collection yet at that point (module loading happens before scene collection loading), so that very
+first population always came back empty, leaving both dropdowns blank even though the underlying
+settings were fine — indistinguishable, from the user's side, from the plugin having forgotten the
+configuration. Fixed by finally wiring up `ObsFrontendBridge`'s existing (previously orphaned — see
+§2, `DelayController` used to own it) `FrontendEvent::FinishedLoading` callback:
+`BufferModeController` now subscribes to it in its constructor and exposes
+`SetSceneListRefreshCallback()`, which the dock uses to repopulate both combos — using the same
+already-correct `status_.liveSceneName`/`loadingSceneName` — once OBS actually finishes loading.
 
 ### 3.4. Freeing the RAM ring on Disable
 

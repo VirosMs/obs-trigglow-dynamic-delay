@@ -3,10 +3,11 @@
 Practical checklist for actually submitting Trigglow Dynamic Delay to the OBS Studio plugins
 store/catalog.
 
-**v0.3.0 note:** v0.3.0 (real MJPEG compression of the RAM ring buffer, see `docs/SPEC.md` §4) is a
-feature update on top of the same 0.2.0 submission this checklist was written for — it follows the
-same process and doesn't change anything below; the items already marked "Done" for 0.2.0 still
-hold.
+**v0.3.0/v0.3.1 note:** v0.3.0 (real MJPEG compression of the RAM ring buffer, see `docs/SPEC.md`
+§4) and v0.3.1 (a scene-selector persistence fix + real installer branding — replacing Inno Setup's
+generic icon/wizard images, see `installers/windows/branding/`) are both feature/fix updates on top
+of the same 0.2.0 submission this checklist was written for — they follow the same process and
+don't change anything below; the items already marked "Done" for 0.2.0 still hold.
 
 ## Done
 

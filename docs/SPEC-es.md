@@ -2,7 +2,7 @@
 
 # Especificación técnica — Trigglow Dynamic Delay para OBS
 
-Estado: **MVP / v0.3.0 — Early Access**
+Estado: **MVP / v0.3.1 — Early Access**
 Última actualización: 2026-08-26 (reescrita desde cero — ver §0)
 Nombre interno del plugin: `obs-trigglow-dynamic-delay`
 Web: https://trigglow.virosms.com/dynamic-delay
@@ -153,6 +153,21 @@ Es una diferencia real respecto al diseño de reconexión abandonado (§2), que 
 del propio output de streaming y dejaba el Programa/la grabación intactos. Hoy no es configurable —
 un streamer que quiera una grabación local sin delay junto a un stream con delay no está cubierto tal
 cual.
+
+**v0.3.1: restaurar los selectores de escena del dock al abrir OBS.** `LoadSettings()` (llamado desde
+`obs_module_load()` en `plugin-main.cpp`) restaura `liveSceneName`/`loadingSceneName` desde disco
+correctamente en cada arranque de OBS, pero el constructor de `TrigglowDelayDock` — que corre justo
+después, todavía dentro de `obs_module_load()` — rellena sus desplegables de escena llamando a
+`ListAvailableScenes()` en ese mismo instante. Encontrado en directo, 2026-08-27: OBS todavía no ha
+terminado de cargar la colección de escenas en ese punto (la carga de módulos ocurre antes que la
+carga de la colección de escenas), así que ese primer rellenado siempre volvía vacío, dejando ambos
+desplegables en blanco aunque los ajustes guardados estuvieran bien — indistinguible, desde el punto
+de vista del usuario, de que el plugin hubiera olvidado la configuración. Arreglado conectando por
+fin el callback `FrontendEvent::FinishedLoading` que ya existía en `ObsFrontendBridge` (huérfano
+hasta ahora — ver §2, antes lo usaba `DelayController`): `BufferModeController` ahora se suscribe a
+él en su constructor y expone `SetSceneListRefreshCallback()`, que el dock usa para volver a rellenar
+ambos desplegables — usando el mismo `status_.liveSceneName`/`loadingSceneName` ya correcto — en
+cuanto OBS termina de cargar de verdad.
 
 ### 3.4. Liberar el ring de RAM al hacer Disable
 

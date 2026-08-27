@@ -84,6 +84,14 @@ private:
 	// `currentValue` without re-triggering signals.
 	void RefreshSceneCombo(SceneComboBox *combo, const std::string &currentValue, bool includeNoneOption);
 
+	// Runs RefreshSceneCombo() for both scene combos, re-selecting whatever
+	// BufferModeController::GetStatus() currently holds. Wired to
+	// BufferModeController::SetSceneListRefreshCallback in the constructor
+	// so this fires automatically once OBS finishes loading the scene
+	// collection -- see that callback's comment for the bug this fixes
+	// (both combos coming up blank on every fresh OBS start/reinstall).
+	void RefreshAvailableScenes();
+
 	// Live-updates fitLabel_ from bufferController_.EstimateBufferFit() for
 	// whatever's currently in secondsSpin_/minResolutionCombo_ -- called
 	// whenever either changes, so the user sees the tradeoff of their

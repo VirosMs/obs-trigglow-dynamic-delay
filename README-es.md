@@ -6,7 +6,7 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.3.0 — Early Access.**
+OBS. **Estado: MVP / v0.3.1 — Early Access.**
 
 A partir de v0.3.0, el ring buffer de RAM se comprime de verdad con MJPEG en Windows y Linux
 (FFmpeg vendorizado), con un fallback automático y seguro a almacenamiento sin comprimir si el codec
@@ -17,6 +17,11 @@ pasó de ~6.3GB a ~2.9GB. El ratio de compresión exacto depende mucho del conte
 ha medido contra gameplay real (macOS todavía no forma parte de esto — sigue funcionando exactamente
 igual que antes, sin comprimir). Ver `docs/SPEC.md` para el detalle técnico completo.
 
+La v0.3.1 arregla que los selectores de escena del dock aparecieran en blanco al abrir OBS por
+primera vez o reinstalar el plugin (los ajustes guardados estaban bien, la interfaz simplemente
+todavía no los restauraba — ver `docs/SPEC.md` §3.3), y le da al instalador de Windows branding real
+de Trigglow en vez de los gráficos genéricos de Inno Setup. Ver `CHANGELOG-es.md`.
+
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
 se probó y se descartó) y `docs/BUILD_VALIDATION.md` (qué se verificó realmente y qué no, en esta
@@ -24,7 +29,7 @@ primera entrega).
 
 ## Requisitos de uso
 
-**OBS Studio 31.1.0 o superior.** El binario v0.3.0 se compila contra las fuentes de OBS 31.1.1
+**OBS Studio 31.1.0 o superior.** El binario v0.3.1 se compila contra las fuentes de OBS 31.1.1
 (ver `buildspec.json`) y se ha verificado que carga y funciona correctamente en OBS **32.2.2**
 (el mecanismo de compatibilidad de plugins de OBS rechaza solo los plugins compilados contra una
 versión *más nueva* que la que está corriendo; nunca se ha probado en versiones anteriores a 31.1.1).
@@ -41,7 +46,7 @@ sin modificar su sistema de build (`cmake/`, `CMakePresets.json`, `.github/`) sa
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows es la plataforma prioritaria para v0.3.0** (así lo pidió el producto); macOS/Linux
+**Windows es la plataforma prioritaria para v0.3.1** (así lo pidió el producto); macOS/Linux
 compilan en verde en CI con el propio sistema de build de la plantilla, pero no se han probado en
 directo en esta entrega.
 
@@ -67,7 +72,7 @@ cmake --build --preset macos --config RelWithDebInfo
 
 ## Instalar el plugin
 
-**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.3.0-windows-x64-setup.exe`
+**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.3.1-windows-x64-setup.exe`
 desde la [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest) y
 ejecútalo — detecta tu instalación de OBS automáticamente y copia los archivos por ti. Todavía no
 está firmado (Early Access), así que Windows SmartScreen avisará antes de dejarlo ejecutar. **Guía
@@ -112,7 +117,7 @@ activarlo.
 
 ## Mapear un botón de Stream Deck
 
-No hace falta ningún plugin de Stream Deck propio en v0.3.0:
+No hace falta ningún plugin de Stream Deck propio:
 
 1. En el software de Stream Deck, añade la acción **"System" → "Hotkey"** (el nombre exacto puede
    variar ligeramente según tu versión de Stream Deck).
