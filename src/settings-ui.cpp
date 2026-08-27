@@ -46,6 +46,7 @@ TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, QWi
 	BuildUi();
 
 	bufferController_.SetStatusChangedCallback([this](const BufferModeStatus &status) { OnStatusChanged(status); });
+	bufferController_.SetSceneListRefreshCallback([this] { RefreshAvailableScenes(); });
 	RefreshFromStatus(bufferController_.GetStatus());
 }
 
@@ -346,6 +347,18 @@ void TrigglowDelayDock::RefreshSceneCombo(SceneComboBox *combo, const std::strin
 		if (idx >= 0)
 			combo->setCurrentIndex(idx);
 	}
+}
+
+void TrigglowDelayDock::RefreshAvailableScenes()
+{
+	RefreshSceneCombo(liveSceneCombo_, bufferController_.GetStatus().liveSceneName, false);
+	RefreshSceneCombo(loadingSceneCombo_, bufferController_.GetStatus().loadingSceneName, true);
+	// The combos above are repopulated under a QSignalBlocker (see
+	// RefreshSceneCombo), so selecting the live scene for the first time
+	// here won't have triggered RefreshFitEstimate() via the normal
+	// currentIndexChanged path -- refresh it explicitly so the estimate
+	// isn't left showing "elige una escena" when one was actually restored.
+	RefreshFitEstimate();
 }
 
 } // namespace trigglow

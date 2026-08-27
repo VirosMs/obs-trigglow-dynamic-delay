@@ -31,7 +31,7 @@
 ; override pattern below -- falls back to buildspec.json's value at the time
 ; of this fix for anyone building locally without passing it explicitly.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.0"
+  #define MyAppVersion "0.3.1"
 #endif
 #define MyAppPublisher "Trigglow (VirosMs)"
 #define MyAppURL "https://trigglow.virosms.com/dynamic-delay"
@@ -74,6 +74,17 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 DisableWelcomePage=no
+; Trigglow branding (v0.3.1) -- generated from the same logo used on
+; trigglow.virosms.com (apps/web/public/trigglow-logo.png in the main
+; monorepo) via installers/windows/branding/generate-assets.py, which also
+; documents the exact Inno Setup size/aspect-ratio requirements these were
+; built against. SetupIconFile becomes the .exe's own icon (Explorer,
+; taskbar); WizardImageFile is the tall banner on the Welcome/Finished
+; pages; WizardSmallImageFile is the small logo shown top-right of every
+; other page. Before this, all three were Inno Setup's generic defaults.
+SetupIconFile=branding\setup-icon.ico
+WizardImageFile=branding\wizard-image.png
+WizardSmallImageFile=branding\wizard-small.png
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"

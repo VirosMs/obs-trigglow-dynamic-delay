@@ -137,9 +137,28 @@ public:
 	};
 	SettingsSnapshot SaveSettings() const;
 
+	using SceneListRefreshCallback = std::function<void()>;
+
+	// Fires once OBS has actually finished loading the scene collection
+	// (FrontendEvent::FinishedLoading). Exists because of a real bug found
+	// live, 2026-08-27: LoadSettings() correctly restores
+	// liveSceneName/loadingSceneName from disk well before this fires, but
+	// obs_module_load() (and therefore TrigglowDelayDock's construction,
+	// and its first scene-combo population from ListAvailableScenes()) runs
+	// BEFORE OBS has loaded the scene collection -- so the combo boxes came
+	// up empty on every fresh OBS start (and every reinstall) even though
+	// the saved scene names were fine internally, making it look like the
+	// plugin "forgot" the user's configuration. The dock wires this to
+	// repopulate its combos once scenes are actually queryable.
+	void SetSceneListRefreshCallback(SceneListRefreshCallback callback)
+	{
+		onSceneListRefresh_ = std::move(callback);
+	}
+
 private:
 	void SetState(BufferModeState state, std::string message = {});
 	void NotifyStatusChanged();
+	void OnFrontendEvent(FrontendEvent event);
 
 	ObsFrontendBridge &bridge_;
 	BufferModeStatus status_;
@@ -153,6 +172,7 @@ private:
 	// double-release or leak the keep-alive.
 	bool liveSceneRenderingHeld_ = false;
 	BufferStatusChangedCallback onStatusChanged_;
+	SceneListRefreshCallback onSceneListRefresh_;
 };
 
 } // namespace trigglow

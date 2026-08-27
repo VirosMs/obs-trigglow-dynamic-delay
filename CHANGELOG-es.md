@@ -2,6 +2,26 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.3.1 — 2026-08-27 (Early Access)
+
+**Arreglado:**
+- Los selectores de escena en directo/de carga del dock aparecían vacíos
+  cada vez que se abría OBS por primera vez (o se reinstalaba el plugin),
+  aunque los nombres guardados se cargaban correctamente por detrás —
+  dando la sensación de que el plugin "olvidaba" la configuración y
+  obligando a reelegirla cada vez. Causa raíz: `obs_module_load()` (y por
+  tanto la primera vez que el dock rellena esos desplegables) corre antes
+  de que OBS termine de cargar la colección de escenas, así que el primer
+  intento de listar escenas siempre volvía vacío. El dock ahora también
+  vuelve a rellenar ambos desplegables en cuanto OBS termina de cargar,
+  reseleccionando lo que estuviera guardado.
+
+**Cambiado:**
+- El instalador de Windows ahora usa branding real de Trigglow — icono
+  propio del `.exe`/barra de tareas y banner/logo del asistente, generados
+  a partir de la misma marca usada en trigglow.virosms.com — en vez de los
+  gráficos genéricos por defecto de Inno Setup.
+
 ## v0.3.0 — 2026-08-27 (Early Access)
 
 Compresión real del buffer. El ring buffer ahora codifica cada frame con MJPEG (todo-intra, acorde
