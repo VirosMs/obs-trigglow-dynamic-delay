@@ -65,8 +65,19 @@ if(OS_WINDOWS)
   # fail against a directory that doesn't exist yet. install() has no such
   # ordering pitfall -- every install() rule runs together at `cmake
   # --install` time, which is what CI's actual packaging step uses.
+  # swresample-7.dll: avcodec-63.dll has a real (non-delay-loaded) PE import
+  # dependency on it -- verified 2026-08-27 with pefile against the exact
+  # pinned BtbN package after Phase 1's real avcodec_* calls (not just
+  # avutil's av_version_info() smoke test) failed to load in a real OBS
+  # install with "LoadLibrary failed ... (126)". avcodec.lib/.dll alone was
+  # never actually exercised at runtime until Phase 1, so this was missing
+  # from day one without ever being caught. swresample-7.dll's own only
+  # non-system dependency is avutil-61.dll (already shipped below).
   install(
-    FILES "${_ffmpeg_root}/bin/avcodec-63.dll" "${_ffmpeg_root}/bin/avutil-61.dll"
+    FILES
+      "${_ffmpeg_root}/bin/avcodec-63.dll"
+      "${_ffmpeg_root}/bin/avutil-61.dll"
+      "${_ffmpeg_root}/bin/swresample-7.dll"
     DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit"
   )
 elseif(OS_LINUX)

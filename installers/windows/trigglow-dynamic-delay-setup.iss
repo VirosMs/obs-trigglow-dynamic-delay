@@ -93,6 +93,13 @@ Source: "{#PluginStageDir}\data\locale\en-US.ini"; DestDir: "{app}\data\obs-plug
 ; without them entirely.
 Source: "{#PluginStageDir}\bin\64bit\avcodec-63.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 Source: "{#PluginStageDir}\bin\64bit\avutil-61.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
+; swresample-7.dll: avcodec-63.dll has a real (non-delay-loaded) dependency
+; on it -- missing from here caused "LoadLibrary failed ... (126)" the
+; moment Phase 1's real avcodec_* calls made this DLL actually load for the
+; first time (found live, 2026-08-27; see CMakeLists.txt's OS_WINDOWS block
+; for the full story -- this had been silently missing since Phase 0, just
+; never exercised until now).
+Source: "{#PluginStageDir}\bin\64bit\swresample-7.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"
