@@ -48,7 +48,7 @@ confirmado y qué todavía no.
   en directo bajo el diseño anterior (una textura de GPU por frame almacenado); la reescritura a
   RAM/NV12 reduce plausiblemente el riesgo (un puñado de objetos de GPU fijos y pequeños en vez de
   docenas que escalan con la duración del delay) pero esto no es lo mismo que una prueba de que ya no
-  puede ocurrir. Ver `docs/SPEC.md` §6 para el detalle completo — sigue siendo un área de riesgo real
+  puede ocurrir. Ver `docs/SPEC.md` §7 para el detalle completo — sigue siendo un área de riesgo real
   hasta que se vuelva a probar específicamente buscando que reaparezca.
 - **No existe una suite de pruebas automatizadas dedicada** (unit tests, integration tests, etc.) para
   este plugin. Toda la validación descrita arriba es CI de compilación/enlazado más pruebas manuales

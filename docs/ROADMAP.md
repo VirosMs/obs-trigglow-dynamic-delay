@@ -22,13 +22,23 @@
 - Crash-free error handling (no live scene chosen, live scene resolves to nothing, etc.).
 - Windows as the priority platform; macOS/Linux build green in CI but haven't been run live yet.
 
-## v0.3.0 (proposed)
-- Real buffer **compression**. The ring currently stores uncompressed NV12 frames; this investigates
-  an FFmpeg-based encode/decode pipeline (vendoring FFmpeg for both directions, since
-  `obs_video_encoder_create` only feeds OBS's own output pipeline and libobs exposes no public
-  decoder API). A GPU-compute-shader path was already investigated and ruled out for v0.2.0 —
-  libobs has no compute/dispatch API in its public graphics interface — so this is squarely a CPU
-  encode/decode effort. Expected to be multi-session work given the vendoring involved.
+## v0.3.0 (shipped — 2026-08-27)
+- Real buffer **compression**: each ring slot is now MJPEG-encoded (all-intra) on capture and
+  decoded on playback, vendoring FFmpeg for both directions (`obs_video_encoder_create` only feeds
+  OBS's own output pipeline, and libobs exposes no public decoder API — a GPU-compute-shader path
+  was also investigated and ruled out for v0.2.0, since libobs has no compute/dispatch API in its
+  public graphics interface). Automatic fallback to uncompressed NV12 whenever the codec isn't
+  available or a frame fails.
+- Ring slots reserve RAM based on a budgeted (compressed) size rather than the full raw ceiling,
+  growing only as individual frames need it. Measured live at 30s@1080p: ~2.9GB with the buffer
+  active, down from ~6.3GB pre-compression.
+- Windows + Linux only for now — macOS has no equivalent trusted static FFmpeg build available and
+  keeps working exactly as in v0.2.0 (uncompressed).
+- Still open: measuring the real compression ratio against sustained gameplay content (today's
+  only data point came from a static loading scene, not representative); a slot's RAM growth is
+  permanent for the session once it happens (never shrinks back until Disable()).
+- `main` is now a protected branch (PR required, even for the maintainer); `develop` is where
+  ongoing work happens.
 
 ## v0.4.0 (proposed)
 - Saved delay presets (e.g. "Short delay 5s", "Long delay 30s"), selectable from the dock and from

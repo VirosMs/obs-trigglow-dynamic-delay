@@ -26,14 +26,24 @@
 - Windows como plataforma prioritaria; macOS/Linux compilan en verde en CI pero todavía no se han
   probado en directo.
 
-## v0.3.0 (propuesto)
-- **Compresión** real del buffer. El anillo guarda hoy frames NV12 sin comprimir; esto investiga un
-  pipeline de encode/decode basado en FFmpeg (integrando FFmpeg para ambas direcciones, ya que
-  `obs_video_encoder_create` solo alimenta el propio pipeline de output de OBS y libobs no expone
-  ninguna API pública de decodificación). Ya se investigó y se descartó una vía de compute shader
-  de GPU para v0.2.0 — libobs no tiene API de compute/dispatch en su interfaz gráfica pública — así
-  que esto es un esfuerzo de encode/decode en CPU. Se espera que sea trabajo de varias sesiones,
-  dado lo que implica integrar FFmpeg.
+## v0.3.0 (entregado — 2026-08-27)
+- **Compresión** real del buffer: cada slot del ring ahora se codifica en MJPEG (todo-intra) al
+  capturarlo y se decodifica al reproducirlo, integrando FFmpeg para ambas direcciones
+  (`obs_video_encoder_create` solo alimenta el propio pipeline de output de OBS, y libobs no
+  expone ninguna API pública de decodificación — también se investigó y descartó una vía de
+  compute shader de GPU para v0.2.0, ya que libobs no tiene API de compute/dispatch en su interfaz
+  gráfica pública). Fallback automático a NV12 sin comprimir siempre que el codec no esté
+  disponible o un frame falle.
+- Los slots del ring reservan RAM según un tamaño presupuestado (comprimido) en vez del techo
+  crudo completo, creciendo solo según lo que cada frame necesita. Medido en vivo a 30s@1080p:
+  ~2,9GB con el buffer activo, frente a los ~6,3GB de antes de comprimir.
+- Solo Windows + Linux por ahora — macOS no tiene ningún build estático de FFmpeg de confianza
+  equivalente disponible y sigue funcionando exactamente igual que en v0.2.0 (sin comprimir).
+- Sigue abierto: medir el ratio de compresión real contra gameplay real prolongado (el único dato
+  de hoy vino de una escena de carga estática, no representativo); el crecimiento de RAM de un
+  slot es permanente durante la sesión una vez ocurre (no baja hasta Disable()).
+- `main` ahora es una rama protegida (PR obligatorio, incluso para el mantenedor); `develop` es
+  donde ocurre el trabajo en curso.
 
 ## v0.4.0 (propuesto)
 - Presets de delay guardados (p. ej. "Delay corto 5s", "Delay largo 30s"), seleccionables desde el

@@ -37,6 +37,17 @@ total del sistema, con un suelo de 1GB y un techo de 24GB) a la calidad elegida 
 calidad elegida no caben, la estimación en vivo del dock te lo dirá antes de activarlo, y el plugin
 guardará tantos segundos como quepan de verdad en su lugar.
 
+**¿Ahora comprime el buffer? ¿Eso baja la calidad?**
+A partir de v0.3.0, sí — en Windows y Linux, cada frame almacenado ahora se comprime con MJPEG en
+RAM y se descomprime de vuelta al reproducirlo, con un fallback automático y seguro a almacenamiento
+sin comprimir si el codec no está disponible por cualquier motivo. Sin pérdida de calidad: la
+calidad mínima que elijas (480p/720p/1080p) funciona exactamente igual que antes, esto solo cambia
+cómo se almacenan en memoria los frames del buffer. En una sesión de prueba real de 30s@1080p60, esto
+redujo el uso de RAM del buffer aproximadamente a la mitad (~6.3GB → ~2.9GB). La reducción exacta
+depende mucho de lo que haya en pantalla y todavía no se ha medido contra gameplay real sostenido —
+ver `docs/SPEC.md` §4. macOS todavía no forma parte de esto y sigue funcionando exactamente igual
+que antes, sin comprimir.
+
 **¿Afecta a la grabación local o al Replay Buffer?**
 Indirectamente sí, y merece la pena entenderlo bien: el modo buffer funciona cambiando lo que
 muestra el Programa de OBS, y tanto la grabación local como el Replay Buffer capturan ese mismo
@@ -62,11 +73,11 @@ No. Todo el control vive dentro de OBS. La web de Trigglow es solo para descarga
 documentación.
 
 **¿Necesito el plugin de Stream Deck de Trigglow?**
-No — v0.2.0 usa hotkeys nativas de OBS, que Stream Deck puede disparar directamente con su propia
+No — el plugin usa hotkeys nativas de OBS, que Stream Deck puede disparar directamente con su propia
 acción "System: Hotkey". Ver `docs/STREAM_DECK.md`.
 
 **¿Es un producto terminado?**
 No — está marcado explícitamente como **MVP / Early Access**. Es funcional y pensado para un uso
 real en directo, pero con un alcance deliberadamente acotado (ver `docs/ROADMAP.md` para lo que
 viene después), y una zona de riesgo — un crash de GPU observado bajo un diseño anterior — que se
-cree reducida pero todavía no reconfirmada específicamente (`docs/SPEC.md` §6).
+cree reducida pero todavía no reconfirmada específicamente (`docs/SPEC.md` §7).

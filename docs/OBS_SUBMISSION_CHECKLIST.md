@@ -3,6 +3,11 @@
 Practical checklist for actually submitting Trigglow Dynamic Delay to the OBS Studio plugins
 store/catalog.
 
+**v0.3.0 note:** v0.3.0 (real MJPEG compression of the RAM ring buffer, see `docs/SPEC.md` §4) is a
+feature update on top of the same 0.2.0 submission this checklist was written for — it follows the
+same process and doesn't change anything below; the items already marked "Done" for 0.2.0 still
+hold.
+
 ## Done
 
 - Documentation is now bilingual: README, CHANGELOG, FAQ, Troubleshooting, ROADMAP, SPEC, and the
@@ -43,7 +48,7 @@ store/catalog.
   submission process (required fields, review turnaround, forum account requirements, etc.).
   **Who:** whoever is doing the submission, right before submitting.
 
-- **Signed installers are explicitly deferred to v0.3.0** (see `docs/ROADMAP.md`). Until then,
+- **Signed installers are explicitly deferred to v0.4.0** (see `docs/ROADMAP.md`). Until then,
   the unsigned Windows installer triggers the SmartScreen "Unknown publisher" warning documented
   in `docs/INSTALL_GUIDE.md` and on the streampulse website — expected, but worth flagging clearly
   in the forum submission text so reviewers and users aren't surprised by it.

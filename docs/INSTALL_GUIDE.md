@@ -4,11 +4,12 @@
 
 This walks through the Windows installer end to end, including the Microsoft Edge SmartScreen
 warning you'll see because the installer isn't code-signed yet (Early Access — see
-`docs/ROADMAP.md`). All screenshots are from a real 0.2.0 install.
+`docs/ROADMAP.md`). Screenshots below are from a real install; the installer UI itself is visually
+identical across versions, so some may still show an older version number in the corner.
 
 ## 1. Download
 
-Get `obs-trigglow-dynamic-delay-0.2.0-windows-x64-setup.exe` from the
+Get `obs-trigglow-dynamic-delay-0.3.0-windows-x64-setup.exe` from the
 [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). Prefer to
 install by hand instead? The `.zip` in the same release contains just the plugin files — see
 "Installing the compiled plugin in OBS" in `README.md`.
@@ -52,7 +53,8 @@ It's a standard next-next-next wizard:
 
    ![Language selector](images/installer-1-language.png)
 
-2. Welcome screen — confirms the version being installed:
+2. Welcome screen — confirms the version being installed (shows 0.2.0 in this screenshot; the
+   wizard for 0.3.0 looks identical, just with the newer version number):
 
    ![Welcome screen, version 0.2.0](images/installer-2-welcome.png)
 
