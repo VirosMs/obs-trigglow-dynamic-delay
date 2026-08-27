@@ -80,8 +80,33 @@ struct BufferFit {
 	double scale;
 };
 
+// v0.3.0: on TRIGGLOW_HAVE_FFMPEG platforms, actualFrames is computed against
+// an ASSUMED compression ratio (real per-frame size isn't known until after
+// encoding) rather than the raw NV12 byte count -- Policy A from the design
+// discussion: pick a conservative assumed ratio up front rather than
+// adapting live, and re-measure against real content before ever raising it.
+// 3x is deliberately conservative: MJPEG on natural video often does much
+// better, but OBS capture content is disproportionately full of exactly what
+// compresses worst (sharp UI/HUD edges, on-screen text) -- see
+// docs/ROADMAP.md. 1.0 (no assumed compression) on platforms without
+// FFmpeg keeps this function's behavior byte-for-byte identical to
+// pre-v0.3.0. Slot::pixels is still always allocated at the full raw NV12
+// size regardless (EnsureRingSized()) -- this ratio only affects how many
+// SLOTS the ring gets, never how big each one physically is.
+#ifdef TRIGGLOW_HAVE_FFMPEG
+constexpr double kAssumedCompressionRatio = 3.0;
+
+// FFmpeg's generic quantizer scale (AV_CODEC_FLAG_QSCALE): 1 = best quality/
+// least compression, 31 = worst/most. 5 is a commonly-cited sweet spot for
+// MJPEG -- visually close to lossless while still compressing meaningfully.
+// Fixed for this first pass, not a dock setting yet (see docs/ROADMAP.md).
+constexpr int kMjpegQuality = 5;
+#else
+constexpr double kAssumedCompressionRatio = 1.0;
+#endif
+
 BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps, uint32_t delaySeconds,
-			   uint32_t minResolutionHeight, uint64_t budget)
+			   uint32_t minResolutionHeight, uint64_t budget, double compressionRatio)
 {
 	// +1 so a full N-second delay has a valid slot to read from, not just
 	// N seconds of frames with none old enough yet.
@@ -91,14 +116,17 @@ BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps
 
 	// NV12 (Y + subsampled UV): 1.5 bytes/pixel, not 4 -- see Slot's comment
 	// in video-delay-filter.hpp for why the ring stores NV12 rather than
-	// RGBA.
+	// RGBA. Divided by compressionRatio for the EFFECTIVE per-frame cost
+	// used in ring-length sizing below -- the actual per-slot allocation
+	// (EnsureRingSized()) stays at the full raw size regardless.
 	uint64_t fullResBytesPerFrame = (static_cast<uint64_t>(origWidth) * origHeight * 3) / 2;
-	uint64_t fullResTotalBytes = desiredFrames * fullResBytesPerFrame;
+	double fullResEffectiveBytesPerFrame = static_cast<double>(fullResBytesPerFrame) / compressionRatio;
+	double fullResTotalBytes = static_cast<double>(desiredFrames) * fullResEffectiveBytesPerFrame;
 
 	double scale = 1.0;
-	if (fullResTotalBytes > budget && fullResBytesPerFrame > 0) {
+	if (fullResTotalBytes > static_cast<double>(budget) && fullResEffectiveBytesPerFrame > 0) {
 		double idealScale = std::sqrt(static_cast<double>(budget) /
-					      static_cast<double>(desiredFrames * fullResBytesPerFrame));
+					      (static_cast<double>(desiredFrames) * fullResEffectiveBytesPerFrame));
 		scale = std::max(minScale, std::min(1.0, idealScale));
 	}
 
@@ -110,7 +138,9 @@ BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps
 	bufferHeight &= ~1u;
 
 	uint64_t bufferBytesPerFrame = (static_cast<uint64_t>(bufferWidth) * bufferHeight * 3) / 2;
-	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(1, budget / bufferBytesPerFrame);
+	double bufferEffectiveBytesPerFrame = static_cast<double>(bufferBytesPerFrame) / compressionRatio;
+	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(
+		1, static_cast<uint64_t>(static_cast<double>(budget) / bufferEffectiveBytesPerFrame));
 	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
 
 	return {bufferWidth, bufferHeight, actualFrames, desiredFrames, scale};
@@ -285,7 +315,7 @@ VideoDelayFilter::BufferFitEstimate VideoDelayFilter::EstimateBufferFit(uint32_t
 		return {};
 
 	BufferFit fit = ComputeBufferFit(sourceWidth, sourceHeight, fps, requestedDelaySeconds, minResolutionHeight,
-					 GetBufferBudget());
+					 GetBufferBudget(), kAssumedCompressionRatio);
 
 	BufferFitEstimate estimate;
 	estimate.width = fit.bufferWidth;
@@ -370,6 +400,13 @@ void VideoDelayFilter::ReleaseGpuObjects()
 
 void VideoDelayFilter::ReleaseSizedGpuObjects()
 {
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	// Codec contexts are sized to bufferWidth_/bufferHeight_ exactly like
+	// the GPU pool below -- same lifecycle, same two call sites
+	// (resolutionChanged in EnsureRingSized(), and the destructor).
+	ReleaseCodecContexts();
+#endif
+
 	if (captureTexrender_) {
 		gs_texrender_destroy(captureTexrender_);
 		captureTexrender_ = nullptr;
@@ -403,6 +440,202 @@ void VideoDelayFilter::ReleaseSizedGpuObjects()
 	}
 }
 
+#ifdef TRIGGLOW_HAVE_FFMPEG
+void VideoDelayFilter::EnsureCodecContextsOpen()
+{
+	if (encoderCtx_ && decoderCtx_)
+		return; // Already open at the current bufferWidth_/bufferHeight_.
+
+	const AVCodec *encoder = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+	const AVCodec *decoder = avcodec_find_decoder(AV_CODEC_ID_MJPEG);
+	if (!encoder || !decoder) {
+		TRIGGLOW_LOG_WARN(kComponent, "MJPEG encoder/decoder not found in linked FFmpeg -- buffer will store "
+					      "uncompressed NV12 this session (same as before v0.3.0)");
+		return;
+	}
+
+	encoderCtx_ = avcodec_alloc_context3(encoder);
+	encoderCtx_->width = static_cast<int>(bufferWidth_);
+	encoderCtx_->height = static_cast<int>(bufferHeight_);
+	// Modern replacement for the deprecated AV_PIX_FMT_YUVJ420P: plain 4:2:0
+	// planar plus an explicit full-range color_range, which is what "J"
+	// (JPEG-range) formats meant anyway.
+	encoderCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
+	encoderCtx_->color_range = AVCOL_RANGE_JPEG;
+	encoderCtx_->time_base = AVRational{1, static_cast<int>(std::max<uint32_t>(1, currentFps_))};
+	// Fixed quality via AV_CODEC_FLAG_QSCALE rather than a bitrate target --
+	// simpler for a first pass, no rate-control ramp-up/lookahead to reason
+	// about (irrelevant anyway for an all-intra codec with no lookahead).
+	// Not a user-facing setting yet -- see docs/ROADMAP.md's "Fases futuras"
+	// for the dock quality control this could grow into later.
+	encoderCtx_->flags |= AV_CODEC_FLAG_QSCALE;
+	encoderCtx_->qmin = kMjpegQuality;
+	encoderCtx_->qmax = kMjpegQuality;
+
+	if (avcodec_open2(encoderCtx_, encoder, nullptr) < 0) {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "failed to open MJPEG encoder at %ux%u -- storing uncompressed NV12 "
+				  "this session",
+				  bufferWidth_, bufferHeight_);
+		avcodec_free_context(&encoderCtx_);
+		return;
+	}
+
+	decoderCtx_ = avcodec_alloc_context3(decoder);
+	if (avcodec_open2(decoderCtx_, decoder, nullptr) < 0) {
+		TRIGGLOW_LOG_WARN(kComponent, "failed to open MJPEG decoder -- storing uncompressed NV12 this "
+					      "session");
+		avcodec_free_context(&encoderCtx_);
+		avcodec_free_context(&decoderCtx_);
+		return;
+	}
+
+	if (!encodeFrame_)
+		encodeFrame_ = av_frame_alloc();
+	if (!encodePacket_)
+		encodePacket_ = av_packet_alloc();
+	if (!decodeFrame_)
+		decodeFrame_ = av_frame_alloc();
+	if (!decodePacket_)
+		decodePacket_ = av_packet_alloc();
+
+	TRIGGLOW_LOG_INFO(kComponent, "MJPEG encoder/decoder open at %ux%u (quality qscale=%d)", bufferWidth_,
+			  bufferHeight_, kMjpegQuality);
+}
+
+void VideoDelayFilter::ReleaseCodecContexts()
+{
+	if (encoderCtx_)
+		avcodec_free_context(&encoderCtx_);
+	if (decoderCtx_)
+		avcodec_free_context(&decoderCtx_);
+	if (encodeFrame_)
+		av_frame_free(&encodeFrame_);
+	if (encodePacket_)
+		av_packet_free(&encodePacket_);
+	if (decodeFrame_)
+		av_frame_free(&decodeFrame_);
+	if (decodePacket_)
+		av_packet_free(&decodePacket_);
+}
+
+bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
+{
+	if (!encoderCtx_ || !encodeFrame_ || !encodePacket_)
+		return false;
+
+	uint32_t uvWidth = bufferWidth_ / 2;
+	uint32_t uvHeight = bufferHeight_ / 2;
+	size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
+	size_t chromaBytes = static_cast<size_t>(uvWidth) * uvHeight;
+
+	// MJPEG's encoder wants PLANAR 4:2:0 (separate U and V planes) --
+	// de-interleave scratchNv12_'s NV12 UV plane into two scratch planes we
+	// own and control the (tightly-packed) layout of.
+	encodeScratchU_.resize(chromaBytes);
+	encodeScratchV_.resize(chromaBytes);
+	const uint8_t *uv = scratchNv12_.data() + yBytes;
+	for (uint32_t row = 0; row < uvHeight; ++row) {
+		const uint8_t *uvRow = uv + static_cast<size_t>(row) * uvWidth * 2;
+		uint8_t *uRow = encodeScratchU_.data() + static_cast<size_t>(row) * uvWidth;
+		uint8_t *vRow = encodeScratchV_.data() + static_cast<size_t>(row) * uvWidth;
+		for (uint32_t col = 0; col < uvWidth; ++col) {
+			uRow[col] = uvRow[col * 2 + 0];
+			vRow[col] = uvRow[col * 2 + 1];
+		}
+	}
+
+	av_frame_unref(encodeFrame_);
+	encodeFrame_->format = encoderCtx_->pix_fmt;
+	encodeFrame_->width = static_cast<int>(bufferWidth_);
+	encodeFrame_->height = static_cast<int>(bufferHeight_);
+	if (av_frame_get_buffer(encodeFrame_, 0) < 0 || av_frame_make_writable(encodeFrame_) < 0)
+		return false;
+
+	// av_frame_get_buffer() picks FFmpeg's own (possibly padded) alignment --
+	// respect ITS linesize when copying our tightly-packed scratch planes in,
+	// same care already taken when reading GPU-staged memory elsewhere in
+	// this file.
+	for (int row = 0; row < encodeFrame_->height; ++row) {
+		std::memcpy(encodeFrame_->data[0] + static_cast<size_t>(row) * encodeFrame_->linesize[0],
+			    scratchNv12_.data() + static_cast<size_t>(row) * bufferWidth_, bufferWidth_);
+	}
+	for (uint32_t row = 0; row < uvHeight; ++row) {
+		std::memcpy(encodeFrame_->data[1] + static_cast<size_t>(row) * encodeFrame_->linesize[1],
+			    encodeScratchU_.data() + static_cast<size_t>(row) * uvWidth, uvWidth);
+		std::memcpy(encodeFrame_->data[2] + static_cast<size_t>(row) * encodeFrame_->linesize[2],
+			    encodeScratchV_.data() + static_cast<size_t>(row) * uvWidth, uvWidth);
+	}
+	encodeFrame_->pts = static_cast<int64_t>(captureFrameCounter_);
+
+	if (avcodec_send_frame(encoderCtx_, encodeFrame_) < 0)
+		return false;
+
+	av_packet_unref(encodePacket_);
+	// MJPEG is all-intra with zero lookahead, so this should always succeed
+	// immediately after a send -- if it doesn't (EAGAIN or a real error),
+	// this frame just falls back to raw storage for this one tick rather
+	// than blocking/retrying, same spirit as the rest of this file's
+	// "degrade, don't stall" error handling.
+	if (avcodec_receive_packet(encoderCtx_, encodePacket_) < 0)
+		return false;
+
+	if (static_cast<size_t>(encodePacket_->size) > dst.pixels.size()) {
+		// Should never happen in practice (compressed output exceeding the
+		// raw NV12 worst-case allocation), but never write out of bounds.
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "MJPEG packet (%d bytes) exceeded the raw NV12 slot allocation (%zu bytes) -- "
+				  "dropping this frame",
+				  encodePacket_->size, dst.pixels.size());
+		return false;
+	}
+
+	std::memcpy(dst.pixels.data(), encodePacket_->data, static_cast<size_t>(encodePacket_->size));
+	dst.usedBytes = static_cast<size_t>(encodePacket_->size);
+	dst.compressed = true;
+	return true;
+}
+
+bool VideoDelayFilter::DecodeSlotIntoScratchNv12(const Slot &src)
+{
+	if (!decoderCtx_ || !decodeFrame_ || !decodePacket_)
+		return false;
+
+	av_packet_unref(decodePacket_);
+	if (av_new_packet(decodePacket_, static_cast<int>(src.usedBytes)) < 0)
+		return false;
+	std::memcpy(decodePacket_->data, src.pixels.data(), src.usedBytes);
+
+	if (avcodec_send_packet(decoderCtx_, decodePacket_) < 0)
+		return false;
+
+	av_frame_unref(decodeFrame_);
+	if (avcodec_receive_frame(decoderCtx_, decodeFrame_) < 0)
+		return false;
+
+	uint32_t uvWidth = bufferWidth_ / 2;
+	uint32_t uvHeight = bufferHeight_ / 2;
+	size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
+
+	for (uint32_t row = 0; row < bufferHeight_; ++row) {
+		std::memcpy(scratchNv12_.data() + static_cast<size_t>(row) * bufferWidth_,
+			    decodeFrame_->data[0] + static_cast<size_t>(row) * decodeFrame_->linesize[0], bufferWidth_);
+	}
+
+	uint8_t *uv = scratchNv12_.data() + yBytes;
+	for (uint32_t row = 0; row < uvHeight; ++row) {
+		const uint8_t *uRow = decodeFrame_->data[1] + static_cast<size_t>(row) * decodeFrame_->linesize[1];
+		const uint8_t *vRow = decodeFrame_->data[2] + static_cast<size_t>(row) * decodeFrame_->linesize[2];
+		uint8_t *uvRow = uv + static_cast<size_t>(row) * uvWidth * 2;
+		for (uint32_t col = 0; col < uvWidth; ++col) {
+			uvRow[col * 2 + 0] = uRow[col];
+			uvRow[col * 2 + 1] = vRow[col];
+		}
+	}
+	return true;
+}
+#endif // TRIGGLOW_HAVE_FFMPEG
+
 void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 {
 	if (origWidth == 0 || origHeight == 0)
@@ -410,7 +643,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 
 	uint32_t fps = std::max<uint32_t>(1, currentFps_);
 	BufferFit fit = ComputeBufferFit(origWidth, origHeight, fps, configuredDelaySeconds_,
-					 configuredMinResolutionHeight_, GetBufferBudget());
+					 configuredMinResolutionHeight_, GetBufferBudget(), kAssumedCompressionRatio);
 
 	bool resolutionChanged = bufferWidth_ != fit.bufferWidth || bufferHeight_ != fit.bufferHeight;
 	if (!resolutionChanged && ring_.size() == fit.actualFrames)
@@ -453,10 +686,28 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// plane at half resolution ((bufferWidth_/2)*(bufferHeight_/2)*2 bytes,
 	// i.e. bufferWidth_*bufferHeight_/2) -- 1.5 bytes/pixel total. Always an
 	// exact integer since ComputeBufferFit() forces both dimensions even.
+	// Every slot is allocated at this FULL raw size regardless of whether
+	// TRIGGLOW_HAVE_FFMPEG compresses what actually lands in it -- see
+	// Slot's comment in the header for why.
 	size_t frameBytes = (static_cast<size_t>(bufferWidth_) * bufferHeight_ * 3) / 2;
 	ring_.resize(static_cast<size_t>(fit.actualFrames));
 	for (auto &slot : ring_)
 		slot.pixels.assign(frameBytes, 0);
+
+	// scratchNv12_ is this same size -- one frame's worth of raw NV12,
+	// reused every tick as the encode input / decode output staging area
+	// (see EncodeScratchNv12Into()/DecodeSlotIntoScratchNv12(), or the
+	// fallback path in Render() on platforms without TRIGGLOW_HAVE_FFMPEG).
+	scratchNv12_.assign(frameBytes, 0);
+
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	// If resolutionChanged, ReleaseSizedGpuObjects() above already tore down
+	// any codec contexts sized for the OLD bufferWidth_/bufferHeight_ (see
+	// its own ReleaseCodecContexts() call) -- this opens fresh ones at the
+	// new size. If NOT resolutionChanged, the existing contexts are already
+	// correct and EnsureCodecContextsOpen()'s own early-return handles that.
+	EnsureCodecContextsOpen();
+#endif
 }
 
 void VideoDelayFilter::EnsureAudioRingSized(uint32_t channels, uint32_t samplesPerSec)
@@ -719,13 +970,19 @@ void VideoDelayFilter::Render()
 				Slot &dst = ring_[harvest.targetRingIndex];
 				size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
 
+				// Always land the raw readback in scratchNv12_ first (never
+				// straight into dst.pixels anymore) -- on FFmpeg-capable
+				// platforms this is the ENCODER's input, not the final
+				// stored form; see EncodeScratchNv12Into()'s fallback below
+				// for why dst still ends up with the same raw bytes when
+				// compression isn't available/fails.
 				uint8_t *mappedY = nullptr;
 				uint32_t linesizeY = 0;
 				if (gs_stagesurface_map(harvest.ySurface, &mappedY, &linesizeY)) {
 					for (uint32_t row = 0; row < bufferHeight_; ++row) {
-						std::memcpy(dst.pixels.data() + static_cast<size_t>(row) * bufferWidth_,
-							    mappedY + static_cast<size_t>(row) * linesizeY,
-							    bufferWidth_);
+						std::memcpy(
+							scratchNv12_.data() + static_cast<size_t>(row) * bufferWidth_,
+							mappedY + static_cast<size_t>(row) * linesizeY, bufferWidth_);
 					}
 					gs_stagesurface_unmap(harvest.ySurface);
 				}
@@ -735,12 +992,26 @@ void VideoDelayFilter::Render()
 				if (gs_stagesurface_map(harvest.uvSurface, &mappedUv, &linesizeUv)) {
 					uint32_t uvRowBytes = uvWidth * 2; // GS_R8G8: 2 bytes/pixel.
 					for (uint32_t row = 0; row < uvHeight; ++row) {
-						std::memcpy(dst.pixels.data() + yBytes +
+						std::memcpy(scratchNv12_.data() + yBytes +
 								    static_cast<size_t>(row) * uvRowBytes,
 							    mappedUv + static_cast<size_t>(row) * linesizeUv,
 							    uvRowBytes);
 					}
 					gs_stagesurface_unmap(harvest.uvSurface);
+				}
+
+				bool encoded = false;
+#ifdef TRIGGLOW_HAVE_FFMPEG
+				encoded = EncodeScratchNv12Into(dst);
+#endif
+				if (!encoded) {
+					// No FFmpeg on this platform, or the encoder isn't open,
+					// or this particular frame failed to encode -- store the
+					// raw NV12 bytes exactly like pre-v0.3.0 did. dst.pixels
+					// is always sized for this (see EnsureRingSized()).
+					std::memcpy(dst.pixels.data(), scratchNv12_.data(), scratchNv12_.size());
+					dst.usedBytes = scratchNv12_.size();
+					dst.compressed = false;
 				}
 
 				dst.valid = true;
@@ -779,14 +1050,31 @@ void VideoDelayFilter::Render()
 		uint32_t uvHeight = bufferHeight_ / 2;
 		size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
 
+		const Slot &src = ring_[readIndex];
+		const uint8_t *pixels = nullptr;
+		bool ready = true;
+		if (src.compressed) {
+#ifdef TRIGGLOW_HAVE_FFMPEG
+			ready = DecodeSlotIntoScratchNv12(src);
+			pixels = scratchNv12_.data();
+#else
+			// A slot marked compressed can't exist on a platform that never
+			// defines TRIGGLOW_HAVE_FFMPEG in the first place (nothing here
+			// ever sets Slot::compressed=true without it) -- guarded purely
+			// so this translation unit still compiles without the decoder.
+			ready = false;
+#endif
+		} else {
+			pixels = src.pixels.data();
+		}
+
 		if (!yPlaybackTexture_)
 			yPlaybackTexture_ =
 				gs_texture_create(bufferWidth_, bufferHeight_, GS_R8, 1, nullptr, GS_DYNAMIC);
 		if (!uvPlaybackTexture_)
 			uvPlaybackTexture_ = gs_texture_create(uvWidth, uvHeight, GS_R8G8, 1, nullptr, GS_DYNAMIC);
 
-		if (yPlaybackTexture_ && uvPlaybackTexture_) {
-			const uint8_t *pixels = ring_[readIndex].pixels.data();
+		if (ready && pixels && yPlaybackTexture_ && uvPlaybackTexture_) {
 			gs_texture_set_image(yPlaybackTexture_, pixels, bufferWidth_, false);
 			gs_texture_set_image(uvPlaybackTexture_, pixels + yBytes, uvWidth * 2, false);
 
@@ -797,6 +1085,9 @@ void VideoDelayFilter::Render()
 			while (gs_effect_loop(nv12Effect_, "DrawNV12"))
 				gs_draw_sprite(yPlaybackTexture_, 0, width, height);
 		}
+		// Else: decode failed for this one frame -- draw nothing this tick
+		// rather than showing stale/garbage pixels; the next tick's read
+		// index will move on to a different slot regardless.
 	}
 	// Else: buffer still filling (first configuredDelaySeconds_ after
 	// enabling/raising the delay) — draw nothing, same as

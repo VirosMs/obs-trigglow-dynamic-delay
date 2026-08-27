@@ -27,6 +27,18 @@ extern "C" {
 #include <media-io/audio-io.h> // audio_output_get_channels/sample_rate() — used to size the audio ring
 }
 
+#ifdef TRIGGLOW_HAVE_FFMPEG
+// v0.3.0 real compression (docs/ROADMAP.md) -- only defined on platforms
+// CMakeLists.txt actually links FFmpeg for (Windows/Linux; not macOS yet,
+// see that file). Every use below is guarded the same way, with a raw-NV12
+// fallback so this file still compiles and works (just uncompressed) on
+// macOS.
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/frame.h>
+}
+#endif
+
 // Delays video by a configured number of seconds, with the streaming OUTPUT
 // never touched — no reconnection, ever, at any point. A standard OBS
 // VIDEO-ONLY filter, attached automatically by BufferModeController to the
@@ -66,6 +78,14 @@ extern "C" {
 // full requested delay doesn't fit the budget at that floor, the ACTUAL
 // buffered duration shortens instead (flipped 2026-08-25 after live feedback
 // that always honoring the full duration made long delays look terrible).
+//
+// v0.3.0 (2026-08-27, TRIGGLOW_HAVE_FFMPEG platforms only -- Windows/Linux
+// for now, see CMakeLists.txt): each ring slot additionally gets MJPEG-
+// encoded before storage and decoded back on playback (EncodeScratchNv12Into
+// / DecodeSlotIntoScratchNv12 below), cutting real RAM use further on top of
+// the NV12 win above. Falls back to storing raw NV12 (identical to the
+// pre-v0.3.0 behavior) if the encoder isn't open/available or fails on a
+// given frame -- never a hard requirement for the buffer to work at all.
 //
 // FilterAudio()/EnsureAudioRingSized() below are a COMPLETE, implemented
 // audio ring buffer (same delay-window logic as video, in sample-space) --
@@ -137,8 +157,17 @@ private:
 	// the cost of two small extra GPU conversion passes per frame (see
 	// nv12Effect_ below). Chroma subsampling requires even
 	// bufferWidth_/bufferHeight_ -- EnsureRingSized() enforces that.
+	//
+	// v0.3.0 (2026-08-27): `pixels` is always allocated at the raw NV12
+	// worst-case size (a compressed MJPEG packet can never exceed that in
+	// practice), but on platforms with TRIGGLOW_HAVE_FFMPEG only
+	// `pixels[0..usedBytes)` is meaningful, and it's an MJPEG packet rather
+	// than raw NV12 bytes -- `compressed` says which. Both fields are simply
+	// unused (pixels always fully raw NV12) on platforms without FFmpeg.
 	struct Slot {
 		std::vector<uint8_t> pixels;
+		size_t usedBytes = 0;
+		bool compressed = false;
 		bool valid = false; // false until first successfully captured.
 	};
 
@@ -180,6 +209,30 @@ private:
 	// context needed, unlike EnsureRingSized). No-op if already correctly
 	// sized.
 	void EnsureAudioRingSized(uint32_t channels, uint32_t samplesPerSec);
+
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	// Opens encoderCtx_/decoderCtx_ (MJPEG, all-intra -- see this file's
+	// header comment) at the CURRENT bufferWidth_/bufferHeight_. Called from
+	// EnsureRingSized() on resolutionChanged, alongside the GPU pool
+	// recreation those same dimensions drive -- codec contexts are just as
+	// tied to a fixed frame size as gs_stagesurf_t/gs_texture_t are. No-op
+	// if already open at the right size.
+	void EnsureCodecContextsOpen();
+	void ReleaseCodecContexts();
+
+	// Encodes scratchNv12_ (this tick's freshly-harvested raw NV12 frame)
+	// into `dst.pixels`/`usedBytes`/`compressed`. Returns false (dst
+	// untouched) if the encoder isn't open or genuinely failed to produce a
+	// packet this tick -- callers fall back to storing scratchNv12_ raw in
+	// that case, same as platforms without TRIGGLOW_HAVE_FFMPEG do always.
+	bool EncodeScratchNv12Into(Slot &dst);
+
+	// Reverse: decodes `src` (an MJPEG packet, src.compressed must be true)
+	// back into scratchNv12_ as plain NV12 bytes, ready for the existing
+	// gs_texture_set_image() playback path exactly as if it had never been
+	// compressed. Returns false (scratchNv12_ untouched) on decode failure.
+	bool DecodeSlotIntoScratchNv12(const Slot &src);
+#endif
 
 	// --- obs_source_info callback trampolines (static: OBS calls C
 	// function pointers, not member functions) ---
@@ -250,6 +303,42 @@ private:
 	static constexpr size_t kStagingSlotCount = 2;
 	StagingSlot stagingSlots_[kStagingSlotCount];
 	uint64_t captureFrameCounter_ = 0; // Parity counter picking which staging slot kicks off vs. gets harvested.
+
+	// One frame's raw NV12 bytes (tightly packed, same layout as Slot::pixels
+	// used to always have) -- the harvest step below writes here every tick
+	// BEFORE either encoding it into a ring slot (TRIGGLOW_HAVE_FFMPEG) or
+	// copying it straight into one (fallback path). Also reused as the
+	// decode-output scratch buffer on playback, since it's never read and
+	// written in the same tick.
+	std::vector<uint8_t> scratchNv12_;
+
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	// v0.3.0 real compression (docs/ROADMAP.md) -- MJPEG, all-intra: every
+	// frame is encoded independently with no P/B-frame prediction at all, so
+	// there's no GOP/keyframe-seek complexity to reconcile with a ring that
+	// resets abruptly (EnsureRingSized()) and reads/writes by plain index
+	// arithmetic. Costs compression ratio vs. a real GOP structure, but MJPEG
+	// frames are bitstream-independent by construction, matching this
+	// architecture's invariants exactly. Sized to bufferWidth_/bufferHeight_
+	// like the GPU pool -- opened in EnsureCodecContextsOpen(), torn down in
+	// ReleaseCodecContexts() (called from the same two places
+	// ReleaseSizedGpuObjects() is: resolutionChanged and the destructor).
+	AVCodecContext *encoderCtx_ = nullptr;
+	AVCodecContext *decoderCtx_ = nullptr;
+	// Reused every tick (av_frame_unref()/av_packet_unref() between calls,
+	// never reallocated) -- same "one small fixed pool, not one per frame"
+	// principle as the GPU objects above.
+	AVFrame *encodeFrame_ = nullptr;
+	AVPacket *encodePacket_ = nullptr;
+	AVFrame *decodeFrame_ = nullptr;
+	AVPacket *decodePacket_ = nullptr;
+	// MJPEG's encoder only accepts PLANAR 4:2:0 (Y, then a separate U plane,
+	// then a separate V plane) -- NV12 is semi-planar (Y, then interleaved
+	// UV), a different memory layout. These hold the de-interleaved U/V
+	// planes for one frame, reused every tick like everything else here.
+	std::vector<uint8_t> encodeScratchU_;
+	std::vector<uint8_t> encodeScratchV_;
+#endif
 
 	// audioRing_[channel][frame] — one flat sample buffer per channel, big
 	// enough for configuredDelaySeconds_ at samplesPerSec_. Resized by
