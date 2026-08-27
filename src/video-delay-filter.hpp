@@ -158,12 +158,27 @@ private:
 	// nv12Effect_ below). Chroma subsampling requires even
 	// bufferWidth_/bufferHeight_ -- EnsureRingSized() enforces that.
 	//
-	// v0.3.0 (2026-08-27): `pixels` is always allocated at the raw NV12
-	// worst-case size (a compressed MJPEG packet can never exceed that in
-	// practice), but on platforms with TRIGGLOW_HAVE_FFMPEG only
-	// `pixels[0..usedBytes)` is meaningful, and it's an MJPEG packet rather
-	// than raw NV12 bytes -- `compressed` says which. Both fields are simply
-	// unused (pixels always fully raw NV12) on platforms without FFmpeg.
+	// v0.3.0 Phase 1 (2026-08-27): on platforms with TRIGGLOW_HAVE_FFMPEG,
+	// only `pixels[0..usedBytes)` is meaningful, and it's an MJPEG packet
+	// rather than raw NV12 bytes -- `compressed` says which. Both fields are
+	// simply unused (pixels always fully raw NV12) on platforms without
+	// FFmpeg.
+	//
+	// v0.3.0 Phase 2 (2026-08-27): `pixels` no longer starts at the raw NV12
+	// worst-case size on FFmpeg platforms -- EnsureRingSized() allocates it
+	// at a smaller BUDGETED size instead (frameBytes / kAssumedCompressionRatio),
+	// which is what actually realizes the RAM reduction Phase 1 only assumed
+	// on paper (a compressed packet's smaller usedBytes never shrank the
+	// actual allocation there). EncodeScratchNv12Into() and the raw fallback
+	// in Render() both grow a slot's `pixels` past the budget with a plain
+	// `resize()` whenever one particular frame genuinely needs more room
+	// than assumed (hard-to-compress content, or FFmpeg unavailable/failed
+	// entirely) -- and that growth is PERMANENT for the slot's lifetime
+	// (capacity is never shrunk back down), to avoid paying a
+	// realloc+memcpy on every single frame. Worst case, every slot
+	// eventually grows to the full raw size (identical to Phase 1's
+	// behavior) if content consistently compresses worse than assumed;
+	// that's an accepted, safe degradation, not a bug.
 	struct Slot {
 		std::vector<uint8_t> pixels;
 		size_t usedBytes = 0;
