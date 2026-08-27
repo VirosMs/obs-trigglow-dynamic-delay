@@ -82,6 +82,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#PluginStageDir}\bin\64bit\obs-trigglow-dynamic-delay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 Source: "{#PluginStageDir}\data\locale\en-US.ini"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"; Flags: ignoreversion
+; v0.3.0 Phase 0 (FFmpeg groundwork, docs/ROADMAP.md): CMake's install() rule
+; already places these next to the plugin's own .dll in the packaged output
+; (CMakeLists.txt's OS_WINDOWS block) specifically so Windows' DLL search
+; order resolves them from here before anywhere else -- see that file's
+; comment for the full reasoning. Found missing from this installer live,
+; 2026-08-27: the .zip release asset had them (its own CMake install()
+; output), but this .iss only listed the plugin .dll + locale file, so
+; installing via the .exe (the documented primary path) would have shipped
+; without them entirely.
+Source: "{#PluginStageDir}\bin\64bit\avcodec-63.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
+Source: "{#PluginStageDir}\bin\64bit\avutil-61.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"
