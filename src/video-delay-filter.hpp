@@ -366,6 +366,14 @@ private:
 	bool loggedNoTarget_ = false;
 	bool loggedZeroSize_ = false;
 	bool loggedFirstRender_ = false;
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	// Proves a real frame actually got MJPEG-compressed (not just that the
+	// codec opened -- EnsureCodecContextsOpen() succeeding says nothing about
+	// whether EncodeScratchNv12Into() then actually succeeds per-frame).
+	// Reset in EnsureCodecContextsOpen() alongside opening fresh contexts, so
+	// a resolution change logs its own new compression ratio too.
+	bool loggedFirstEncode_ = false;
+#endif
 };
 
 } // namespace trigglow

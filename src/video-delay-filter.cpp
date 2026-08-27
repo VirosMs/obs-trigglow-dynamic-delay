@@ -446,6 +446,8 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 	if (encoderCtx_ && decoderCtx_)
 		return; // Already open at the current bufferWidth_/bufferHeight_.
 
+	loggedFirstEncode_ = false; // New contexts at a possibly new resolution -- log a fresh ratio for them.
+
 	const AVCodec *encoder = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
 	const AVCodec *decoder = avcodec_find_decoder(AV_CODEC_ID_MJPEG);
 	if (!encoder || !decoder) {
@@ -593,6 +595,15 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 	std::memcpy(dst.pixels.data(), encodePacket_->data, static_cast<size_t>(encodePacket_->size));
 	dst.usedBytes = static_cast<size_t>(encodePacket_->size);
 	dst.compressed = true;
+
+	if (!loggedFirstEncode_) {
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "first MJPEG encode this session: %d bytes (raw NV12 would be %zu -- %.1fx)",
+				  encodePacket_->size, dst.pixels.size(),
+				  static_cast<double>(dst.pixels.size()) / std::max(1, encodePacket_->size));
+		loggedFirstEncode_ = true;
+	}
+
 	return true;
 }
 
