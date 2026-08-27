@@ -16,7 +16,16 @@ function(_check_dependencies_windows)
   set(qt6_destination "obs-deps-qt6-VERSION-ARCH")
   set(obs-studio_filename "VERSION.zip")
   set(obs-studio_destination "obs-studio-VERSION")
-  set(dependencies_list prebuilt qt6 obs-studio)
+  # BtbN's own release asset filenames bake in a git-describe hash we can't
+  # predict/template (e.g. "ffmpeg-n9.0.1-8-g16dfae5c88-win64-lgpl-shared-9.0.zip"),
+  # unlike obs-deps' VERSION/ARCH/REVISION-templated names above -- so this is a
+  # literal pin, not a template. Re-pinning to a newer BtbN build means updating
+  # this filename + buildspec.json's ffmpeg.version/hashes.windows-x64 together;
+  # the fixed "ffmpeg-windows-x64" destination below means CMakeLists.txt's
+  # extraction-root glob never needs touching on a re-pin.
+  set(ffmpeg_filename "ffmpeg-n9.0.1-8-g16dfae5c88-win64-lgpl-shared-9.0.zip")
+  set(ffmpeg_destination "ffmpeg-windows-x64")
+  set(dependencies_list prebuilt qt6 obs-studio ffmpeg)
 
   _check_dependencies()
 endfunction()

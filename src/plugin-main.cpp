@@ -27,6 +27,12 @@ extern "C" {
 #include <plugin-support.h>
 }
 
+#ifdef TRIGGLOW_HAVE_FFMPEG
+extern "C" {
+#include <libavutil/avutil.h>
+}
+#endif
+
 #include "audio-delay-filter.hpp"
 #include "buffer-mode-controller.hpp"
 #include "hotkeys.hpp"
@@ -142,6 +148,16 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "loading Trigglow Dynamic Delay v%s", PLUGIN_VERSION);
+
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	// v0.3.0 Phase 0 smoke test (see docs/ROADMAP.md) -- proves FFmpeg
+	// actually links AND loads correctly at runtime inside a real OBS
+	// process, not just that it compiles. A static-link mistake or a
+	// missing/mismatched runtime DLL would otherwise only surface as an
+	// opaque plugin-load failure with no clue why. No codec logic uses
+	// FFmpeg yet; this is purely a "the dependency is wired up" check.
+	obs_log(LOG_INFO, "FFmpeg linked: %s", av_version_info());
+#endif
 
 	// Registers the OBS filters that buffer mode orchestrates under the hood
 	// (see obs-frontend-bridge.cpp's EnsureBufferWrapperScene /
