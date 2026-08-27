@@ -582,25 +582,39 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 	if (avcodec_receive_packet(encoderCtx_, encodePacket_) < 0)
 		return false;
 
-	if (static_cast<size_t>(encodePacket_->size) > dst.pixels.size()) {
+	size_t packetSize = static_cast<size_t>(encodePacket_->size);
+	// The true ceiling is the raw NV12 size, not dst.pixels.size() -- v0.3.0
+	// Phase 2 starts slots at a smaller BUDGETED allocation (see
+	// EnsureRingSized()) and grows a given slot only as far as an individual
+	// frame actually needs, so dst.pixels.size() no longer reflects a fixed
+	// worst-case ceiling the way it did in Phase 1.
+	size_t rawFrameBytes = (static_cast<size_t>(bufferWidth_) * bufferHeight_ * 3) / 2;
+	if (packetSize > rawFrameBytes) {
 		// Should never happen in practice (compressed output exceeding the
-		// raw NV12 worst-case allocation), but never write out of bounds.
+		// raw NV12 worst-case), but never write out of bounds.
 		TRIGGLOW_LOG_WARN(kComponent,
-				  "MJPEG packet (%d bytes) exceeded the raw NV12 slot allocation (%zu bytes) -- "
-				  "dropping this frame",
-				  encodePacket_->size, dst.pixels.size());
+				  "MJPEG packet (%zu bytes) exceeded the raw NV12 ceiling (%zu bytes) -- dropping "
+				  "this frame",
+				  packetSize, rawFrameBytes);
 		return false;
 	}
 
-	std::memcpy(dst.pixels.data(), encodePacket_->data, static_cast<size_t>(encodePacket_->size));
-	dst.usedBytes = static_cast<size_t>(encodePacket_->size);
+	// Grow-only: a slot that has previously needed more room than the
+	// budgeted default keeps that larger capacity permanently (never shrunk
+	// back down) rather than paying a realloc on every single frame -- see
+	// EnsureRingSized()'s comment on the tradeoff this accepts.
+	if (dst.pixels.size() < packetSize)
+		dst.pixels.resize(packetSize);
+
+	std::memcpy(dst.pixels.data(), encodePacket_->data, packetSize);
+	dst.usedBytes = packetSize;
 	dst.compressed = true;
 
 	if (!loggedFirstEncode_) {
 		TRIGGLOW_LOG_INFO(kComponent,
-				  "first MJPEG encode this session: %d bytes (raw NV12 would be %zu -- %.1fx)",
-				  encodePacket_->size, dst.pixels.size(),
-				  static_cast<double>(dst.pixels.size()) / std::max(1, encodePacket_->size));
+				  "first MJPEG encode this session: %zu bytes (raw NV12 would be %zu -- %.1fx)",
+				  packetSize, rawFrameBytes,
+				  static_cast<double>(rawFrameBytes) / std::max<size_t>(1, packetSize));
 		loggedFirstEncode_ = true;
 	}
 
@@ -697,13 +711,25 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// plane at half resolution ((bufferWidth_/2)*(bufferHeight_/2)*2 bytes,
 	// i.e. bufferWidth_*bufferHeight_/2) -- 1.5 bytes/pixel total. Always an
 	// exact integer since ComputeBufferFit() forces both dimensions even.
-	// Every slot is allocated at this FULL raw size regardless of whether
-	// TRIGGLOW_HAVE_FFMPEG compresses what actually lands in it -- see
-	// Slot's comment in the header for why.
 	size_t frameBytes = (static_cast<size_t>(bufferWidth_) * bufferHeight_ * 3) / 2;
+
+	// v0.3.0 Phase 2: slots start at a BUDGETED size (frameBytes divided by
+	// the same kAssumedCompressionRatio ComputeBufferFit() already assumed
+	// for ring LENGTH above) instead of the full raw ceiling -- this is what
+	// actually realizes the RAM win Phase 1 only allocated for on paper
+	// (Slot::pixels was always the full raw size there, so a compressed
+	// packet's smaller usedBytes never translated into less memory
+	// reserved). EncodeScratchNv12Into()/the raw fallback below both grow a
+	// given slot past this budget (permanently -- capacity is never shrunk
+	// back down) whenever one particular frame genuinely needs more room
+	// than assumed; see Slot's comment in the header for the full tradeoff.
+	// 1.0 on non-FFmpeg platforms makes this identical to the pre-Phase-2
+	// full raw allocation, unchanged.
+	size_t budgetedBytes =
+		static_cast<size_t>(std::ceil(static_cast<double>(frameBytes) / kAssumedCompressionRatio));
 	ring_.resize(static_cast<size_t>(fit.actualFrames));
 	for (auto &slot : ring_)
-		slot.pixels.assign(frameBytes, 0);
+		slot.pixels.assign(budgetedBytes, 0);
 
 	// scratchNv12_ is this same size -- one frame's worth of raw NV12,
 	// reused every tick as the encode input / decode output staging area
@@ -1019,7 +1045,12 @@ void VideoDelayFilter::Render()
 					// No FFmpeg on this platform, or the encoder isn't open,
 					// or this particular frame failed to encode -- store the
 					// raw NV12 bytes exactly like pre-v0.3.0 did. dst.pixels
-					// is always sized for this (see EnsureRingSized()).
+					// starts at a smaller BUDGETED size on FFmpeg platforms
+					// (see EnsureRingSized()), so grow it (permanently, same
+					// tradeoff as EncodeScratchNv12Into()) if this is the
+					// first time this slot has needed the full raw size.
+					if (dst.pixels.size() < scratchNv12_.size())
+						dst.pixels.resize(scratchNv12_.size());
 					std::memcpy(dst.pixels.data(), scratchNv12_.data(), scratchNv12_.size());
 					dst.usedBytes = scratchNv12_.size();
 					dst.compressed = false;
