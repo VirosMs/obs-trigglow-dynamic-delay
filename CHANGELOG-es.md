@@ -2,6 +2,31 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.3.2 — 2026-08-27 (Early Access)
+
+**Arreglado:**
+- El audio podía notarse claramente por detrás del vídeo en delays largos
+  y/o de alta calidad (30s+, 1080p) — reportado en directo como "el audio
+  sale después de la acción del vídeo". Causa raíz: cuando el presupuesto
+  de RAM no da para el delay completo pedido a la calidad elegida,
+  `VideoDelayFilter` acorta en silencio su propia duración real de buffer
+  (así ha sido siempre, desde antes incluso de que existiera la
+  compresión — es por diseño, la calidad siempre gana a la duración), pero
+  `AudioDelayFilter` siempre guarda exactamente los segundos completos
+  pedidos (PCM barato, sin presupuesto de RAM aplicado) — así que cada vez
+  que el vídeo tenía que acortarse, el audio seguía retrasando más tiempo
+  del que el vídeo realmente aplicaba, y la brecha crecía cuanto más largo
+  o de más calidad era el pedido. Arreglado haciendo que
+  `BufferModeController` le pregunte al filtro de vídeo cuánto puede
+  realmente guardar (una nueva consulta `get_effective_delay_seconds`) en
+  cuanto el buffer se llena de verdad, y recortando el delay del audio para
+  que coincida siempre que el vídeo haya tenido que acortarse. Efecto
+  secundario puntual: si esta corrección se dispara, el ring de audio se
+  reinicia y queda en silencio brevemente (bastante menos de un segundo)
+  justo cuando el buffer pasa a `Active`, mientras se vuelve a llenar hasta
+  la duración corregida — un buen cambio a cambio de no quedar
+  desincronizado el resto de la sesión.
+
 ## v0.3.1 — 2026-08-27 (Early Access)
 
 **Arreglado:**

@@ -160,6 +160,22 @@ private:
 	void NotifyStatusChanged();
 	void OnFrontendEvent(FrontendEvent event);
 
+	// Pushes whichever is SMALLER of status_.delaySeconds and what
+	// ObsFrontendBridge::GetVideoEffectiveDelaySeconds() reports video is
+	// actually able to buffer right now, into AudioDelayFilter. Found live,
+	// 2026-08-27: on long/high-quality delays where the RAM budget doesn't
+	// fit the full requested duration, VideoDelayFilter silently shortens
+	// its OWN actual delay (EnsureRingSized), but AudioDelayFilter always
+	// buffers the full requested seconds (cheap PCM, never RAM-shortened) --
+	// so audio kept drifting noticeably behind the shorter video delay
+	// whenever this happened. Called after Enable() (where video's ring
+	// isn't sized yet, so this is a no-op reporting the raw requested value)
+	// and again once the fill window elapses (OnFillTimerElapsed -- by then
+	// the ring IS sized, so this is where the real correction happens), plus
+	// on any later delay/quality change while Active, since either can
+	// change whether shortening is needed.
+	void SyncAudioDelayToVideoEffective();
+
 	ObsFrontendBridge &bridge_;
 	BufferModeStatus status_;
 	// Scene that was on Program right before Enable() switched away from

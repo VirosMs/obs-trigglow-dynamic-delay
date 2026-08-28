@@ -1166,8 +1166,11 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 	filter->Update(settings);
 
 	proc_handler_t *procHandler = obs_source_get_proc_handler(source);
-	if (procHandler)
+	if (procHandler) {
 		proc_handler_add(procHandler, "void release_buffers()", &VideoDelayFilter::ReleaseBuffersProc, filter);
+		proc_handler_add(procHandler, "void get_effective_delay_seconds(out int seconds)",
+				 &VideoDelayFilter::GetEffectiveDelaySecondsProc, filter);
+	}
 
 	return filter;
 }
@@ -1196,6 +1199,31 @@ void VideoDelayFilter::ReleaseBuffersTask(void *param)
 	auto *filter = static_cast<VideoDelayFilter *>(param);
 	filter->ReleaseRing();
 	TRIGGLOW_LOG_INFO(kComponent, "released the RAM ring buffer (filter disabled)");
+}
+
+namespace {
+// Bundles what GetEffectiveDelaySecondsTask needs -- params outlives the
+// graphics-thread hop since GetEffectiveDelaySecondsProc blocks on it
+// (obs_queue_task's wait=true).
+struct EffectiveDelayQuery {
+	VideoDelayFilter *filter;
+	calldata_t *params;
+};
+} // namespace
+
+void VideoDelayFilter::GetEffectiveDelaySecondsProc(void *data, calldata_t *params)
+{
+	EffectiveDelayQuery query{static_cast<VideoDelayFilter *>(data), params};
+	obs_queue_task(OBS_TASK_GRAPHICS, &VideoDelayFilter::GetEffectiveDelaySecondsTask, &query, true);
+}
+
+void VideoDelayFilter::GetEffectiveDelaySecondsTask(void *param)
+{
+	auto *query = static_cast<EffectiveDelayQuery *>(param);
+	VideoDelayFilter *filter = query->filter;
+	uint32_t fps = std::max<uint32_t>(1, filter->currentFps_);
+	uint32_t seconds = filter->ring_.empty() ? 0 : static_cast<uint32_t>((filter->ring_.size() - 1) / fps);
+	calldata_set_int(query->params, "seconds", seconds);
 }
 
 void VideoDelayFilter::UpdateCb(void *data, obs_data_t *settings)

@@ -449,6 +449,26 @@ bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &li
 	return true;
 }
 
+uint32_t ObsFrontendBridge::GetVideoEffectiveDelaySeconds(const std::string &liveSceneName) const
+{
+	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	if (!filter)
+		return 0;
+
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return 0;
+
+	calldata_t cd = {};
+	if (!proc_handler_call(procHandler, "get_effective_delay_seconds", &cd)) {
+		calldata_free(&cd);
+		return 0;
+	}
+	auto seconds = static_cast<uint32_t>(calldata_int(&cd, "seconds"));
+	calldata_free(&cd);
+	return seconds;
+}
+
 bool ObsFrontendBridge::ShowBufferWrapperScene() const
 {
 	return SetCurrentSceneByName(kBufferWrapperSceneName);

@@ -6,7 +6,7 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.3.1 — Early Access.**
+OBS. **Estado: MVP / v0.3.2 — Early Access.**
 
 A partir de v0.3.0, el ring buffer de RAM se comprime de verdad con MJPEG en Windows y Linux
 (FFmpeg vendorizado), con un fallback automático y seguro a almacenamiento sin comprimir si el codec
@@ -20,7 +20,14 @@ igual que antes, sin comprimir). Ver `docs/SPEC.md` para el detalle técnico com
 La v0.3.1 arregla que los selectores de escena del dock aparecieran en blanco al abrir OBS por
 primera vez o reinstalar el plugin (los ajustes guardados estaban bien, la interfaz simplemente
 todavía no los restauraba — ver `docs/SPEC.md` §3.3), y le da al instalador de Windows branding real
-de Trigglow en vez de los gráficos genéricos de Inno Setup. Ver `CHANGELOG-es.md`.
+de Trigglow en vez de los gráficos genéricos de Inno Setup.
+
+La v0.3.2 arregla que el audio se notara claramente por detrás del vídeo en delays largos o de alta
+calidad (30s+, 1080p): el vídeo acorta en silencio su propia duración real de buffer cuando el
+presupuesto de RAM no da para el pedido completo, pero el audio seguía guardando siempre los
+segundos completos — ambos se desincronizaban exactamente por esa diferencia. El audio ahora se
+ajusta a lo que el vídeo realmente puede entregar (ver `docs/SPEC.md` §3.3). Ver `CHANGELOG-es.md`
+para las dos.
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
@@ -29,7 +36,7 @@ primera entrega).
 
 ## Requisitos de uso
 
-**OBS Studio 31.1.0 o superior.** El binario v0.3.1 se compila contra las fuentes de OBS 31.1.1
+**OBS Studio 31.1.0 o superior.** El binario v0.3.2 se compila contra las fuentes de OBS 31.1.1
 (ver `buildspec.json`) y se ha verificado que carga y funciona correctamente en OBS **32.2.2**
 (el mecanismo de compatibilidad de plugins de OBS rechaza solo los plugins compilados contra una
 versión *más nueva* que la que está corriendo; nunca se ha probado en versiones anteriores a 31.1.1).
@@ -46,7 +53,7 @@ sin modificar su sistema de build (`cmake/`, `CMakePresets.json`, `.github/`) sa
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows es la plataforma prioritaria para v0.3.1** (así lo pidió el producto); macOS/Linux
+**Windows es la plataforma prioritaria para v0.3.2** (así lo pidió el producto); macOS/Linux
 compilan en verde en CI con el propio sistema de build de la plantilla, pero no se han probado en
 directo en esta entrega.
 
@@ -72,7 +79,7 @@ cmake --build --preset macos --config RelWithDebInfo
 
 ## Instalar el plugin
 
-**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.3.1-windows-x64-setup.exe`
+**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.3.2-windows-x64-setup.exe`
 desde la [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest) y
 ejecútalo — detecta tu instalación de OBS automáticamente y copia los archivos por ti. Todavía no
 está firmado (Early Access), así que Windows SmartScreen avisará antes de dejarlo ejecutar. **Guía
