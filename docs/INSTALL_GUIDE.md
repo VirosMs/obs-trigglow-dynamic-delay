@@ -10,7 +10,7 @@ otherwise unchanged, only that generic styling and the version number in the cor
 
 ## 1. Download
 
-Get `obs-trigglow-dynamic-delay-0.3.1-windows-x64-setup.exe` from the
+Get `obs-trigglow-dynamic-delay-0.3.2-windows-x64-setup.exe` from the
 [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). Prefer to
 install by hand instead? The `.zip` in the same release contains just the plugin files — see
 "Installing the compiled plugin in OBS" in `README.md`.

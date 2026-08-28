@@ -15,7 +15,10 @@ completo, incluyendo por qué se probó y se abandonó un diseño anterior basad
 Sí. Vídeo y audio usan el mismo delay configurado en segundos, así que vuelven a estar en
 sincronía — el audio usa un filtro aparte adjunto a cada fuente individual con audio dentro de tu
 escena en directo (OBS no permite adjuntar un filtro de audio directamente a una escena), pero
-ambos funcionan con el mismo valor de `delaySeconds`. Ver `docs/SPEC.md` §3.2.
+ambos funcionan con el mismo valor de `delaySeconds`. Desde la v0.3.2, esto sigue siendo cierto
+incluso si el presupuesto de RAM obliga al vídeo a guardar de verdad menos tiempo del pedido (ver la
+siguiente pregunta) — el audio se ajusta automáticamente a lo que el vídeo realmente puede entregar,
+en vez de quedarse por delante. Ver `docs/SPEC.md` §3.2/§3.3.
 
 **¿Cómo interactúan los ajustes "Delay (segundos)" y "Calidad mínima"?**
 De forma independiente, por diseño — eliges ambos libremente, y el plugin nunca baja en silencio tu

@@ -274,6 +274,23 @@ private:
 	static void ReleaseBuffersProc(void *data, calldata_t *params);
 	static void ReleaseBuffersTask(void *param);
 
+	// "get_effective_delay_seconds" proc handler -- lets
+	// ObsFrontendBridge::GetVideoEffectiveDelaySeconds() find out what this
+	// filter is ACTUALLY delaying by right now (ring_.size()/currentFps_),
+	// which can be less than configuredDelaySeconds_ if the RAM budget
+	// didn't fit the full requested duration at the chosen quality floor
+	// (EnsureRingSized). Added 2026-08-27 after a real live report of audio
+	// lagging noticeably behind video on long/high-quality delays:
+	// AudioDelayFilter always buffers the full requested seconds (it's cheap
+	// PCM, never RAM-shortened), so BufferModeController needs this to know
+	// when it must clamp audio's delay down to match what video can really
+	// deliver -- see BufferModeController::SyncAudioDelayToVideoEffective.
+	// Same cross-thread pattern as ReleaseBuffersProc: ring_/currentFps_ are
+	// only safe to read from the graphics thread, so this hops onto it and
+	// blocks (wait=true) rather than racing a Render() call in flight.
+	static void GetEffectiveDelaySecondsProc(void *data, calldata_t *params);
+	static void GetEffectiveDelaySecondsTask(void *param);
+
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	uint32_t configuredDelaySeconds_ = 0;
 	// Floor on the ring's capture height, in pixels -- quality wins over

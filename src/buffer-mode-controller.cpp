@@ -53,7 +53,11 @@ void BufferModeController::SetDelaySeconds(uint32_t seconds)
 	NotifyStatusChanged();
 	if (status_.state == BufferModeState::Active) {
 		bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, seconds);
-		bridge_.SetAudioDelayFiltersDelaySeconds(status_.liveSceneName, seconds);
+		// Video's ring resizes lazily on its next Render() call (graphics
+		// thread), so this may read one frame stale -- self-corrects almost
+		// immediately, same tradeoff as EnsureRingSized's own lazy resize.
+		// See SyncAudioDelayToVideoEffective's comment.
+		SyncAudioDelayToVideoEffective();
 	}
 }
 
@@ -61,8 +65,13 @@ void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
 {
 	status_.minResolutionHeight = heightPixels;
 	NotifyStatusChanged();
-	if (status_.state == BufferModeState::Active)
+	if (status_.state == BufferModeState::Active) {
 		bridge_.SetBufferFilterMinResolutionHeight(status_.liveSceneName, heightPixels);
+		// A quality-floor change can change the ring's RAM fit just as much
+		// as a delay change can -- re-check whether audio needs shortening
+		// to match. See SyncAudioDelayToVideoEffective's comment.
+		SyncAudioDelayToVideoEffective();
+	}
 }
 
 void BufferModeController::Enable()
@@ -99,7 +108,11 @@ void BufferModeController::Enable()
 	// Program visibility, unlike video rendering. Not treated as fatal if
 	// the live scene simply has no audio sources.
 	bridge_.EnsureAudioDelayFilters(status_.liveSceneName);
-	bridge_.SetAudioDelayFiltersDelaySeconds(status_.liveSceneName, status_.delaySeconds);
+	// Video's ring isn't sized yet at this point (Render() hasn't run), so
+	// this just pushes the raw requested value for now -- the real
+	// shortening check happens in OnFillTimerElapsed(), once the ring
+	// actually exists. See SyncAudioDelayToVideoEffective's comment.
+	SyncAudioDelayToVideoEffective();
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, true);
 
 	// Enable the filter AND force the live scene to keep rendering in the
@@ -137,6 +150,11 @@ void BufferModeController::OnFillTimerElapsed()
 		liveSceneRenderingHeld_ = false;
 	}
 	bridge_.ShowBufferWrapperScene();
+	// The ring is definitely sized by now (Render() has been running the
+	// whole Filling window) -- this is the real correction point for
+	// whether video had to shorten its actual delay. See
+	// SyncAudioDelayToVideoEffective's comment.
+	SyncAudioDelayToVideoEffective();
 	SetState(BufferModeState::Active);
 	TRIGGLOW_LOG_INFO(kComponent, "buffer full, now showing delayed content");
 }
@@ -208,6 +226,29 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 {
 	if (event == FrontendEvent::FinishedLoading && onSceneListRefresh_)
 		onSceneListRefresh_();
+}
+
+void BufferModeController::SyncAudioDelayToVideoEffective()
+{
+	uint32_t effectiveSeconds = bridge_.GetVideoEffectiveDelaySeconds(status_.liveSceneName);
+	uint32_t targetSeconds = status_.delaySeconds;
+	if (effectiveSeconds > 0 && effectiveSeconds < status_.delaySeconds) {
+		targetSeconds = effectiveSeconds;
+		// AudioDelayFilter::EnsureRingSized resets that ring's history
+		// whenever its configured seconds actually changes -- so the
+		// OnFillTimerElapsed() call site of this function (the one that
+		// actually corrects anything, since video's ring isn't sized yet at
+		// Enable() time) causes a brief silence right as Program switches to
+		// the delayed wrapper scene, while audio's ring re-fills to the new
+		// (shorter) threshold. Accepted tradeoff: a few hundred ms of
+		// silence once, at the exact moment shortening is discovered, beats
+		// an ongoing audio-behind-video desync for the entire session.
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "video could only actually buffer %us of the requested %us (RAM budget) -- "
+				  "shortening audio's delay to match so it doesn't lag behind video",
+				  effectiveSeconds, status_.delaySeconds);
+	}
+	bridge_.SetAudioDelayFiltersDelaySeconds(status_.liveSceneName, targetSeconds);
 }
 
 } // namespace trigglow

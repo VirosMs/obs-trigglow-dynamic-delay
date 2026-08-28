@@ -14,7 +14,9 @@ reconnect-based design was tried and abandoned, in `docs/SPEC.md` §2–§3.
 Yes. Video and audio use the same configured delay in seconds, so they land back in sync — audio
 uses a separate filter attached to each individual audio-capable source inside your live scene
 (OBS doesn't allow an audio filter to attach directly to a scene itself), but both run off the same
-`delaySeconds` value. See `docs/SPEC.md` §3.2.
+`delaySeconds` value. As of v0.3.2, this stays true even if the RAM budget forces video to actually
+buffer less than the full requested duration (see the next question) — audio automatically matches
+whatever video is really able to deliver instead of drifting ahead. See `docs/SPEC.md` §3.2/§3.3.
 
 **How do the "Delay (seconds)" and "Minimum quality" settings interact?**
 Independently, by design — you pick both freely, and the plugin never silently lowers your chosen

@@ -2,7 +2,7 @@
 
 # Especificación técnica — Trigglow Dynamic Delay para OBS
 
-Estado: **MVP / v0.3.1 — Early Access**
+Estado: **MVP / v0.3.2 — Early Access**
 Última actualización: 2026-08-26 (reescrita desde cero — ver §0)
 Nombre interno del plugin: `obs-trigglow-dynamic-delay`
 Web: https://trigglow.virosms.com/dynamic-delay
@@ -168,6 +168,30 @@ hasta ahora — ver §2, antes lo usaba `DelayController`): `BufferModeControlle
 él en su constructor y expone `SetSceneListRefreshCallback()`, que el dock usa para volver a rellenar
 ambos desplegables — usando el mismo `status_.liveSceneName`/`loadingSceneName` ya correcto — en
 cuanto OBS termina de cargar de verdad.
+
+**v0.3.2: evitar que el audio se desincronice tras un delay de vídeo acortado.** El §3.5 de más
+abajo explica que `VideoDelayFilter` acorta su propia duración REAL de buffer (nunca el suelo de
+calidad) siempre que el presupuesto de RAM no dé para el `delaySeconds` completo pedido a la calidad
+elegida — esto ha sido así desde antes incluso de que existiera la compresión. `AudioDelayFilter`,
+en cambio, siempre guarda exactamente los segundos completos pedidos (PCM barato, sin ningún chequeo
+de presupuesto de RAM) — así que cada vez que el vídeo tenía que acortarse, el audio seguía
+retrasando la duración larga sin tocar, y ambos se desincronizaban exactamente por esa diferencia.
+Reportado en directo, 2026-08-27, en pedidos largos/de alta calidad (30s+, 1080p) como "el audio sale
+después de la acción del vídeo". Arreglado con una nueva consulta entre hilos,
+`get_effective_delay_seconds` (un `proc_handler` en el `obs_source_t` del filtro de vídeo, siguiendo
+el mismo patrón `obs_queue_task(OBS_TASK_GRAPHICS, ..., wait=true)` que ya usaba `release_buffers` —
+`ring_`/`currentFps_` solo son seguros de leer desde el hilo de gráficos):
+`ObsFrontendBridge::GetVideoEffectiveDelaySeconds()` la llama, y
+`BufferModeController::SyncAudioDelayToVideoEffective()` recorta el delay del audio a lo que esa
+consulta devuelva siempre que sea menor que el valor pedido. Se llama desde `Enable()` (no hace nada
+ahí, porque el ring todavía no está dimensionado), `OnFillTimerElapsed()` (el punto real de
+corrección — para entonces el ring ya está dimensionado seguro), y cualquier cambio en vivo de delay
+o calidad mientras está `Active`. Un efecto secundario aceptado: `AudioDelayFilter::EnsureRingSized`
+reinicia el historial de ese ring cada vez que sus segundos configurados cambian de verdad, así que
+una corrección en `OnFillTimerElapsed()` provoca un silencio breve (bastante menos de un segundo)
+justo cuando el Programa cambia a la escena wrapper delayed, mientras el ring de audio se vuelve a
+llenar hasta la duración ahora coincidente — un cambio claramente mejor que quedar desincronizado
+el resto de la sesión.
 
 ### 3.4. Liberar el ring de RAM al hacer Disable
 

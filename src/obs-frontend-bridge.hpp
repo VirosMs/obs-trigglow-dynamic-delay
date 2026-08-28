@@ -167,6 +167,16 @@ public:
 	// No-op (returns false) if EnsureBufferWrapperScene hasn't run yet.
 	bool SetBufferFilterMinResolutionHeight(const std::string &liveSceneName, uint32_t heightPixels) const;
 
+	// What the video filter is ACTUALLY delaying by right now, in seconds --
+	// can be less than its configured delay if the RAM budget didn't fit the
+	// full requested duration at the chosen quality floor (see
+	// VideoDelayFilter::EnsureRingSized). 0 if the filter doesn't exist yet
+	// or its ring hasn't been sized yet. Used to keep AudioDelayFilter (which
+	// always buffers the full requested delay -- cheap PCM, never
+	// RAM-shortened) from silently drifting ahead of a shortened video delay
+	// -- see BufferModeController::SyncAudioDelayToVideoEffective.
+	uint32_t GetVideoEffectiveDelaySeconds(const std::string &liveSceneName) const;
+
 	// Switches Program to the wrapper scene created by EnsureBufferWrapperScene.
 	// Callers don't need to know its literal name. False if it doesn't exist
 	// yet (EnsureBufferWrapperScene hasn't been called/succeeded).
