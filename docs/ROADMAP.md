@@ -48,6 +48,9 @@
 
 ## Later
 - Signed installers for Windows/macOS (the current Windows installer is unsigned — Early Access).
+  Higher urgency than originally scoped: as of v0.3.3, Microsoft Defender has outright blocked the
+  unsigned installer as a detected threat for at least one user, not just shown the expected
+  SmartScreen warning — see [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10).
 - A dedicated Trigglow Stream Deck plugin, in addition to the native-hotkey path (which always
   remains available as a dependency-free option) — mainly to show ON/OFF/Filling status with color
   directly on the Stream Deck button itself.

@@ -2,7 +2,7 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
-## Unreleased
+## v0.3.3 — 2026-09-02 (Early Access)
 
 **Added:**
 - Enable (dock button, hotkey, and Stream Deck) now requires having signed in to a free
@@ -10,7 +10,20 @@
   discovery gate, not a paywall. Login happens entirely in the user's system browser (the same
   login the web app already uses), never inside OBS itself — the plugin only ever holds an opaque
   session token afterward. New outbound network use: previously none, now a handful of HTTPS calls
-  to trigglow.com around sign-in (see `docs/OBS_SUBMISSION_CHECKLIST.md`'s disclosure note).
+  to trigglow.com around sign-in (see `docs/OBS_SUBMISSION_CHECKLIST.md`'s disclosure note), made
+  via a native WinHTTP client (`src/win-http.cpp`) rather than Qt's own networking — see that
+  file's comment for why (Qt's TLS backend plugin is tied to the exact Qt build already loaded by
+  OBS itself, which doesn't match what this plugin builds against).
+
+**Changed:**
+- New dedicated icon for the Windows installer branding (previously reused the general Trigglow
+  logo) — see `installers/windows/branding/generate-assets.py`.
+
+**Known issue:**
+- The unsigned Windows installer has been flagged outright by Microsoft Defender as a detected
+  threat for at least one user (not just the expected SmartScreen "unknown publisher" warning) —
+  see [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10). Almost certainly a
+  false positive (fresh, unsigned, zero-reputation binary), but unresolved as of this release.
 
 ## v0.3.2 — 2026-08-27 (Early Access)
 
