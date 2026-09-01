@@ -50,17 +50,27 @@ class QTimer;
 namespace trigglow {
 
 class SceneComboBox;
+class AuthManager;
 
 class TrigglowDelayDock : public QWidget {
 	Q_OBJECT
 
 public:
-	explicit TrigglowDelayDock(BufferModeController &bufferController, QWidget *parent = nullptr);
+	explicit TrigglowDelayDock(BufferModeController &bufferController, AuthManager &authManager,
+				   QWidget *parent = nullptr);
 
 private:
 	void BuildUi();
 	void OnStatusChanged(const BufferModeStatus &status);
 	void RefreshFromStatus(const BufferModeStatus &status);
+
+	// Wired to authManager_'s own status-changed callback (same pattern as
+	// bufferController_'s), so the account row and the Enable button's
+	// visual disabled state update the moment login completes/expires --
+	// without the user needing to touch any other control first. The real
+	// enforcement is BufferModeController::Enable()'s own check (see
+	// SetAuthorizationCheck in plugin-main.cpp); this is UX only.
+	void RefreshAccountUi();
 
 	// Single-shot fill countdown, armed for bufferController_.GetStatus().
 	// delaySeconds when Filling starts (same pattern DelayController's own
@@ -100,6 +110,7 @@ private:
 	void RefreshFitEstimate();
 
 	BufferModeController &bufferController_;
+	AuthManager &authManager_;
 
 	QLabel *stateLabel_ = nullptr;
 	QLabel *detailLabel_ = nullptr;
@@ -115,6 +126,13 @@ private:
 	QPushButton *enableButton_ = nullptr;
 	QPushButton *disableButton_ = nullptr;
 	QTimer *fillTimer_ = nullptr;
+
+	// Free-account row (see RefreshAccountUi()): accountLabel_ shows the
+	// current state ("Free account required" / "Signed in as X"),
+	// accountButton_ is a single button that reads "Sign in" or "Log out"
+	// depending on state.
+	QLabel *accountLabel_ = nullptr;
+	QPushButton *accountButton_ = nullptr;
 
 	// See UpdateFillProgress()'s comment. fillElapsed_ is armed alongside
 	// fillTimer_ in ArmFillTimer(); fillTotalSeconds_ is what the countdown

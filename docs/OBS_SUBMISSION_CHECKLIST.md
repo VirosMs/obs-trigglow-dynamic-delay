@@ -54,3 +54,11 @@ anything below; the items already marked "Done" for 0.2.0 still hold.
   the unsigned Windows installer triggers the SmartScreen "Unknown publisher" warning documented
   in `docs/INSTALL_GUIDE.md` and on the streampulse website — expected, but worth flagging clearly
   in the forum submission text so reviewers and users aren't surprised by it.
+
+- **Disclose the free-account requirement and network use in the forum listing text.** As of this
+  change, Enable (dock button, hotkey, and Stream Deck) requires having signed in to a free
+  trigglow.com account once — see `docs/ACCOUNT_GATE.md` for the full design and why it exists.
+  The plugin now makes outbound HTTPS calls to trigglow.com (`src/auth-manager.hpp`), which it
+  didn't before v0.4.0 — say so plainly in the resource description alongside the "100% free" claim,
+  since some reviewers/users specifically look for undisclosed network activity in OBS plugins.
+  **Who:** whoever writes the forum submission text.

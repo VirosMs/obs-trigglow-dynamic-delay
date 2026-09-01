@@ -95,6 +95,22 @@ endif()
 if(ENABLE_QT)
   find_package(Qt6 COMPONENTS Widgets Core)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+
+  if(OS_WINDOWS)
+    # AuthManager's HTTPS calls (see docs/ACCOUNT_GATE.md, src/auth-manager.hpp,
+    # src/win-http.hpp) go through WinHTTP, not Qt's QNetworkAccessManager --
+    # Qt's TLS backend plugin is tied to the EXACT Qt minor.patch version of
+    # whatever Qt6Network.dll happens to already be loaded in the host
+    # process, which for a plugin running inside OBS is OBS's OWN bundled
+    # Qt, not the (older, obs-deps-vendored) Qt this plugin builds against --
+    # confirmed live, 2026-09-01: OBS 32.2.2 ships Qt 6.11.1, obs-deps'
+    # 2025-07-11 package is Qt 6.8.3, and shipping the 6.8.3 TLS plugin
+    # anyway just gets silently rejected ("No functional TLS backend was
+    # found") rather than working. WinHTTP has no such dependency: TLS is
+    # handled by the OS itself.
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
+  endif()
+
   target_compile_options(
     ${CMAKE_PROJECT_NAME}
     PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
@@ -129,6 +145,10 @@ target_sources(
     src/scene-combo-box.hpp
     src/buffer-mode-controller.cpp
     src/buffer-mode-controller.hpp
+    src/auth-manager.cpp
+    src/auth-manager.hpp
+    src/win-http.cpp
+    src/win-http.hpp
 )
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

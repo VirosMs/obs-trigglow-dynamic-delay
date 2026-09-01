@@ -4,8 +4,14 @@ logo. Run manually whenever the source logo changes -- these are checked
 into git as plain binary files, not generated at build time, so CI never
 needs Pillow or network access to the main monorepo.
 
-Source: apps/web/public/trigglow-logo.png in the main Trigglow monorepo
-(streampulse), 1024x1024 RGB. Not vendored into this repo (GPL-2.0-or-later
+Source: apps/web/public/trigglow-dynamic-delay-icon.png in the main Trigglow
+monorepo (streampulse) -- a Dynamic-Delay-specific icon (distinct from the
+general apps/web/public/trigglow-logo.png used elsewhere), 1254x1254 RGB,
+opaque black background (no real alpha; PIL's .convert("RGBA") below just
+adds a fully-opaque channel, so the paste() calls end up as plain opaque
+overwrites -- fine here since the source's own background is already the
+uniform black these banners want, unlike a logo meant to be composited onto
+an arbitrary background). Not vendored into this repo (GPL-2.0-or-later
 public repo, kept separate from the private monorepo on purpose -- see
 docs/SPEC.md's License section) -- point SOURCE_LOGO below at a local copy
 before running.
@@ -30,7 +36,7 @@ from pathlib import Path
 
 from PIL import Image
 
-SOURCE_LOGO = Path(r"E:\Conding\Projects\streampulse\apps\web\public\trigglow-logo.png")
+SOURCE_LOGO = Path(r"E:\Conding\Projects\streampulse\apps\web\public\trigglow-dynamic-delay-icon.png")
 OUT_DIR = Path(__file__).parent
 
 ICON_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]

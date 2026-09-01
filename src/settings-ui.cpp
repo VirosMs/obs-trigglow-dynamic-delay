@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "settings-ui.hpp"
+#include "auth-manager.hpp"
 #include "logging.hpp"
 #include "scene-combo-box.hpp"
 
@@ -39,15 +40,20 @@ constexpr const char *kComponent = "settings-ui";
 constexpr const char *kNoneOption = "(Ninguna)";
 } // namespace
 
-TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, QWidget *parent)
+TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, AuthManager &authManager,
+				     QWidget *parent)
 	: QWidget(parent),
-	  bufferController_(bufferController)
+	  bufferController_(bufferController),
+	  authManager_(authManager)
 {
 	BuildUi();
 
 	bufferController_.SetStatusChangedCallback([this](const BufferModeStatus &status) { OnStatusChanged(status); });
 	bufferController_.SetSceneListRefreshCallback([this] { RefreshAvailableScenes(); });
-	RefreshFromStatus(bufferController_.GetStatus());
+	authManager_.SetStatusChangedCallback([this] { RefreshAccountUi(); });
+	// Cascades into RefreshFromStatus() itself -- see RefreshAccountUi()'s
+	// comment -- so this alone initializes the whole dock's state.
+	RefreshAccountUi();
 }
 
 void TrigglowDelayDock::BuildUi()
@@ -64,6 +70,19 @@ void TrigglowDelayDock::BuildUi()
 	detailLabel_->setWordWrap(true);
 	detailLabel_->setStyleSheet("color: palette(windowText); font-size: 11px;");
 	root->addWidget(detailLabel_);
+
+	// Free-account row -- see RefreshAccountUi(). Placed above the scene
+	// pickers, not below the buttons, so it's the first thing a logged-out
+	// user notices, before they've configured anything and hit an Error
+	// state at Enable() time.
+	auto *accountRow = new QHBoxLayout();
+	accountLabel_ = new QLabel(this);
+	accountLabel_->setWordWrap(true);
+	accountLabel_->setStyleSheet("font-size: 11px;");
+	accountButton_ = new QPushButton(this);
+	accountRow->addWidget(accountLabel_, /*stretch=*/1);
+	accountRow->addWidget(accountButton_);
+	root->addLayout(accountRow);
 
 	auto *liveRow = new QHBoxLayout();
 	liveRow->addWidget(new QLabel(QStringLiteral("Escena en directo:"), this));
@@ -177,6 +196,14 @@ void TrigglowDelayDock::BuildUi()
 		TRIGGLOW_LOG_INFO(kComponent, "Disable pressed in dock");
 		bufferController_.Disable();
 	});
+	connect(accountButton_, &QPushButton::clicked, this, [this] {
+		if (authManager_.IsLoggedIn()) {
+			authManager_.Logout();
+		} else if (!authManager_.IsLoggingIn()) {
+			TRIGGLOW_LOG_INFO(kComponent, "Sign in pressed in dock");
+			authManager_.StartLogin();
+		}
+	});
 
 	fillTimer_ = new QTimer(this);
 	fillTimer_->setSingleShot(true);
@@ -267,8 +294,11 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	// Also requires a live scene chosen -- previously Enable was clickable
 	// with no scene selected, which just bounced back into an Error state
 	// ("Elige primero una escena en directo") instead of preventing the
-	// click in the first place (2026-08-26 UX pass).
-	enableButton_->setEnabled(!busy && !status.liveSceneName.empty());
+	// click in the first place (2026-08-26 UX pass). Same reasoning for the
+	// free-account gate: BufferModeController::Enable() already refuses and
+	// sets Error if authManager_ says logged out, but disabling the button
+	// up front is a clearer signal than a click that visibly bounces.
+	enableButton_->setEnabled(!busy && !status.liveSceneName.empty() && authManager_.IsLoggedIn());
 	disableButton_->setEnabled(busy);
 
 	const QSignalBlocker blockSeconds(secondsSpin_);
@@ -296,6 +326,36 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	// the estimate is never stale.
 	if (fitLabel_)
 		RefreshFitEstimate();
+}
+
+void TrigglowDelayDock::RefreshAccountUi()
+{
+	if (authManager_.IsLoggedIn()) {
+		QString name = QString::fromStdString(authManager_.DisplayName());
+		accountLabel_->setText(name.isEmpty() ? QStringLiteral("✓ Cuenta gratuita conectada.")
+						       : QStringLiteral("✓ Conectado como %1.").arg(name));
+		accountLabel_->setStyleSheet("color: #2e9e44; font-size: 11px;");
+		accountButton_->setText(QStringLiteral("Cerrar sesion"));
+		accountButton_->setEnabled(true);
+	} else if (authManager_.IsLoggingIn()) {
+		accountLabel_->setText(
+			QStringLiteral("Esperando confirmacion en el navegador (hasta 5 min)..."));
+		accountLabel_->setStyleSheet("color: #d8a400; font-size: 11px;");
+		accountButton_->setText(QStringLiteral("Esperando..."));
+		accountButton_->setEnabled(false);
+	} else {
+		accountLabel_->setText(
+			QStringLiteral("Cuenta gratuita de Trigglow requerida para activar el delay."));
+		accountLabel_->setStyleSheet("color: palette(windowText); font-size: 11px;");
+		accountButton_->setText(QStringLiteral("Iniciar sesion"));
+		accountButton_->setEnabled(true);
+	}
+
+	// Re-derives the Enable button's visual enabled state too (real
+	// enforcement lives in BufferModeController::Enable() itself, see
+	// SetAuthorizationCheck) -- single source of truth for that condition,
+	// see RefreshFromStatus()'s enableButton_ line.
+	RefreshFromStatus(bufferController_.GetStatus());
 }
 
 void TrigglowDelayDock::ArmFillTimer(uint32_t seconds)

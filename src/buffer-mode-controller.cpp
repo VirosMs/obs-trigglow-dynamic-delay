@@ -87,6 +87,14 @@ void BufferModeController::Enable()
 	if (status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active)
 		return;
 
+	// Free account gate (see AuthManager / SetAuthorizationCheck's comment):
+	// checked before anything else so a logged-out Enable() (from the dock
+	// button OR a hotkey/Stream Deck press) never touches OBS state at all.
+	if (isAuthorized_ && !isAuthorized_()) {
+		SetState(BufferModeState::Error, "Inicia sesion gratis en trigglow.com para activar el delay.");
+		return;
+	}
+
 	if (status_.liveSceneName.empty()) {
 		SetState(BufferModeState::Error, "Elige primero una escena en directo.");
 		return;

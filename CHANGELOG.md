@@ -2,6 +2,16 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## Unreleased
+
+**Added:**
+- Enable (dock button, hotkey, and Stream Deck) now requires having signed in to a free
+  trigglow.com account once — see `docs/ACCOUNT_GATE.md`. The plugin stays 100% free; this is a
+  discovery gate, not a paywall. Login happens entirely in the user's system browser (the same
+  login the web app already uses), never inside OBS itself — the plugin only ever holds an opaque
+  session token afterward. New outbound network use: previously none, now a handful of HTTPS calls
+  to trigglow.com around sign-in (see `docs/OBS_SUBMISSION_CHECKLIST.md`'s disclosure note).
+
 ## v0.3.2 — 2026-08-27 (Early Access)
 
 **Fixed:**
