@@ -41,7 +41,7 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.virosms.trigglow.dynamic-delay"
+            "bundleId": "com.trigglow.dynamic-delay"
         }
     },
     "name": "obs-trigglow-dynamic-delay",
@@ -49,5 +49,5 @@
     "version": "0.3.3",
     "author": "Trigglow (VirosMs)",
     "website": "https://www.trigglow.com/dynamic-delay",
-    "email": "team@trigglow.virosms.com"
+    "email": "team@trigglow.com"
 }

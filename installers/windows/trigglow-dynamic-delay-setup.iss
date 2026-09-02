@@ -74,11 +74,12 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 DisableWelcomePage=no
-; Trigglow branding (v0.3.1) -- generated from the same logo used on
-; trigglow.virosms.com (apps/web/public/trigglow-logo.png in the main
-; monorepo) via installers/windows/branding/generate-assets.py, which also
-; documents the exact Inno Setup size/aspect-ratio requirements these were
-; built against. SetupIconFile becomes the .exe's own icon (Explorer,
+; Trigglow branding -- generated from a dedicated Dynamic Delay icon
+; (apps/web/public/trigglow-dynamic-delay-icon.png in the main monorepo,
+; www.trigglow.com as of the 2026-09-02 domain migration) via
+; installers/windows/branding/generate-assets.py, which also documents the
+; exact Inno Setup size/aspect-ratio requirements these were built against.
+; SetupIconFile becomes the .exe's own icon (Explorer,
 ; taskbar); WizardImageFile is the tall banner on the Welcome/Finished
 ; pages; WizardSmallImageFile is the small logo shown top-right of every
 ; other page. Before this, all three were Inno Setup's generic defaults.
