@@ -39,9 +39,16 @@ namespace trigglow {
 namespace {
 constexpr const char *kComponent = "auth-manager";
 constexpr const char *kAccountFile = "trigglow-account.json";
-// Same origin the web app itself runs on (see docs/architecture/DEVELOP_ENVIRONMENT.md in the
-// trigglow monorepo) -- /auth/* is served from here directly, no separate API host.
-constexpr const wchar_t *kApiHost = L"trigglow.virosms.com";
+// Production uses a split deploy: the web SPA is served from www.trigglow.com, but /auth/* and
+// the rest of the API live on their own host, api.trigglow.com (confirmed live 2026-09-02 by
+// inspecting the production JS bundle's baked-in VITE_API_BASE_URL -- see apps/web/src/lib/
+// api-base.ts in the trigglow monorepo). trigglow.virosms.com (this constant's old value) now
+// 301-redirects to www.trigglow.com, but that's the WEB origin, not the API one -- don't be
+// tempted to "fix" this back to a trigglow.com-style web host if this ever looks wrong again;
+// verify against the production bundle first. The /plugin/link browser page itself is still
+// opened at whatever `verificationUrl` the API response says (www.trigglow.com), unaffected by
+// this constant -- this is only the host AuthManager's own HTTPS calls (win-http.hpp) connect to.
+constexpr const wchar_t *kApiHost = L"api.trigglow.com";
 // 3s * 100 = 5 minutes, matching the plan's cap on how long the poll timer is allowed to run.
 constexpr int kPollIntervalMs = 3000;
 constexpr int kMaxPollAttempts = 100;

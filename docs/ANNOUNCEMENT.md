@@ -18,6 +18,6 @@ Qué trae v0.3.0:
 Sigue siendo Early Access: estable para probarlo con tu equipo, con un roadmap claro de lo que viene
 después.
 
-Descárgalo y lee cómo funciona: https://trigglow.virosms.com/dynamic-delay
+Descárgalo y lee cómo funciona: https://www.trigglow.com/dynamic-delay
 
 #OBS #StreamDeck #Trigglow

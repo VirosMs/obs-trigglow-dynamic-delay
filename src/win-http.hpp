@@ -48,7 +48,7 @@ struct HttpResult {
 // on a short-lived background std::thread and marshals the result back via
 // QMetaObject::invokeMethod(..., Qt::QueuedConnection).
 //
-// host: bare hostname, e.g. "trigglow.virosms.com" (no scheme, no path). Always connects over
+// host: bare hostname, e.g. "api.trigglow.com" (no scheme, no path). Always connects over
 // HTTPS (port 443). pathAndQuery: e.g. "/auth/plugin/poll?code=...". bearerToken: omit for none.
 HttpResult HttpsGet(const std::wstring &host, const std::wstring &pathAndQuery, const std::wstring &bearerToken = L"");
 HttpResult HttpsPostJson(const std::wstring &host, const std::wstring &pathAndQuery, const std::string &jsonBody,
