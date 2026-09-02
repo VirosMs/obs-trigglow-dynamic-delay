@@ -38,7 +38,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace trigglow {
 
 struct HttpResult {
-	bool ok = false;   // false only for a transport-level failure (DNS, connect, TLS handshake).
+	bool ok = false;    // false only for a transport-level failure (DNS, connect, TLS handshake).
 	int statusCode = 0; // HTTP status code, valid whenever ok is true, regardless of 2xx/4xx/5xx.
 	std::string body;
 	std::string error; // Human-readable, set when ok is false.
@@ -50,9 +50,8 @@ struct HttpResult {
 //
 // host: bare hostname, e.g. "trigglow.virosms.com" (no scheme, no path). Always connects over
 // HTTPS (port 443). pathAndQuery: e.g. "/auth/plugin/poll?code=...". bearerToken: omit for none.
-HttpResult HttpsGet(const std::wstring &host, const std::wstring &pathAndQuery,
-		     const std::wstring &bearerToken = L"");
+HttpResult HttpsGet(const std::wstring &host, const std::wstring &pathAndQuery, const std::wstring &bearerToken = L"");
 HttpResult HttpsPostJson(const std::wstring &host, const std::wstring &pathAndQuery, const std::string &jsonBody,
-			  const std::wstring &bearerToken = L"");
+			 const std::wstring &bearerToken = L"");
 
 } // namespace trigglow

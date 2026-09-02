@@ -40,8 +40,7 @@ constexpr const char *kComponent = "settings-ui";
 constexpr const char *kNoneOption = "(Ninguna)";
 } // namespace
 
-TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, AuthManager &authManager,
-				     QWidget *parent)
+TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, AuthManager &authManager, QWidget *parent)
 	: QWidget(parent),
 	  bufferController_(bufferController),
 	  authManager_(authManager)
@@ -333,19 +332,17 @@ void TrigglowDelayDock::RefreshAccountUi()
 	if (authManager_.IsLoggedIn()) {
 		QString name = QString::fromStdString(authManager_.DisplayName());
 		accountLabel_->setText(name.isEmpty() ? QStringLiteral("✓ Cuenta gratuita conectada.")
-						       : QStringLiteral("✓ Conectado como %1.").arg(name));
+						      : QStringLiteral("✓ Conectado como %1.").arg(name));
 		accountLabel_->setStyleSheet("color: #2e9e44; font-size: 11px;");
 		accountButton_->setText(QStringLiteral("Cerrar sesion"));
 		accountButton_->setEnabled(true);
 	} else if (authManager_.IsLoggingIn()) {
-		accountLabel_->setText(
-			QStringLiteral("Esperando confirmacion en el navegador (hasta 5 min)..."));
+		accountLabel_->setText(QStringLiteral("Esperando confirmacion en el navegador (hasta 5 min)..."));
 		accountLabel_->setStyleSheet("color: #d8a400; font-size: 11px;");
 		accountButton_->setText(QStringLiteral("Esperando..."));
 		accountButton_->setEnabled(false);
 	} else {
-		accountLabel_->setText(
-			QStringLiteral("Cuenta gratuita de Trigglow requerida para activar el delay."));
+		accountLabel_->setText(QStringLiteral("Cuenta gratuita de Trigglow requerida para activar el delay."));
 		accountLabel_->setStyleSheet("color: palette(windowText); font-size: 11px;");
 		accountButton_->setText(QStringLiteral("Iniciar sesion"));
 		accountButton_->setEnabled(true);

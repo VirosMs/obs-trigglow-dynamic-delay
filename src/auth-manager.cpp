@@ -131,8 +131,7 @@ void AuthManager::RunHttp(std::function<HttpResult()> request, std::function<voi
 
 void AuthManager::RequestDeviceCode()
 {
-	RunHttp(
-		[]() { return HttpsPostJson(kApiHost, L"/auth/plugin/start", "{}"); },
+	RunHttp([]() { return HttpsPostJson(kApiHost, L"/auth/plugin/start", "{}"); },
 		[this](const HttpResult &result) {
 			if (!result.ok) {
 				TRIGGLOW_LOG_WARN(kComponent, "failed to start login: %s", result.error.c_str());
@@ -160,7 +159,8 @@ void AuthManager::RequestDeviceCode()
 			pendingDeviceCode_ = deviceCode;
 			TRIGGLOW_LOG_INFO(kComponent, "opening browser at %s", verificationUrl);
 			bool opened = QDesktopServices::openUrl(QUrl(QString::fromUtf8(verificationUrl)));
-			TRIGGLOW_LOG_INFO(kComponent, "QDesktopServices::openUrl returned %s", opened ? "true" : "false");
+			TRIGGLOW_LOG_INFO(kComponent, "QDesktopServices::openUrl returned %s",
+					  opened ? "true" : "false");
 			obs_data_release(data);
 
 			pollAttemptsLeft_ = kMaxPollAttempts;
@@ -186,35 +186,36 @@ void AuthManager::PollOnce()
 	}
 
 	std::wstring path = L"/auth/plugin/poll?code=" + Utf8ToWide(pendingDeviceCode_);
-	RunHttp([path]() { return HttpsGet(kApiHost, path); }, [this](const HttpResult &result) {
-		if (!result.ok)
-			return; // Transient network hiccup -- just wait for the next tick.
+	RunHttp([path]() { return HttpsGet(kApiHost, path); },
+		[this](const HttpResult &result) {
+			if (!result.ok)
+				return; // Transient network hiccup -- just wait for the next tick.
 
-		obs_data_t *data = obs_data_create_from_json(result.body.c_str());
-		if (!data)
-			return;
+			obs_data_t *data = obs_data_create_from_json(result.body.c_str());
+			if (!data)
+				return;
 
-		const char *status = obs_data_get_string(data, "status");
-		if (status && std::string(status) == "approved") {
-			const char *tokenStr = obs_data_get_string(data, "token");
-			if (tokenStr && *tokenStr) {
-				token_ = tokenStr;
+			const char *status = obs_data_get_string(data, "status");
+			if (status && std::string(status) == "approved") {
+				const char *tokenStr = obs_data_get_string(data, "token");
+				if (tokenStr && *tokenStr) {
+					token_ = tokenStr;
+					StopPolling();
+					PersistToken();
+					TRIGGLOW_LOG_INFO(kComponent, "login completed");
+					ValidateStoredToken(); // Fetches displayName_, persists it once known.
+					NotifyChanged();
+				}
+			} else if (status && std::string(status) == "not_found") {
+				// Code expired (10 min) or was already consumed -- stop waiting,
+				// the dock's Sign in button lets the user start over.
+				TRIGGLOW_LOG_WARN(kComponent, "login link code expired or already used");
 				StopPolling();
-				PersistToken();
-				TRIGGLOW_LOG_INFO(kComponent, "login completed");
-				ValidateStoredToken(); // Fetches displayName_, persists it once known.
 				NotifyChanged();
 			}
-		} else if (status && std::string(status) == "not_found") {
-			// Code expired (10 min) or was already consumed -- stop waiting,
-			// the dock's Sign in button lets the user start over.
-			TRIGGLOW_LOG_WARN(kComponent, "login link code expired or already used");
-			StopPolling();
-			NotifyChanged();
-		}
-		// "pending": nothing to do, next timer tick tries again.
-		obs_data_release(data);
-	});
+			// "pending": nothing to do, next timer tick tries again.
+			obs_data_release(data);
+		});
 }
 
 void AuthManager::StopPolling()
@@ -233,33 +234,35 @@ void AuthManager::ValidateStoredToken()
 		return;
 
 	std::wstring bearer = Utf8ToWide(token_);
-	RunHttp([bearer]() { return HttpsGet(kApiHost, L"/auth/me", bearer); }, [this](const HttpResult &result) {
-		if (!result.ok || result.statusCode < 200 || result.statusCode >= 300) {
-			// Session expired/revoked server-side, or a transport failure --
-			// only actually sign out on a real HTTP response saying so (401),
-			// not on e.g. a offline/DNS hiccup that would otherwise wipe a
-			// perfectly good stored login.
-			if (result.ok && result.statusCode == 401 && !token_.empty()) {
-				TRIGGLOW_LOG_INFO(kComponent, "stored session no longer valid, signing out locally");
-				token_.clear();
-				displayName_.clear();
-				ClearPersistedToken();
+	RunHttp([bearer]() { return HttpsGet(kApiHost, L"/auth/me", bearer); },
+		[this](const HttpResult &result) {
+			if (!result.ok || result.statusCode < 200 || result.statusCode >= 300) {
+				// Session expired/revoked server-side, or a transport failure --
+				// only actually sign out on a real HTTP response saying so (401),
+				// not on e.g. a offline/DNS hiccup that would otherwise wipe a
+				// perfectly good stored login.
+				if (result.ok && result.statusCode == 401 && !token_.empty()) {
+					TRIGGLOW_LOG_INFO(kComponent,
+							  "stored session no longer valid, signing out locally");
+					token_.clear();
+					displayName_.clear();
+					ClearPersistedToken();
+					NotifyChanged();
+				}
+				return;
+			}
+
+			obs_data_t *data = obs_data_create_from_json(result.body.c_str());
+			if (!data)
+				return;
+			const char *name = obs_data_get_string(data, "displayName");
+			if (name && *name && displayName_ != name) {
+				displayName_ = name;
+				PersistToken();
 				NotifyChanged();
 			}
-			return;
-		}
-
-		obs_data_t *data = obs_data_create_from_json(result.body.c_str());
-		if (!data)
-			return;
-		const char *name = obs_data_get_string(data, "displayName");
-		if (name && *name && displayName_ != name) {
-			displayName_ = name;
-			PersistToken();
-			NotifyChanged();
-		}
-		obs_data_release(data);
-	});
+			obs_data_release(data);
+		});
 }
 
 void AuthManager::PersistToken() const

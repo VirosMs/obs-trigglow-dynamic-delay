@@ -28,12 +28,12 @@ namespace trigglow {
 namespace {
 
 HttpResult DoRequest(const wchar_t *method, const std::wstring &host, const std::wstring &pathAndQuery,
-		      const std::wstring &bearerToken, const std::string *jsonBody)
+		     const std::wstring &bearerToken, const std::string *jsonBody)
 {
 	HttpResult result;
 
 	HINTERNET hSession = WinHttpOpen(L"TrigglowDynamicDelay/1.0 (OBS plugin)", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-					  WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+					 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
 	if (!hSession) {
 		result.error = "WinHttpOpen failed (" + std::to_string(GetLastError()) + ")";
 		return result;
@@ -47,7 +47,7 @@ HttpResult DoRequest(const wchar_t *method, const std::wstring &host, const std:
 	}
 
 	HINTERNET hRequest = WinHttpOpenRequest(hConnect, method, pathAndQuery.c_str(), nullptr, WINHTTP_NO_REFERER,
-						 WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+						WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
 	if (!hRequest) {
 		result.error = "WinHttpOpenRequest failed (" + std::to_string(GetLastError()) + ")";
 		WinHttpCloseHandle(hConnect);
@@ -115,7 +115,7 @@ HttpResult HttpsGet(const std::wstring &host, const std::wstring &pathAndQuery, 
 }
 
 HttpResult HttpsPostJson(const std::wstring &host, const std::wstring &pathAndQuery, const std::string &jsonBody,
-			  const std::wstring &bearerToken)
+			 const std::wstring &bearerToken)
 {
 	return DoRequest(L"POST", host, pathAndQuery, bearerToken, &jsonBody);
 }
