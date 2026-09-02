@@ -34,6 +34,7 @@ extern "C" {
 #endif
 
 #include "audio-delay-filter.hpp"
+#include "auth-manager.hpp"
 #include "buffer-mode-controller.hpp"
 #include "hotkeys.hpp"
 #include "logging.hpp"
@@ -76,6 +77,10 @@ constexpr const char *kBufferSettingsFile = "buffer-mode-settings.json";
 // that still needs a home.
 struct PluginState {
 	trigglow::ObsFrontendBridge bridge;
+	// Constructed before bufferController so Enable() can be wired to gate on
+	// it from the moment it's created (see SetAuthorizationCheck below) --
+	// see docs/ACCOUNT_GATE.md for why this gate exists at all.
+	std::unique_ptr<trigglow::AuthManager> authManager;
 	std::unique_ptr<trigglow::BufferModeController> bufferController;
 	std::unique_ptr<trigglow::DelayHotkeys> hotkeys;
 	// Not owned past AddDock(): OBS's dock system takes ownership of the
@@ -167,14 +172,27 @@ bool obs_module_load(void)
 	trigglow::AudioDelayFilter::Register();
 
 	g_state = new PluginState();
+
+	g_state->authManager = std::make_unique<trigglow::AuthManager>();
+	g_state->authManager->Init();
+
 	g_state->bufferController = std::make_unique<trigglow::BufferModeController>(g_state->bridge);
+	// Free account gate (see docs/ACCOUNT_GATE.md): both the dock's Enable
+	// button and the hotkey/Stream Deck path call straight into
+	// BufferModeController::Enable()/Toggle(), so this single check covers
+	// both. Captured by raw pointer, not the unique_ptr: AuthManager
+	// outlives BufferModeController (constructed first above, destroyed
+	// last in obs_module_unload()'s PluginState teardown), so this is always
+	// valid for as long as bufferController itself is.
+	g_state->bufferController->SetAuthorizationCheck(
+		[auth = g_state->authManager.get()] { return auth->IsLoggedIn(); });
 
 	LoadBufferSettings(*g_state->bufferController);
 
 	g_state->hotkeys = std::make_unique<trigglow::DelayHotkeys>(*g_state->bufferController);
 	g_state->hotkeys->Init();
 
-	auto *dock = new trigglow::TrigglowDelayDock(*g_state->bufferController);
+	auto *dock = new trigglow::TrigglowDelayDock(*g_state->bufferController, *g_state->authManager);
 	g_state->dock = dock;
 	g_state->bridge.AddDock(kDockId, kDockTitle, dock);
 
@@ -193,6 +211,10 @@ void obs_module_unload(void)
 	// back into.
 	if (g_state->hotkeys)
 		g_state->hotkeys->Shutdown();
+	// Cancels any in-flight login poll timer before teardown -- see
+	// AuthManager::Shutdown().
+	if (g_state->authManager)
+		g_state->authManager->Shutdown();
 	g_state->bridge.Shutdown();
 
 	// g_state->dock is intentionally NOT deleted here — see PluginState's

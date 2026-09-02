@@ -47,7 +47,19 @@
   running and confirming the plugin on those platforms, not new build-system work.
 
 ## Later
-- Signed installers for Windows/macOS (the current Windows installer is unsigned — Early Access).
+- **CA-issued signing for Windows/macOS** (real fix for the SmartScreen/Defender false positive
+  in [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10)) — application to
+  [SignPath Foundation](https://signpath.org/apply)'s free code-signing program for qualifying
+  open-source projects is in progress. Only a CA-vetted identity actually feeds SmartScreen's and
+  Defender's reputation systems.
+  - **Stopgap in place as of v0.3.3+**: the Windows installer is now signed with a *self-signed*
+    certificate (`.github/workflows/build-project.yaml`'s "Sign Windows Installer (self-signed)"
+    step, gated on the `WINDOWS_SELFSIGN_PFX_BASE64`/`WINDOWS_SELFSIGN_PFX_PASSWORD` repo secrets).
+    This only proves the installer wasn't tampered with after this project's own CI produced it —
+    it does **not** remove the "Unknown publisher" SmartScreen warning and does **not** stop
+    Defender's `Wacatac.B!ml` false positive, since neither trusts a self-issued identity. Keep
+    this step even after a real certificate lands, as a fallback for any build path that runs
+    without the paid/free CA cert configured.
 - A dedicated Trigglow Stream Deck plugin, in addition to the native-hotkey path (which always
   remains available as a dependency-free option) — mainly to show ON/OFF/Filling status with color
   directly on the Stream Deck button itself.

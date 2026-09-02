@@ -46,8 +46,8 @@
     },
     "name": "obs-trigglow-dynamic-delay",
     "displayName": "Trigglow Dynamic Delay",
-    "version": "0.3.2",
+    "version": "0.3.3",
     "author": "Trigglow (VirosMs)",
-    "website": "https://trigglow.virosms.com",
+    "website": "https://www.trigglow.com/dynamic-delay",
     "email": "team@trigglow.virosms.com"
 }

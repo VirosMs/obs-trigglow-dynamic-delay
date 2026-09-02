@@ -76,6 +76,18 @@ public:
 
 	void SetStatusChangedCallback(BufferStatusChangedCallback callback) { onStatusChanged_ = std::move(callback); }
 
+	// Free account gate (see AuthManager): if set, Enable() calls this before
+	// doing anything else and refuses (Error state) if it returns false.
+	// Unset by default (always allowed) so existing tests/mocking that never
+	// touch AuthManager keep working unchanged. Deliberately just a predicate,
+	// not a dependency on AuthManager itself, to keep this class Qt-free and
+	// unit-testable without a running OBS process -- same reasoning as the
+	// rest of this header. Single choke point: both the dock's Enable button
+	// and the hotkeys/Stream Deck path (hotkeys.cpp) call straight into
+	// Enable()/Toggle(), so gating here (rather than in each caller) covers
+	// both for free and can never drift out of sync between them.
+	void SetAuthorizationCheck(std::function<bool()> check) { isAuthorized_ = std::move(check); }
+
 	// Ensures the wrapper scene/filter exist for the configured live scene,
 	// switches to the loading scene (if set), and moves to Filling. The
 	// dock is responsible for arming a single-shot timer for
@@ -189,6 +201,7 @@ private:
 	bool liveSceneRenderingHeld_ = false;
 	BufferStatusChangedCallback onStatusChanged_;
 	SceneListRefreshCallback onSceneListRefresh_;
+	std::function<bool()> isAuthorized_;
 };
 
 } // namespace trigglow

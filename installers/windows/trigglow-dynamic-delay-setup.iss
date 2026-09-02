@@ -31,10 +31,10 @@
 ; override pattern below -- falls back to buildspec.json's value at the time
 ; of this fix for anyone building locally without passing it explicitly.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.2"
+  #define MyAppVersion "0.3.3"
 #endif
 #define MyAppPublisher "Trigglow (VirosMs)"
-#define MyAppURL "https://trigglow.virosms.com/dynamic-delay"
+#define MyAppURL "https://www.trigglow.com/dynamic-delay"
 
 ; Directory containing bin\64bit\obs-trigglow-dynamic-delay.dll and
 ; data\locale\en-US.ini, i.e. the same layout the release .zip ships.

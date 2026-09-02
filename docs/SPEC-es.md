@@ -5,7 +5,7 @@
 Estado: **MVP / v0.3.2 — Early Access**
 Última actualización: 2026-08-26 (reescrita desde cero — ver §0)
 Nombre interno del plugin: `obs-trigglow-dynamic-delay`
-Web: https://trigglow.virosms.com/dynamic-delay
+Web: https://www.trigglow.com/dynamic-delay
 
 ---
 

@@ -302,6 +302,57 @@ jobs:
             "/DMyAppVersion=${{ steps.setup.outputs.pluginVersion }}" `
             "${{ github.workspace }}\installers\windows\trigglow-dynamic-delay-setup.iss"
 
+      - name: Sign Windows Installer (self-signed) 🔏
+        if: fromJSON(needs.check-event.outputs.package)
+        env:
+          SELFSIGN_PFX_BASE64: ${{ secrets.WINDOWS_SELFSIGN_PFX_BASE64 }}
+          SELFSIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SELFSIGN_PFX_PASSWORD }}
+        run: |
+          # Sign Windows Installer (self-signed) 🔏
+          #
+          # IMPORTANT: this is a SELF-signed certificate, not one issued by a trusted CA
+          # (see docs/ROADMAP.md and issue #10 for the real fix this is a stopgap for,
+          # not a replacement of). It proves the installer wasn't tampered with after
+          # this exact CI run produced it -- it does NOT remove the SmartScreen "Unknown
+          # publisher" warning and does NOT feed Microsoft Defender's cloud reputation
+          # system, since neither trusts a self-issued identity. Real fix: a CA-issued
+          # certificate (SignPath Foundation application in progress, see #10).
+          #
+          # No-ops (skips signing, doesn't fail the build) if the secrets below aren't
+          # configured on this repo yet.
+          if ( -not $Env:SELFSIGN_PFX_BASE64 ) {
+            Write-Host "WINDOWS_SELFSIGN_PFX_BASE64 not set -- skipping self-sign step (see issue #10)."
+            exit 0
+          }
+
+          $installer = Get-ChildItem -Path "${{ github.workspace }}\release" -Filter "*-windows-x64-setup.exe" |
+            Select-Object -First 1
+          if ( -not $installer ) {
+            Write-Host "No installer .exe found under release\ -- nothing to sign."
+            exit 0
+          }
+
+          $signtool = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\x64\*" } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if ( -not $signtool ) {
+            throw "signtool.exe not found under the Windows SDK on this runner."
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP "selfsign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($Env:SELFSIGN_PFX_BASE64))
+          try {
+            & $signtool.FullName sign /f $pfxPath /p $Env:SELFSIGN_PFX_PASSWORD /fd SHA256 `
+              /tr "http://timestamp.digicert.com" /td SHA256 `
+              /d "${{ steps.setup.outputs.pluginName }}" $installer.FullName
+            if ( $LASTEXITCODE -ne 0 ) {
+              throw "signtool sign failed with exit code $LASTEXITCODE"
+            }
+          } finally {
+            Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@v4
         with:

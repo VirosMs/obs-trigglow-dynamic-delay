@@ -2,6 +2,34 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.3.3 — 2026-09-02 (Early Access)
+
+**Added:**
+- Enable (dock button, hotkey, and Stream Deck) now requires having signed in to a free
+  trigglow.com account once — see `docs/ACCOUNT_GATE.md`. The plugin stays 100% free; this is a
+  discovery gate, not a paywall. Login happens entirely in the user's system browser (the same
+  login the web app already uses), never inside OBS itself — the plugin only ever holds an opaque
+  session token afterward. New outbound network use: previously none, now a handful of HTTPS calls
+  to trigglow.com around sign-in (see `docs/OBS_SUBMISSION_CHECKLIST.md`'s disclosure note), made
+  via a native WinHTTP client (`src/win-http.cpp`) rather than Qt's own networking — see that
+  file's comment for why (Qt's TLS backend plugin is tied to the exact Qt build already loaded by
+  OBS itself, which doesn't match what this plugin builds against).
+
+**Changed:**
+- New dedicated icon for the Windows installer branding (previously reused the general Trigglow
+  logo) — see `installers/windows/branding/generate-assets.py`.
+
+**Known issue:**
+- The Windows installer has been flagged outright by Microsoft Defender
+  (`Trojan:Win32/Wacatac.B!ml`) as a detected threat, confirmed on the official v0.3.2 release
+  asset itself, not just unofficial builds — see
+  [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10). Almost certainly a false
+  positive (fresh, zero-reputation binary). CI now signs the installer with a **self-signed**
+  certificate as a stopgap (proves the file wasn't tampered with after this project's own build
+  produced it) — this does **not** remove the SmartScreen warning or stop the Defender false
+  positive, both of which need a CA-vetted identity; a SignPath Foundation application (free,
+  real CA signing for qualifying open-source projects) is in progress as the actual fix.
+
 ## v0.3.2 — 2026-08-27 (Early Access)
 
 **Fixed:**

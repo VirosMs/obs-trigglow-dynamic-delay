@@ -5,7 +5,7 @@
 Status: **MVP / v0.3.2 — Early Access**
 Last updated: 2026-08-26 (rewritten from scratch — see §0)
 Plugin machine name: `obs-trigglow-dynamic-delay`
-Website: https://trigglow.virosms.com/dynamic-delay
+Website: https://www.trigglow.com/dynamic-delay
 
 ---
 
