@@ -41,7 +41,7 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.virosms.trigglow.dynamic-delay"
+            "bundleId": "com.trigglow.dynamic-delay"
         }
     },
     "name": "obs-trigglow-dynamic-delay",
