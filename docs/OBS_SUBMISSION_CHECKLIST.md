@@ -50,10 +50,14 @@ anything below; the items already marked "Done" for 0.2.0 still hold.
   submission process (required fields, review turnaround, forum account requirements, etc.).
   **Who:** whoever is doing the submission, right before submitting.
 
-- **Signed installers are explicitly deferred to v0.4.0** (see `docs/ROADMAP.md`). Until then,
-  the unsigned Windows installer triggers the SmartScreen "Unknown publisher" warning documented
-  in `docs/INSTALL_GUIDE.md` and on the streampulse website — expected, but worth flagging clearly
-  in the forum submission text so reviewers and users aren't surprised by it.
+- **CA-issued signing is still deferred** (see `docs/ROADMAP.md` and
+  [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10)) — a SignPath Foundation
+  application is in progress. As of v0.3.3 the installer is signed with a *self-signed* certificate
+  as a stopgap (proves the file wasn't tampered with post-build), but this does **not** remove the
+  SmartScreen "Unknown publisher" warning documented in `docs/INSTALL_GUIDE.md`, and does **not**
+  stop Microsoft Defender's `Wacatac.B!ml` cloud-heuristic false positive (confirmed live,
+  2026-09-02, on the official v0.3.2 release asset — not specific to unofficial builds). Flag both
+  clearly in the forum submission text so reviewers and users aren't surprised.
 
 - **Disclose the free-account requirement and network use in the forum listing text.** As of this
   change, Enable (dock button, hotkey, and Stream Deck) requires having signed in to a free

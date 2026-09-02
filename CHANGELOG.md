@@ -20,10 +20,15 @@
   logo) — see `installers/windows/branding/generate-assets.py`.
 
 **Known issue:**
-- The unsigned Windows installer has been flagged outright by Microsoft Defender as a detected
-  threat for at least one user (not just the expected SmartScreen "unknown publisher" warning) —
-  see [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10). Almost certainly a
-  false positive (fresh, unsigned, zero-reputation binary), but unresolved as of this release.
+- The Windows installer has been flagged outright by Microsoft Defender
+  (`Trojan:Win32/Wacatac.B!ml`) as a detected threat, confirmed on the official v0.3.2 release
+  asset itself, not just unofficial builds — see
+  [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10). Almost certainly a false
+  positive (fresh, zero-reputation binary). CI now signs the installer with a **self-signed**
+  certificate as a stopgap (proves the file wasn't tampered with after this project's own build
+  produced it) — this does **not** remove the SmartScreen warning or stop the Defender false
+  positive, both of which need a CA-vetted identity; a SignPath Foundation application (free,
+  real CA signing for qualifying open-source projects) is in progress as the actual fix.
 
 ## v0.3.2 — 2026-08-27 (Early Access)
 
