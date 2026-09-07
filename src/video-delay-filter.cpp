@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "video-delay-filter.hpp"
 #include "hardware-info.hpp"
+#include "i18n.hpp"
 #include "logging.hpp"
 
 #include <algorithm>
@@ -85,22 +86,42 @@ struct BufferFit {
 // encoding) rather than the raw NV12 byte count -- Policy A from the design
 // discussion: pick a conservative assumed ratio up front rather than
 // adapting live, and re-measure against real content before ever raising it.
-// 3x is deliberately conservative: MJPEG on natural video often does much
-// better, but OBS capture content is disproportionately full of exactly what
-// compresses worst (sharp UI/HUD edges, on-screen text) -- see
-// docs/ROADMAP.md. 1.0 (no assumed compression) on platforms without
-// FFmpeg keeps this function's behavior byte-for-byte identical to
-// pre-v0.3.0. Slot::pixels is still always allocated at the full raw NV12
-// size regardless (EnsureRingSized()) -- this ratio only affects how many
-// SLOTS the ring gets, never how big each one physically is.
+// EnsureRingSized() also uses this same ratio to size each slot's INITIAL
+// allocation (frameBytes/kAssumedCompressionRatio, grown permanently later
+// only if a real frame needs more -- see Slot's comment in the header; this
+// comment used to claim slots always start at the full raw size, which
+// stopped being true the moment that budgeted-allocation change landed).
+//
+// 2026-09-07: retuned from 3.0 to 5.0 using the first real measurement this
+// plugin has ever had (encodeSampleCount_'s periodic "compression check" log
+// line, added the same day specifically to get this) -- a live 30s/1080p/
+// 60fps session (competitive FPS gameplay, HUD included) held a STEADY
+// ~11-15x instantaneous ratio throughout, with individual frames sampled up
+// to ~299000 bytes, and the ring's real memory never grew even once past its
+// 3.0-budgeted ~1.78GB the entire session. 5.0 budgets ~622KB/slot -- still
+// roughly 2x headroom over every frame size actually observed, while cutting
+// that same session's ring memory to an estimated ~1.0GB. Conservative on
+// purpose: this comes from ONE session/one game, and a slot that needs more
+// than budgeted still just grows (safe, never a hard failure) rather than
+// this being a hard ceiling -- watch encodeGrowthCount_'s log line
+// (EncodeScratchNv12Into()) across more sessions/games before raising this
+// further. 1.0 (no assumed compression) on platforms without FFmpeg keeps
+// this function's behavior byte-for-byte identical to pre-v0.3.0.
 #ifdef TRIGGLOW_HAVE_FFMPEG
-constexpr double kAssumedCompressionRatio = 3.0;
+constexpr double kAssumedCompressionRatio = 5.0;
 
 // FFmpeg's generic quantizer scale (AV_CODEC_FLAG_QSCALE): 1 = best quality/
 // least compression, 31 = worst/most. 5 is a commonly-cited sweet spot for
 // MJPEG -- visually close to lossless while still compressing meaningfully.
 // Fixed for this first pass, not a dock setting yet (see docs/ROADMAP.md).
 constexpr int kMjpegQuality = 5;
+
+// How often EncodeScratchNv12Into() logs a real, cumulative compression
+// ratio + the ring's actual current memory footprint -- see
+// encodeSampleCount_'s comment in video-delay-filter.hpp for why this exists
+// at all. 300 frames is ~5s at 60fps / ~10s at 30fps: frequent enough to
+// catch a real gameplay session, rare enough not to spam the log every tick.
+constexpr uint64_t kCompressionLogIntervalFrames = 300;
 #else
 constexpr double kAssumedCompressionRatio = 1.0;
 #endif
@@ -447,6 +468,10 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 		return; // Already open at the current bufferWidth_/bufferHeight_.
 
 	loggedFirstEncode_ = false; // New contexts at a possibly new resolution -- log a fresh ratio for them.
+	encodeSampleCount_ = 0;
+	encodeCompressedBytesTotal_ = 0;
+	encodeRawBytesTotal_ = 0;
+	encodeGrowthCount_ = 0;
 
 	const AVCodec *encoder = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
 	const AVCodec *decoder = avcodec_find_decoder(AV_CODEC_ID_MJPEG);
@@ -501,6 +526,37 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 	if (!decodePacket_)
 		decodePacket_ = av_packet_alloc();
 
+	// Reserve encodeFrame_'s pixel buffer ONCE here rather than letting
+	// EncodeScratchNv12Into() do a full av_frame_unref()+av_frame_get_buffer()
+	// (a real malloc+free of a ~bufferWidth_*bufferHeight_*1.5-byte block)
+	// every single tick at 30-60fps. Safe to reuse across ticks because MJPEG
+	// is all-intra with zero lookahead and avcodec_receive_packet() is always
+	// called in the same tick as its avcodec_send_frame() (never queued
+	// across ticks) -- the encoder never keeps a reference to encodeFrame_
+	// past that call, so av_frame_make_writable() in EncodeScratchNv12Into()
+	// finds refcount==1 and reuses this same allocation in place, every
+	// frame, instead of reallocating. This doesn't change how much RAM the
+	// ring itself holds (ring_ sizing is untouched) -- it only removes
+	// per-tick heap churn/fragmentation on the encode path, which on Windows
+	// can otherwise show up as reported working set noticeably above the
+	// ring's own "logical" total. Added 2026-09-07 after a live report of
+	// ~2.6GB at 30s/1080p.
+	encodeFrame_->format = encoderCtx_->pix_fmt;
+	encodeFrame_->width = static_cast<int>(bufferWidth_);
+	encodeFrame_->height = static_cast<int>(bufferHeight_);
+	if (av_frame_get_buffer(encodeFrame_, 0) < 0) {
+		TRIGGLOW_LOG_WARN(kComponent, "failed to reserve the MJPEG encode frame buffer at %ux%u -- storing "
+					      "uncompressed NV12 this session",
+				  bufferWidth_, bufferHeight_);
+		// Full teardown (not just the two codec contexts) so encodeFrame_
+		// isn't left half-initialized (format/width/height set, no buffer)
+		// for a later EnsureRingSized() call to retry against -- ReleaseCodecContexts()
+		// frees encodeFrame_/encodePacket_/decodeFrame_/decodePacket_ too and
+		// leaves everything nullptr, same clean slate as never having tried.
+		ReleaseCodecContexts();
+		return;
+	}
+
 	TRIGGLOW_LOG_INFO(kComponent, "MJPEG encoder/decoder open at %ux%u (quality qscale=%d)", bufferWidth_,
 			  bufferHeight_, kMjpegQuality);
 }
@@ -547,11 +603,16 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 		}
 	}
 
-	av_frame_unref(encodeFrame_);
-	encodeFrame_->format = encoderCtx_->pix_fmt;
-	encodeFrame_->width = static_cast<int>(bufferWidth_);
-	encodeFrame_->height = static_cast<int>(bufferHeight_);
-	if (av_frame_get_buffer(encodeFrame_, 0) < 0 || av_frame_make_writable(encodeFrame_) < 0)
+	// encodeFrame_'s buffer was reserved once in EnsureCodecContextsOpen()
+	// (see its comment) -- no unref/get_buffer here anymore. Its format/
+	// width/height are already set to bufferWidth_/bufferHeight_ from that
+	// same call and never change without a full codec-context recreation
+	// (EnsureCodecContextsOpen() is re-run on every resolution change), so
+	// nothing here needs to re-set them. av_frame_make_writable() is a true
+	// no-op reusing this same allocation unless something unexpectedly still
+	// holds a reference to it, in which case it safely falls back to a
+	// one-off copy rather than corrupting shared data.
+	if (av_frame_make_writable(encodeFrame_) < 0)
 		return false;
 
 	// av_frame_get_buffer() picks FFmpeg's own (possibly padded) alignment --
@@ -603,8 +664,10 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 	// budgeted default keeps that larger capacity permanently (never shrunk
 	// back down) rather than paying a realloc on every single frame -- see
 	// EnsureRingSized()'s comment on the tradeoff this accepts.
-	if (dst.pixels.size() < packetSize)
+	if (dst.pixels.size() < packetSize) {
 		dst.pixels.resize(packetSize);
+		++encodeGrowthCount_; // See kAssumedCompressionRatio's comment: the direct signal it's too low.
+	}
 
 	std::memcpy(dst.pixels.data(), encodePacket_->data, packetSize);
 	dst.usedBytes = packetSize;
@@ -616,6 +679,28 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 				  packetSize, rawFrameBytes,
 				  static_cast<double>(rawFrameBytes) / std::max<size_t>(1, packetSize));
 		loggedFirstEncode_ = true;
+	}
+
+	// See encodeSampleCount_'s comment in the header: the "first encode" line
+	// above is almost always the loading scene (a static graphic), not real
+	// content -- this periodic line is the actual data point that matters,
+	// covering whatever's really been on screen since Enable().
+	++encodeSampleCount_;
+	encodeCompressedBytesTotal_ += packetSize;
+	encodeRawBytesTotal_ += rawFrameBytes;
+	if (encodeSampleCount_ % kCompressionLogIntervalFrames == 0) {
+		size_t ringBytes = 0;
+		for (const auto &slot : ring_)
+			ringBytes += slot.pixels.size();
+		double cumulativeRatio =
+			static_cast<double>(encodeRawBytesTotal_) / std::max<uint64_t>(1, encodeCompressedBytesTotal_);
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "compression check: %llu frames encoded this cycle, cumulative ratio %.1fx, ring_ "
+				  "real memory ~%lluMB across %zu slots (last frame: %zu bytes, %llu slot growths "
+				  "this cycle)",
+				  static_cast<unsigned long long>(encodeSampleCount_), cumulativeRatio,
+				  static_cast<unsigned long long>(ringBytes / (1024 * 1024)), ring_.size(), packetSize,
+				  static_cast<unsigned long long>(encodeGrowthCount_));
 	}
 
 	return true;
@@ -1157,7 +1242,7 @@ uint32_t VideoDelayFilter::GetHeight() const
 
 const char *VideoDelayFilter::GetName(void * /*typeData*/)
 {
-	return "Trigglow Video Delay Buffer";
+	return Str("Filter.VideoDelay.Name");
 }
 
 void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
