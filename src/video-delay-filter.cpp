@@ -545,8 +545,9 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 	encodeFrame_->width = static_cast<int>(bufferWidth_);
 	encodeFrame_->height = static_cast<int>(bufferHeight_);
 	if (av_frame_get_buffer(encodeFrame_, 0) < 0) {
-		TRIGGLOW_LOG_WARN(kComponent, "failed to reserve the MJPEG encode frame buffer at %ux%u -- storing "
-					      "uncompressed NV12 this session",
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "failed to reserve the MJPEG encode frame buffer at %ux%u -- storing "
+				  "uncompressed NV12 this session",
 				  bufferWidth_, bufferHeight_);
 		// Full teardown (not just the two codec contexts) so encodeFrame_
 		// isn't left half-initialized (format/width/height set, no buffer)

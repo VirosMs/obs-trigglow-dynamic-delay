@@ -32,7 +32,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace trigglow {
 
 namespace {
+#ifdef _WIN32
+// Only referenced by the Windows implementation below -- the non-Windows
+// stub doesn't log at all (see its own comment), so declaring this
+// unconditionally would be an unused-variable warning-as-error there.
 constexpr const char *kComponent = "bug-report";
+#endif
 } // namespace
 
 bool ReadFileBytes(const std::string &path, std::string &outBytes)
@@ -113,7 +118,8 @@ BugReportLogResult CopyCurrentObsLogForSupport()
 		return result;
 	}
 	destDir /= L"Trigglow";
-	std::filesystem::create_directories(destDir, ec); // Fine if it already exists; ec checked via destPath copy below.
+	std::filesystem::create_directories(destDir,
+					    ec); // Fine if it already exists; ec checked via destPath copy below.
 
 	// Timestamped so reporting a second issue the same day doesn't silently
 	// overwrite the first copy still sitting in that folder.

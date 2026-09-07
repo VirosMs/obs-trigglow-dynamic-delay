@@ -45,7 +45,7 @@ namespace trigglow {
 
 namespace {
 constexpr const char *kComponent = "report-bug-dialog";
-constexpr const wchar_t *kApiHost = L"api.trigglow.com";     // Matches auth-manager.cpp's kApiHost.
+constexpr const wchar_t *kApiHost = L"api.trigglow.com"; // Matches auth-manager.cpp's kApiHost.
 constexpr const char *kSupportWebOrigin = "https://www.trigglow.com";
 
 // Str() (i18n.hpp) returns const char*/UTF-8 -- every user-facing string in
@@ -92,7 +92,8 @@ SubmitResult SubmitTicket(const std::string &guestName, const std::string &guest
 	HttpResult createResult = HttpsPostJson(kApiHost, L"/api/support/public/tickets", jsonBody);
 	if (!createResult.ok || createResult.statusCode != 201) {
 		if (!createResult.ok) {
-			result.error = createResult.error.empty() ? Str("ReportDialog.ErrorNetwork") : createResult.error;
+			result.error = createResult.error.empty() ? Str("ReportDialog.ErrorNetwork")
+								  : createResult.error;
 		} else {
 			std::string tmpl = Str("ReportDialog.ErrorServer");
 			size_t pos = tmpl.find("%1");
@@ -129,8 +130,7 @@ SubmitResult SubmitTicket(const std::string &guestName, const std::string &guest
 		// widening is safe; nothing here ever contains non-ASCII input.
 		std::wstring ticketIdW(result.ticketId.begin(), result.ticketId.end());
 		std::wstring accessTokenW(result.accessToken.begin(), result.accessToken.end());
-		std::wstring path =
-			L"/api/support/public/tickets/" + ticketIdW + L"/attachments?token=" + accessTokenW;
+		std::wstring path = L"/api/support/public/tickets/" + ticketIdW + L"/attachments?token=" + accessTokenW;
 		HttpResult uploadResult =
 			HttpsPostMultipartFile(kApiHost, path, "file", "obs-log.txt", "text/plain", logBytes);
 		result.attachmentUploaded = uploadResult.ok && uploadResult.statusCode == 201;
@@ -271,8 +271,8 @@ void ReportBugDialog::OnSubmitClicked()
 
 	QPointer<ReportBugDialog> self(this);
 	std::thread([nameUtf8, emailUtf8, messageUtf8, versionUtf8, haveLogBytes, logBytes, self]() {
-		SubmitResult result = SubmitTicket(nameUtf8, emailUtf8, messageUtf8, versionUtf8, haveLogBytes,
-						   logBytes);
+		SubmitResult result =
+			SubmitTicket(nameUtf8, emailUtf8, messageUtf8, versionUtf8, haveLogBytes, logBytes);
 		QMetaObject::invokeMethod(
 			qApp,
 			[result, self]() {
@@ -288,7 +288,8 @@ void ReportBugDialog::OnSubmitClicked()
 
 				QUrl url(QString::fromUtf8(kSupportWebOrigin) + QStringLiteral("/support"));
 				QUrlQuery query;
-				query.addQueryItem(QStringLiteral("ticket"), QString::fromUtf8(result.ticketId.c_str()));
+				query.addQueryItem(QStringLiteral("ticket"),
+						   QString::fromUtf8(result.ticketId.c_str()));
 				query.addQueryItem(QStringLiteral("token"),
 						   QString::fromUtf8(result.accessToken.c_str()));
 				url.setQuery(query);

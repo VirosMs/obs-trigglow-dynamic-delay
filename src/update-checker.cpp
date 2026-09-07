@@ -72,8 +72,7 @@ UpdateCheckResult CheckForUpdate(const std::string &currentVersion)
 	// whole session (its own agent string), so nothing extra is needed here.
 	HttpResult httpResult = HttpsGet(kGithubApiHost, kGithubReleasesPath);
 	if (!httpResult.ok || httpResult.statusCode != 200) {
-		TRIGGLOW_LOG_INFO(kComponent,
-				  "update check failed (HTTP %d, %s) -- treating as unknown, not an error",
+		TRIGGLOW_LOG_INFO(kComponent, "update check failed (HTTP %d, %s) -- treating as unknown, not an error",
 				  httpResult.statusCode, httpResult.error.c_str());
 		return result;
 	}
@@ -103,9 +102,8 @@ UpdateCheckResult CheckForUpdate(const std::string &currentVersion)
 
 	obs_data_release(data);
 
-	TRIGGLOW_LOG_INFO(kComponent, "update check: running v%s, latest published is v%s (%s)",
-			  currentVersion.c_str(), latest.c_str(),
-			  result.updateAvailable ? "update available" : "up to date");
+	TRIGGLOW_LOG_INFO(kComponent, "update check: running v%s, latest published is v%s (%s)", currentVersion.c_str(),
+			  latest.c_str(), result.updateAvailable ? "update available" : "up to date");
 
 	return result;
 }

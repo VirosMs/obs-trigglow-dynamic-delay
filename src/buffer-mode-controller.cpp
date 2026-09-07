@@ -39,7 +39,7 @@ std::string FormatOne(const char *tmpl, const std::string &value)
 		result.replace(pos, 2, value);
 	return result;
 }
-}
+} // namespace
 
 BufferModeController::BufferModeController(ObsFrontendBridge &bridge) : bridge_(bridge)
 {

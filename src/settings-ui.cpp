@@ -265,31 +265,32 @@ void TrigglowDelayDock::BuildUi()
 	// above (status meaning, deliberately theme-independent). stateLabel_'s
 	// color is set per-status in RefreshFromStatus() instead of here (it's
 	// the one thing that actually changes color at runtime).
-	setStyleSheet(QStringLiteral(
-		"QFrame#card { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
-		"QLabel#sectionLabel { color: palette(placeholderText); font-size: 8pt; font-weight: 600; }"
-		"QLabel#mutedLabel { color: palette(placeholderText); font-size: 8pt; }"
-		"QComboBox, QSpinBox { padding: 4px 6px; border: 1px solid palette(mid); border-radius: 5px; "
-		"background-color: palette(window); }"
-		"QPushButton#enableButton { background-color: %1; color: #FFFFFF; border: none; "
-		"border-radius: 6px; padding: 8px; font-weight: 600; font-size: 9pt; }"
-		"QPushButton#enableButton:hover { background-color: #16A34A; }"
-		"QPushButton#enableButton:disabled { background-color: palette(button); color: palette(placeholderText); }"
-		"QPushButton#disableButton { background-color: %2; color: #FFFFFF; border: none; "
-		"border-radius: 6px; padding: 8px; font-weight: 600; font-size: 9pt; }"
-		"QPushButton#disableButton:hover { background-color: #DC2626; }"
-		"QPushButton#disableButton:disabled { background-color: palette(button); color: palette(placeholderText); }"
-		"QPushButton#accountButton { background: transparent; border: 1px solid palette(mid); "
-		"border-radius: 6px; padding: 5px 12px; }"
-		"QPushButton#accountButton:hover { border-color: %3; color: %3; }"
-		"QPushButton#accountButton:disabled { color: palette(placeholderText); }"
-		"QPushButton#reportBugButton { color: %3; background: transparent; border: none; padding: 2px 4px; "
-		"font-size: 9pt; text-decoration: underline; }"
-		"QPushButton#reportBugButton:hover { color: #7DD3FC; }"
-		"QPushButton#reportBugButton:disabled { color: palette(placeholderText); text-decoration: none; }"
-		"QPushButton#updateNoticeButton { background-color: %4; color: #1A1200; border: none; "
-		"border-radius: 6px; padding: 6px 10px; font-weight: 600; font-size: 9pt; text-align: left; }"
-		"QPushButton#updateNoticeButton:hover { background-color: #D97706; }")
+	setStyleSheet(
+		QStringLiteral(
+			"QFrame#card { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
+			"QLabel#sectionLabel { color: palette(placeholderText); font-size: 8pt; font-weight: 600; }"
+			"QLabel#mutedLabel { color: palette(placeholderText); font-size: 8pt; }"
+			"QComboBox, QSpinBox { padding: 4px 6px; border: 1px solid palette(mid); border-radius: 5px; "
+			"background-color: palette(window); }"
+			"QPushButton#enableButton { background-color: %1; color: #FFFFFF; border: none; "
+			"border-radius: 6px; padding: 8px; font-weight: 600; font-size: 9pt; }"
+			"QPushButton#enableButton:hover { background-color: #16A34A; }"
+			"QPushButton#enableButton:disabled { background-color: palette(button); color: palette(placeholderText); }"
+			"QPushButton#disableButton { background-color: %2; color: #FFFFFF; border: none; "
+			"border-radius: 6px; padding: 8px; font-weight: 600; font-size: 9pt; }"
+			"QPushButton#disableButton:hover { background-color: #DC2626; }"
+			"QPushButton#disableButton:disabled { background-color: palette(button); color: palette(placeholderText); }"
+			"QPushButton#accountButton { background: transparent; border: 1px solid palette(mid); "
+			"border-radius: 6px; padding: 5px 12px; }"
+			"QPushButton#accountButton:hover { border-color: %3; color: %3; }"
+			"QPushButton#accountButton:disabled { color: palette(placeholderText); }"
+			"QPushButton#reportBugButton { color: %3; background: transparent; border: none; padding: 2px 4px; "
+			"font-size: 9pt; text-decoration: underline; }"
+			"QPushButton#reportBugButton:hover { color: #7DD3FC; }"
+			"QPushButton#reportBugButton:disabled { color: palette(placeholderText); text-decoration: none; }"
+			"QPushButton#updateNoticeButton { background-color: %4; color: #1A1200; border: none; "
+			"border-radius: 6px; padding: 6px 10px; font-weight: 600; font-size: 9pt; text-align: left; }"
+			"QPushButton#updateNoticeButton:hover { background-color: #D97706; }")
 			.arg(QString::fromUtf8(kColorSuccess), QString::fromUtf8(kColorError),
 			     QString::fromUtf8(kColorAccent), QString::fromUtf8(kColorWarning)));
 
@@ -360,18 +361,16 @@ void TrigglowDelayDock::RefreshFitEstimate()
 	}
 
 	if (estimate.fitsFullDuration) {
-		fitLabel_->setText(T("Dock.Fit.FullyFits")
-					   .arg(secondsSpin_->value())
-					   .arg(estimate.width)
-					   .arg(estimate.height));
+		fitLabel_->setText(
+			T("Dock.Fit.FullyFits").arg(secondsSpin_->value()).arg(estimate.width).arg(estimate.height));
 		fitLabel_->setStyleSheet(
 			QStringLiteral("color: %1; font-size: 8pt;").arg(QString::fromUtf8(kColorSuccess)));
 	} else {
 		fitLabel_->setText(T("Dock.Fit.Trimmed")
-					    .arg(estimate.actualSeconds, 0, 'f', 1)
-					    .arg(secondsSpin_->value())
-					    .arg(estimate.width)
-					    .arg(estimate.height));
+					   .arg(estimate.actualSeconds, 0, 'f', 1)
+					   .arg(secondsSpin_->value())
+					   .arg(estimate.width)
+					   .arg(estimate.height));
 		fitLabel_->setStyleSheet(
 			QStringLiteral("color: %1; font-size: 8pt;").arg(QString::fromUtf8(kColorWarning)));
 	}
