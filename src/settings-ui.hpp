@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <QElapsedTimer>
+#include <QString>
 #include <QWidget>
 
 #include "buffer-mode-controller.hpp"
@@ -51,6 +52,7 @@ namespace trigglow {
 
 class SceneComboBox;
 class AuthManager;
+struct UpdateCheckResult;
 
 class TrigglowDelayDock : public QWidget {
 	Q_OBJECT
@@ -109,6 +111,25 @@ private:
 	// hardware, pero a su eleccion": never blocks anything, just warns.
 	void RefreshFitEstimate();
 
+	// Wired to reportBugButton_: opens ReportBugDialog (report-bug-dialog.hpp),
+	// which collects a short description and submits a real support ticket
+	// to trigglow.com with OBS's current log attached automatically -- see
+	// that dialog's own header comment. Modal, but never blocks Enable/
+	// Disable or anything else outside of itself while open.
+	void OnReportBugClicked();
+
+	// Kicks off update-checker.hpp's CheckForUpdate() on a background
+	// thread (same RunHttp-style pattern ReportBugDialog uses for its own
+	// HTTP calls), once, from the constructor. A public GitHub API GET, no
+	// new trigglow.com backend needed -- see that header's comment for why
+	// this is the plugin's only update-awareness at all right now.
+	void CheckForUpdateAsync();
+	// Marshaled back onto the UI thread by CheckForUpdateAsync(); only ever
+	// called when a real update is available (a failed/inconclusive check
+	// just stays silent, never shown to the user -- see
+	// UpdateCheckResult::checked's comment).
+	void ShowUpdateNotice(const UpdateCheckResult &result);
+
 	BufferModeController &bufferController_;
 	AuthManager &authManager_;
 
@@ -133,6 +154,16 @@ private:
 	// depending on state.
 	QLabel *accountLabel_ = nullptr;
 	QPushButton *accountButton_ = nullptr;
+
+	// See OnReportBugClicked(). Always enabled, regardless of buffer state.
+	QPushButton *reportBugButton_ = nullptr;
+
+	// See CheckForUpdateAsync()/ShowUpdateNotice(). Hidden (setVisible(false))
+	// until/unless a real update is found -- Qt layouts skip hidden widgets
+	// entirely, so this reserves no space while empty. updateReleaseUrl_ is
+	// what its click handler opens.
+	QPushButton *updateNoticeButton_ = nullptr;
+	QString updateReleaseUrl_;
 
 	// See UpdateFillProgress()'s comment. fillElapsed_ is armed alongside
 	// fillTimer_ in ArmFillTimer(); fillTotalSeconds_ is what the countdown
