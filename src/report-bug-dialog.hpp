@@ -47,10 +47,14 @@ class ReportBugDialog : public QDialog {
 	Q_OBJECT
 
 public:
-	// defaultName: prefilled from AuthManager::DisplayName() if the user is
-	// logged in, empty otherwise -- AuthManager doesn't hold an email today,
-	// so that field always starts blank.
-	explicit ReportBugDialog(QString pluginVersion, QString defaultName, QWidget *parent = nullptr);
+	// defaultName/defaultEmail: prefilled from AuthManager::DisplayName()/
+	// Email() when the user is logged in (Enable() already requires it --
+	// see docs/ACCOUNT_GATE.md -- so this is the common case), empty
+	// otherwise. Either can still come back empty even when logged in (no
+	// display name set, or an OAuth-only account with no email on file) --
+	// the user can always edit both fields regardless.
+	explicit ReportBugDialog(QString pluginVersion, QString defaultName, QString defaultEmail,
+				 QWidget *parent = nullptr);
 
 private:
 	void BuildUi();

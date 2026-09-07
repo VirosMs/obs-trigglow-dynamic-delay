@@ -561,7 +561,7 @@ void TrigglowDelayDock::OnReportBugClicked()
 	// (modal) is fine here: this is a deliberate, occasional action, not
 	// something that needs to coexist with using the rest of the dock.
 	ReportBugDialog dialog(QString::fromUtf8(PLUGIN_VERSION), QString::fromStdString(authManager_.DisplayName()),
-			       this);
+			       QString::fromStdString(authManager_.Email()), this);
 	dialog.exec();
 }
 

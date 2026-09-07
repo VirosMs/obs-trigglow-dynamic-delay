@@ -147,7 +147,7 @@ SubmitResult SubmitTicket(const std::string &guestName, const std::string &guest
 
 } // namespace
 
-ReportBugDialog::ReportBugDialog(QString pluginVersion, QString defaultName, QWidget *parent)
+ReportBugDialog::ReportBugDialog(QString pluginVersion, QString defaultName, QString defaultEmail, QWidget *parent)
 	: QDialog(parent),
 	  pluginVersion_(std::move(pluginVersion))
 {
@@ -165,6 +165,8 @@ ReportBugDialog::ReportBugDialog(QString pluginVersion, QString defaultName, QWi
 
 	if (!defaultName.isEmpty())
 		nameEdit_->setText(defaultName);
+	if (!defaultEmail.isEmpty())
+		emailEdit_->setText(defaultEmail);
 }
 
 void ReportBugDialog::BuildUi()
