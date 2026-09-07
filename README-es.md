@@ -6,7 +6,7 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.3.2 — Early Access.**
+OBS. **Estado: MVP / v0.4.0 — Early Access.**
 
 A partir de v0.3.0, el ring buffer de RAM se comprime de verdad con MJPEG en Windows y Linux
 (FFmpeg vendorizado), con un fallback automático y seguro a almacenamiento sin comprimir si el codec
@@ -26,8 +26,20 @@ La v0.3.2 arregla que el audio se notara claramente por detrás del vídeo en de
 calidad (30s+, 1080p): el vídeo acorta en silencio su propia duración real de buffer cuando el
 presupuesto de RAM no da para el pedido completo, pero el audio seguía guardando siempre los
 segundos completos — ambos se desincronizaban exactamente por esa diferencia. El audio ahora se
-ajusta a lo que el vídeo realmente puede entregar (ver `docs/SPEC.md` §3.3). Ver `CHANGELOG-es.md`
-para las dos.
+ajusta a lo que el vídeo realmente puede entregar (ver `docs/SPEC.md` §3.3).
+
+La v0.3.3 añade una puerta de cuenta gratuita antes de Enable (ver `docs/ACCOUNT_GATE.md`) — sigue
+siendo 100% gratis, solo un inicio de sesión único.
+
+La v0.4.0 añade un botón **"Reportar un problema"** en el dock (crea un ticket de soporte real con
+el log actual de OBS adjuntado automáticamente), un **chequeo de actualizaciones dentro del
+plugin** contra las releases de GitHub de este repositorio, y **localización real** (el dock, los
+diálogos, los nombres de filtro/hotkey y los mensajes de estado ahora siguen el idioma configurado
+en OBS en vez de estar fijos en español). También reajusta la suposición de compresión del ring de
+RAM usando la primera medición real de ratios de compresión sobre gameplay en vivo (~11-15x, no el
+3x asumido de forma conservadora desde v0.3.0) — la memoria total medida del proceso de OBS a
+30s/1080p60 bajó de ~2.8GB a ~2.1GB — y rediseña la disposición del dock. Ver `CHANGELOG-es.md`
+para todo lo anterior.
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
@@ -157,7 +169,19 @@ src/
   scene-combo-box.{hpp,cpp}        → combo box del dock poblado a partir de la lista de escenas de
                                      OBS
   settings-ui.{hpp,cpp}            → el dock Qt (escena en directo/de carga, segundos, calidad,
-                                     estimación de ajuste, Enable/Disable, cuenta atrás de llenado)
+                                     estimación de ajuste, Enable/Disable, cuenta atrás de llenado,
+                                     aviso de actualización)
+  report-bug-dialog.{hpp,cpp}      → diálogo "Reportar un problema" — crea un ticket de soporte en
+                                     trigglow.com con el log actual de OBS adjuntado automáticamente
+  bug-report.{hpp,cpp}             → localiza/copia el archivo de log actual de OBS (solo Windows
+                                     por ahora)
+  update-checker.{hpp,cpp}         → compara la última release de GitHub de este repositorio contra
+                                     la versión en ejecución
+  auth-manager.{hpp,cpp}           → la puerta de login de cuenta gratuita (ver `docs/ACCOUNT_GATE.md`)
+  win-http.{hpp,cpp}               → cliente WinHTTP nativo (GET/POST JSON/POST multipart) usado por
+                                     auth-manager, report-bug-dialog y update-checker
+  i18n.hpp                         → helper Str() (obs_module_text()) — todo el texto visible de
+                                     este plugin pasa por aquí; ver data/locale/*.ini
   hotkeys.{hpp,cpp}                → registro de las 3 hotkeys nativas de OBS, conectadas a
                                      BufferModeController
   logging.{hpp,cpp}                → wrapper de logging con prefijo de componente
@@ -165,6 +189,8 @@ src/
                                      abandonado (ver `docs/SPEC.md` §6) — presente en el repo pero
                                      nunca instanciada por plugin-main.cpp; no se envía en ningún
                                      build actual
+data/
+  locale/en-US.ini, es-ES.ini      → las cadenas traducidas reales del plugin (ver src/i18n.hpp)
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
   INSTALL_GUIDE-es.md       → guía de instalación paso a paso con capturas (SmartScreen,

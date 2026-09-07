@@ -45,11 +45,38 @@
 - `main` ahora es una rama protegida (PR obligatorio, incluso para el mantenedor); `develop` es
   donde ocurre el trabajo en curso.
 
-## v0.4.0 (propuesto)
+## v0.4.0 (entregado — 2026-09-07)
+- **Reportar un problema**: un diálogo nativo en el dock que crea un ticket de soporte real en
+  trigglow.com (categoría `dynamic_delay`) y adjunta automáticamente el log actual de OBS — sin
+  que el usuario tenga que buscarlo a mano. Nuevo `HttpsPostMultipartFile()` sobre el cliente
+  WinHTTP ya existente (`src/win-http.cpp`) para la subida del adjunto.
+- **Chequeo de actualizaciones dentro del plugin**: al cargar, compara la última release de
+  GitHub de este repositorio contra la versión en ejecución (público, sin autenticación) y
+  muestra un aviso en el dock si hay una más nueva — silencioso ante cualquier fallo o si ya está
+  actualizado, nunca como un error.
+- **Localización real**: todo el texto visible (dock, diálogo de reportar un problema, nombres de
+  filtro, descripciones de hotkeys, mensajes de estado del buffer) pasa ahora por el sistema de
+  idiomas propio de OBS (`obs_module_text()`) en vez de literales en español fijos en el código —
+  `data/locale/en-US.ini`/`es-ES.ini` ahora están totalmente traducidos en vez de tener una sola
+  clave `PluginName` cada uno. Antes, un usuario con OBS en cualquier idioma que no fuera español
+  veía igualmente el plugin 100% en español.
+- **Rediseño del dock**: secciones agrupadas en tarjetas, paleta de colores de estado semántica
+  consistente, y controles de delay/calidad uno junto al otro.
+- **RAM medida por primera vez, no asumida**: una línea de log `compression check`
+  (`src/video-delay-filter.cpp`) reveló un ratio de compresión MJPEG real de ~11-15x sobre
+  gameplay en vivo, muy por encima del 3x asumido de forma conservadora desde v0.3.0 —
+  `kAssumedCompressionRatio` reajustado a 5.0 con esos datos, más la eliminación de una
+  asignación de memoria por cada frame en la codificación. Medido en vivo a 30s/1080p60: la
+  memoria total del proceso de OBS bajó de ~2.8GB a ~2.1GB.
+
+## v0.5.0 (propuesto)
 - Presets de delay guardados (p. ej. "Delay corto 5s", "Delay largo 30s"), seleccionables desde el
   dock y desde hotkeys adicionales.
 - **Verificación en directo** de macOS/Linux — ambos ya compilan en verde en CI; esto trata de
   ejecutar y confirmar el plugin de verdad en esas plataformas, no de trabajo nuevo de build.
+- Medir el reajuste de RAM de v0.4.0 (`kAssumedCompressionRatio = 5.0`) contra más
+  sesiones/juegos usando el nuevo contador de crecimiento por slot (`encodeGrowthCount_`) antes de
+  plantearse subirlo más — ver el comentario de esa constante en `src/video-delay-filter.cpp`.
 
 ## Más adelante
 - Instaladores firmados para Windows/macOS (el instalador de Windows actual no está firmado —

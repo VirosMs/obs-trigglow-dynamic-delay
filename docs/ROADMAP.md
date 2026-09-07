@@ -40,11 +40,35 @@
 - `main` is now a protected branch (PR required, even for the maintainer); `develop` is where
   ongoing work happens.
 
-## v0.4.0 (proposed)
+## v0.4.0 (shipped — 2026-09-07)
+- **Report a problem**: a native dock dialog that creates a real trigglow.com support ticket
+  (category `dynamic_delay`) and attaches the current OBS log automatically — no manual log
+  hunting for the user. New `HttpsPostMultipartFile()` on the existing WinHTTP client
+  (`src/win-http.cpp`) for the attachment upload.
+- **In-app update check**: on load, compares this repo's latest GitHub release against the running
+  version (public, unauthenticated) and shows a dismissible-by-design dock notice if newer —
+  silent on failure or when already current, never an error.
+- **Real localization**: every user-facing string (dock, report-a-problem dialog, filter names,
+  hotkey descriptions, buffer status messages) now goes through OBS's own `obs_module_text()`
+  locale system instead of hardcoded Spanish literals — `data/locale/en-US.ini`/`es-ES.ini` are
+  now fully translated rather than holding a single `PluginName` key each. Previously a user
+  running OBS in any language other than Spanish still saw a 100% Spanish plugin.
+- **Dock redesign**: card-grouped sections, a consistent semantic status-color palette, and
+  side-by-side delay/quality controls.
+- **RAM measured for the first time, not assumed**: a `compression check` log line
+  (`src/video-delay-filter.cpp`) exposed a real ~11-15x MJPEG compression ratio on live gameplay,
+  well above the 3x conservatively assumed since v0.3.0 — `kAssumedCompressionRatio` retuned to
+  5.0 on that data, plus removed a per-tick encode-frame allocation. Measured live at 30s/1080p60:
+  total OBS process memory went from ~2.8GB to ~2.1GB.
+
+## v0.5.0 (proposed)
 - Saved delay presets (e.g. "Short delay 5s", "Long delay 30s"), selectable from the dock and from
   additional hotkeys.
 - macOS/Linux **live verification** — both already build green in CI; this is about actually
   running and confirming the plugin on those platforms, not new build-system work.
+- Measure the v0.4.0 RAM retune (`kAssumedCompressionRatio = 5.0`) against more sessions/games
+  using the new per-slot growth counter (`encodeGrowthCount_`) before considering raising it
+  further — see that constant's comment in `src/video-delay-filter.cpp`.
 
 ## Later
 - **CA-issued signing for Windows/macOS** (real fix for the SmartScreen/Defender false positive

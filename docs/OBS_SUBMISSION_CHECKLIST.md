@@ -3,12 +3,16 @@
 Practical checklist for actually submitting Trigglow Dynamic Delay to the OBS Studio plugins
 store/catalog.
 
-**v0.3.x note:** v0.3.0 (real MJPEG compression of the RAM ring buffer, see `docs/SPEC.md` §4),
-v0.3.1 (a scene-selector persistence fix + real installer branding — replacing Inno Setup's generic
-icon/wizard images, see `installers/windows/branding/`), and v0.3.2 (fixed audio drifting behind a
-RAM-shortened video delay, see `docs/SPEC.md` §3.3) are all feature/fix updates on top of the same
-0.2.0 submission this checklist was written for — they follow the same process and don't change
-anything below; the items already marked "Done" for 0.2.0 still hold.
+**v0.3.x/v0.4.0 note:** v0.3.0 (real MJPEG compression of the RAM ring buffer, see `docs/SPEC.md`
+§4), v0.3.1 (a scene-selector persistence fix + real installer branding — replacing Inno Setup's
+generic icon/wizard images, see `installers/windows/branding/`), v0.3.2 (fixed audio drifting
+behind a RAM-shortened video delay, see `docs/SPEC.md` §3.3), v0.3.3 (the free-account gate, see
+`docs/ACCOUNT_GATE.md`), and v0.4.0 (report-a-problem ticket flow, in-app update check, real
+localization, and a RAM/dock pass — see `CHANGELOG.md`) are all feature/fix updates on top of the
+same 0.2.0 submission this checklist was written for — they follow the same process and don't
+change anything below; the items already marked "Done" for 0.2.0 still hold. The two new network
+disclosure items below (account gate, then update-check/report-a-problem) are the only submission-
+relevant additions from these releases.
 
 ## Done
 
@@ -59,10 +63,20 @@ anything below; the items already marked "Done" for 0.2.0 still hold.
   2026-09-02, on the official v0.3.2 release asset — not specific to unofficial builds). Flag both
   clearly in the forum submission text so reviewers and users aren't surprised.
 
-- **Disclose the free-account requirement and network use in the forum listing text.** As of this
-  change, Enable (dock button, hotkey, and Stream Deck) requires having signed in to a free
+- **Disclose the free-account requirement and network use in the forum listing text.** As of
+  v0.3.3, Enable (dock button, hotkey, and Stream Deck) requires having signed in to a free
   trigglow.com account once — see `docs/ACCOUNT_GATE.md` for the full design and why it exists.
   The plugin now makes outbound HTTPS calls to trigglow.com (`src/auth-manager.hpp`), which it
-  didn't before v0.4.0 — say so plainly in the resource description alongside the "100% free" claim,
+  didn't before v0.3.3 — say so plainly in the resource description alongside the "100% free" claim,
   since some reviewers/users specifically look for undisclosed network activity in OBS plugins.
   **Who:** whoever writes the forum submission text.
+
+- **v0.4.0 adds two more outbound destinations — disclose both alongside the one above:**
+  1. **`api.github.com`** (`src/update-checker.cpp`): one unauthenticated GET on every plugin
+     load, checking this repo's latest published release tag against the running version. No
+     account/token involved, no data sent beyond the request itself.
+  2. **`api.trigglow.com`'s public support-ticket endpoints** (`src/report-bug-dialog.cpp`): only
+     when the user explicitly presses "Report a problem" and submits the form — never automatic.
+     Sends the name/email/message they typed plus the current OBS log file as an attachment.
+     **Who:** whoever writes the forum submission text — fold this into the same disclosure
+     paragraph as the account-gate network use above rather than treating it separately.
