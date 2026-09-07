@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "hotkeys.hpp"
+#include "i18n.hpp"
 #include "logging.hpp"
 
 namespace trigglow {
@@ -56,11 +57,11 @@ DelayHotkeys::~DelayHotkeys()
 
 void DelayHotkeys::Init()
 {
-	toggleId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.toggle", "Trigglow: Toggle Dynamic Delay",
+	toggleId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.toggle", Str("Hotkey.Toggle"),
 						 &DelayHotkeys::ToggleCallback, this);
-	enableId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.enable", "Trigglow: Enable Dynamic Delay",
+	enableId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.enable", Str("Hotkey.Enable"),
 						 &DelayHotkeys::EnableCallback, this);
-	disableId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.disable", "Trigglow: Disable Dynamic Delay",
+	disableId_ = obs_hotkey_register_frontend("trigglow_dynamic_delay.disable", Str("Hotkey.Disable"),
 						  &DelayHotkeys::DisableCallback, this);
 
 	TRIGGLOW_LOG_INFO(kComponent, "registered 3 hotkeys (toggle/enable/disable) — assign them in "
