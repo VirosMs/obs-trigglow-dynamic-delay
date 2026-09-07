@@ -70,6 +70,13 @@ public:
 	// the plain "sign in" button.
 	bool IsLoggingIn() const { return pollTimer_ != nullptr; }
 	std::string DisplayName() const { return displayName_; }
+	// Empty if the account has no email on file (some OAuth-only sign-ins) or
+	// this hasn't been fetched/loaded yet -- callers must handle that the same
+	// way they already handle an empty DisplayName(). Added so ReportBugDialog
+	// can prefill the reporter's email for an already-logged-in user instead
+	// of asking them to retype it (apps/api/src/routes/auth.ts's /auth/me now
+	// returns it, in the main streampulse monorepo).
+	std::string Email() const { return email_; }
 
 	// Opens the system browser to a one-time device-link page and starts
 	// polling for the result, capped at a 5-minute timeout (see PollOnce). A
@@ -118,6 +125,7 @@ private:
 
 	std::string token_;
 	std::string displayName_;
+	std::string email_;
 	std::string pendingDeviceCode_;
 	int pollAttemptsLeft_ = 0;
 

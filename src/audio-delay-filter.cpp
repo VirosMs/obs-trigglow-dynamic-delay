@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "audio-delay-filter.hpp"
+#include "i18n.hpp"
 #include "logging.hpp"
 
 #include <algorithm>
@@ -163,7 +164,7 @@ void AudioDelayFilter::Update(obs_data_t *settings)
 
 const char *AudioDelayFilter::GetName(void * /*typeData*/)
 {
-	return "Trigglow Audio Delay Buffer";
+	return Str("Filter.AudioDelay.Name");
 }
 
 void *AudioDelayFilter::Create(obs_data_t *settings, obs_source_t *source)

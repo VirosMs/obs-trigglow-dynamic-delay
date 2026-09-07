@@ -6,7 +6,7 @@ Native OBS Studio plugin that delays your stream's **video and audio together**,
 number of seconds, from a button, a native OBS hotkey, or a Stream Deck — **without the streaming
 output ever being touched.** No reconnection, no cut, at any point, for any reason. No external
 app, no web panel, no separate process: everything lives inside the OBS process.
-**Status: MVP / v0.3.2 — Early Access.**
+**Status: MVP / v0.4.0 — Early Access.**
 
 As of v0.3.0, the RAM ring buffer is real MJPEG-compressed on Windows and Linux (vendored FFmpeg),
 with an automatic, safe fallback to uncompressed storage if the codec isn't available — no quality
@@ -24,7 +24,18 @@ v0.3.2 fixes audio noticeably lagging behind video on long/high-quality delays (
 silently shortens its own actual buffered duration when the RAM budget doesn't fit the full request,
 but audio always buffered the full seconds regardless — the two drifted apart by exactly that
 shortfall. Audio now matches whatever video is actually able to deliver (see `docs/SPEC.md` §3.3).
-See `CHANGELOG.md` for both.
+
+v0.3.3 adds a free-account gate before Enable (see `docs/ACCOUNT_GATE.md`) — still 100% free, just
+a one-time sign-in.
+
+v0.4.0 adds a **"Report a problem"** dock button (creates a real support ticket with the current
+OBS log attached automatically), an **in-app update check** against this repo's GitHub releases,
+and **real localization** (the dock, dialogs, filter/hotkey names, and status messages now follow
+OBS's own language setting instead of being hardcoded Spanish). It also retunes the RAM ring's
+compression assumption using the first real measurement of live gameplay compression ratios
+(~11-15x, not the 3x conservatively assumed since v0.3.0) — measured total OBS process memory at
+30s/1080p60 went from ~2.8GB to ~2.1GB — and redesigns the dock's layout. See `CHANGELOG.md` for
+all of the above.
 
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried
@@ -150,13 +161,25 @@ src/
   hardware-info.{hpp,cpp}          → total system RAM query, used to size the buffer budget
   scene-combo-box.{hpp,cpp}        → dock combo box populated from OBS's own scene list
   settings-ui.{hpp,cpp}            → the Qt dock (live/loading scene, seconds, quality, fit
-                                     estimate, Enable/Disable, live fill countdown)
+                                     estimate, Enable/Disable, live fill countdown, update notice)
+  report-bug-dialog.{hpp,cpp}      → "Report a problem" dialog — creates a trigglow.com support
+                                     ticket with the current OBS log attached automatically
+  bug-report.{hpp,cpp}             → locates/copies OBS's current log file (Windows only for now)
+  update-checker.{hpp,cpp}         → checks this repo's latest GitHub release against the running
+                                     version
+  auth-manager.{hpp,cpp}           → the free-account login gate (see `docs/ACCOUNT_GATE.md`)
+  win-http.{hpp,cpp}               → native WinHTTP client (GET/POST JSON/POST multipart) used by
+                                     auth-manager, report-bug-dialog, and update-checker
+  i18n.hpp                         → Str() helper (obs_module_text()) — every user-facing string
+                                     in this plugin goes through it; see data/locale/*.ini
   hotkeys.{hpp,cpp}                → registration of the 3 native OBS hotkeys, wired to
                                      BufferModeController
   logging.{hpp,cpp}                → logging wrapper with a component prefix
   delay-controller.{hpp,cpp}       → legacy reconnect-mode logic from the abandoned first design
                                      (see `docs/SPEC.md` §6) — present in the repo but never
                                      instantiated by plugin-main.cpp; ships in no current build
+data/
+  locale/en-US.ini, es-ES.ini      → the plugin's actual translated strings (see src/i18n.hpp)
 docs/
   SPEC.md                  → full technical specification (start here)
   INSTALL_GUIDE.md          → step-by-step install walkthrough with screenshots (SmartScreen,

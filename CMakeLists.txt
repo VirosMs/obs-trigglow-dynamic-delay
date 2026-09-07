@@ -149,6 +149,13 @@ target_sources(
     src/auth-manager.hpp
     src/win-http.cpp
     src/win-http.hpp
+    src/bug-report.cpp
+    src/bug-report.hpp
+    src/report-bug-dialog.cpp
+    src/report-bug-dialog.hpp
+    src/update-checker.cpp
+    src/update-checker.hpp
+    src/i18n.hpp
 )
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

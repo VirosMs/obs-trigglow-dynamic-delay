@@ -2,6 +2,88 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.4.0 — 2026-09-07 (Early Access)
+
+**Añadido:**
+- **Botón "Reportar un problema" en el dock.** Abre un pequeño diálogo nativo (nombre, email, una
+  breve descripción) que crea un ticket de soporte real en trigglow.com (categoría
+  `dynamic_delay`) y le adjunta automáticamente el log actual de OBS — el usuario no tiene que
+  buscar el archivo de log por su cuenta. Construido sobre el cliente WinHTTP ya existente
+  (`src/win-http.cpp`), ampliado con un nuevo `HttpsPostMultipartFile()` para la subida del
+  adjunto; ficheros nuevos `src/bug-report.{hpp,cpp}` (localiza/copia el log actual de OBS, solo
+  Windows por ahora) y `src/report-bug-dialog.{hpp,cpp}` (el diálogo en sí). Nuevo uso de red
+  saliente — ver la nota de divulgación en `docs/OBS_SUBMISSION_CHECKLIST.md`.
+- **Chequeo de actualizaciones dentro del plugin.** Al cargar, el plugin compara la última
+  release publicada de este repositorio en GitHub contra su propia versión (un GET público sin
+  autenticación, sin necesidad de un endpoint nuevo en el backend de trigglow.com) y muestra un
+  pequeño aviso en la parte superior del dock si existe una versión más nueva, con enlace directo
+  a la página de la release. Silencioso ante cualquier fallo o cuando ya está actualizado — nunca
+  se muestra como un error. Fichero nuevo `src/update-checker.{hpp,cpp}`. Nuevo uso de red
+  saliente — ver `docs/OBS_SUBMISSION_CHECKLIST.md`.
+- **Localización real.** Todo el texto visible (el dock, el diálogo de reportar un problema, el
+  nombre de ambos filtros en el propio diálogo de Filtros de OBS, las 3 descripciones de hotkeys,
+  y los mensajes de estado del buffer) pasa ahora por el sistema de idiomas propio de OBS
+  (`obs_module_text()`, vía un nuevo helper `Str()` en `src/i18n.hpp`) en vez de ser un literal
+  en español fijo en el código C++. `data/locale/en-US.ini` y `es-ES.ini` pasaron de tener una
+  sola clave `PluginName` cada uno (lo único que realmente se usaba antes de este cambio) a
+  contener la traducción completa real del plugin. Antes, un usuario con OBS en inglés (o
+  cualquier idioma que no fuera español) veía igualmente el plugin 100% en español.
+
+**Cambiado:**
+- **Rediseño del dock**: los controles ahora se agrupan en tarjetas (estado / cuenta /
+  configuración) en vez de una columna larga de filas sueltas, con una paleta de colores
+  semántica consistente (verde/ámbar/rojo/azul para éxito/aviso/error/acento, independiente del
+  tema de OBS del usuario — todo lo demás sigue usando `palette(...)` para que el dock encaje con
+  el tema activo) y Enable/Disable coloreados para que se entiendan de un vistazo. Delay y calidad
+  mínima ahora van uno junto al otro en vez de apilados. Los tamaños de fuente pasaron de píxeles
+  fijos a puntos, para que el dock escale bien con el escalado de pantalla de Windows.
+
+**Corregido / Rendimiento:**
+- **Consumo real de RAM a 30s/1080p medido en vivo por primera vez** (línea de log
+  `compression check`, `src/video-delay-filter.cpp`) en vez de asumido: una sesión completa
+  mantuvo un ratio de compresión MJPEG real de ~11-15x sobre gameplay real, muy por encima del 3x
+  que se asumía de forma conservadora desde v0.3.0. Se retuneó `kAssumedCompressionRatio` de 3.0 a
+  5.0 con esos datos reales — la memoria propia del ring bajó de ~1.78GB a un estimado de ~1.0GB
+  con ese ajuste, y la memoria total del proceso de OBS en las pruebas bajó de ~2.8GB a ~2.1GB. Un
+  nuevo contador de crecimiento por slot (`encodeGrowthCount_`) se registra junto al ratio para
+  que un futuro reajuste tenga datos reales de frecuencia de crecimiento, no otra suposición.
+- Se eliminó una asignación de memoria real por cada frame: `EncodeScratchNv12Into()` hacía
+  `av_frame_unref()` + `av_frame_get_buffer()` (un malloc+free completo del buffer de píxeles del
+  frame de codificación) en cada frame codificado; ahora el buffer se reserva una sola vez al
+  abrir el contexto del códec y se reutiliza vía `av_frame_make_writable()` en cada tick. No
+  cambia la memoria propia del ring (independiente del reajuste anterior), pero elimina la
+  fragmentación/churn de heap en el camino de codificación a lo largo de una sesión larga.
+
+## v0.3.3 — 2026-09-02 (Early Access)
+
+**Añadido:**
+- Enable (botón del dock, hotkey y Stream Deck) ahora requiere haber iniciado sesión una vez en
+  una cuenta gratuita de trigglow.com — ver `docs/ACCOUNT_GATE.md`. El plugin sigue siendo 100%
+  gratuito; esto es una puerta de descubrimiento, no un muro de pago. El login ocurre
+  completamente en el navegador del sistema del usuario (el mismo login que ya usa la web),
+  nunca dentro de OBS — el plugin solo guarda un token de sesión opaco después. Nuevo uso de red
+  saliente: antes ninguno, ahora un puñado de llamadas HTTPS a trigglow.com alrededor del inicio
+  de sesión (ver la nota de divulgación en `docs/OBS_SUBMISSION_CHECKLIST.md`), hechas vía un
+  cliente WinHTTP nativo (`src/win-http.cpp`) en vez de la red de Qt — ver el comentario de ese
+  fichero para el porqué (el backend TLS de Qt está ligado exactamente a la build de Qt que OBS ya
+  tiene cargada, que no coincide con la que usa este plugin para compilar).
+
+**Cambiado:**
+- Nuevo icono dedicado para la marca del instalador de Windows (antes reutilizaba el logo general
+  de Trigglow) — ver `installers/windows/branding/generate-assets.py`.
+
+**Problema conocido:**
+- El instalador de Windows ha sido marcado directamente por Microsoft Defender
+  (`Trojan:Win32/Wacatac.B!ml`) como amenaza detectada, confirmado en el propio asset de la
+  release oficial v0.3.2, no solo en builds no oficiales — ver
+  [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10). Casi con toda
+  seguridad un falso positivo (binario nuevo, sin reputación). CI ahora firma el instalador con un
+  certificado **autofirmado** como solución provisional (prueba que el archivo no fue manipulado
+  después de que la propia build del proyecto lo produjera) — esto **no** elimina el aviso de
+  SmartScreen ni detiene el falso positivo de Defender, ambos necesitan una identidad validada por
+  una CA; una solicitud a SignPath Foundation (firma real de CA gratuita para proyectos de código
+  abierto que califiquen) está en curso como solución definitiva.
+
 ## v0.3.2 — 2026-08-27 (Early Access)
 
 **Arreglado:**

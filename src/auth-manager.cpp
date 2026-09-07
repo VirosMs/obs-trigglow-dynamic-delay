@@ -114,6 +114,7 @@ void AuthManager::Logout()
 {
 	token_.clear();
 	displayName_.clear();
+	email_.clear();
 	ClearPersistedToken();
 	StopPolling();
 	TRIGGLOW_LOG_INFO(kComponent, "logged out");
@@ -253,6 +254,7 @@ void AuthManager::ValidateStoredToken()
 							  "stored session no longer valid, signing out locally");
 					token_.clear();
 					displayName_.clear();
+					email_.clear();
 					ClearPersistedToken();
 					NotifyChanged();
 				}
@@ -262,9 +264,22 @@ void AuthManager::ValidateStoredToken()
 			obs_data_t *data = obs_data_create_from_json(result.body.c_str());
 			if (!data)
 				return;
+			bool changed = false;
 			const char *name = obs_data_get_string(data, "displayName");
 			if (name && *name && displayName_ != name) {
 				displayName_ = name;
+				changed = true;
+			}
+			// "email" is nullable server-side (some OAuth-only accounts have none) --
+			// obs_data_get_string() returns "" for both a JSON null and a missing
+			// key, so those accounts just leave email_ empty, same as displayName_
+			// would if the server ever sent that blank.
+			const char *email = obs_data_get_string(data, "email");
+			if (email && *email && email_ != email) {
+				email_ = email;
+				changed = true;
+			}
+			if (changed) {
 				PersistToken();
 				NotifyChanged();
 			}
@@ -284,6 +299,7 @@ void AuthManager::PersistToken() const
 	obs_data_t *data = obs_data_create();
 	obs_data_set_string(data, "token", token_.c_str());
 	obs_data_set_string(data, "display_name", displayName_.c_str());
+	obs_data_set_string(data, "email", email_.c_str());
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 }
@@ -305,10 +321,13 @@ void AuthManager::LoadPersistedToken()
 		return;
 	const char *tokenStr = obs_data_get_string(data, "token");
 	const char *nameStr = obs_data_get_string(data, "display_name");
+	const char *emailStr = obs_data_get_string(data, "email");
 	if (tokenStr)
 		token_ = tokenStr;
 	if (nameStr)
 		displayName_ = nameStr;
+	if (emailStr)
+		email_ = emailStr;
 	obs_data_release(data);
 }
 

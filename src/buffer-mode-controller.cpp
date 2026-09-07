@@ -17,13 +17,29 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "buffer-mode-controller.hpp"
+#include "i18n.hpp"
 #include "logging.hpp"
 
 namespace trigglow {
 
 namespace {
 constexpr const char *kComponent = "buffer-mode-controller";
+
+// Replaces the FIRST "%1" in a Str() template with `value` -- this file has
+// no Qt (no QString::arg) and isn't worth pulling in a format library for
+// the one status message that needs a numeric substitution (Filling's
+// seconds count). Not a general-purpose formatter: only ever called with
+// templates that contain exactly one "%1", by construction (see
+// data/locale/en-US.ini).
+std::string FormatOne(const char *tmpl, const std::string &value)
+{
+	std::string result = tmpl;
+	size_t pos = result.find("%1");
+	if (pos != std::string::npos)
+		result.replace(pos, 2, value);
+	return result;
 }
+} // namespace
 
 BufferModeController::BufferModeController(ObsFrontendBridge &bridge) : bridge_(bridge)
 {
@@ -91,18 +107,17 @@ void BufferModeController::Enable()
 	// checked before anything else so a logged-out Enable() (from the dock
 	// button OR a hotkey/Stream Deck press) never touches OBS state at all.
 	if (isAuthorized_ && !isAuthorized_()) {
-		SetState(BufferModeState::Error, "Inicia sesion gratis en trigglow.com para activar el delay.");
+		SetState(BufferModeState::Error, Str("Status.LoginRequired"));
 		return;
 	}
 
 	if (status_.liveSceneName.empty()) {
-		SetState(BufferModeState::Error, "Elige primero una escena en directo.");
+		SetState(BufferModeState::Error, Str("Status.ChooseLiveScene"));
 		return;
 	}
 
 	if (!bridge_.EnsureBufferWrapperScene(status_.liveSceneName)) {
-		SetState(BufferModeState::Error,
-			 "No se pudo preparar la escena auxiliar de buffer (revisa el log de OBS).");
+		SetState(BufferModeState::Error, Str("Status.WrapperSceneFailed"));
 		return;
 	}
 	bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, status_.delaySeconds);
@@ -139,8 +154,7 @@ void BufferModeController::Enable()
 	if (!status_.loadingSceneName.empty())
 		bridge_.SetCurrentSceneByName(status_.loadingSceneName);
 
-	SetState(BufferModeState::Filling,
-		 "Llenando el buffer (" + std::to_string(status_.delaySeconds) + "s)... el dock arma el temporizador.");
+	SetState(BufferModeState::Filling, FormatOne(Str("Status.Filling"), std::to_string(status_.delaySeconds)));
 	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us", status_.liveSceneName.c_str(),
 			  status_.loadingSceneName.c_str(), status_.delaySeconds);
 }

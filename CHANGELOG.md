@@ -2,6 +2,55 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.4.0 — 2026-09-07 (Early Access)
+
+**Added:**
+- **"Report a problem" button in the dock.** Opens a small native dialog (name, email, a short
+  description) that creates a real trigglow.com support ticket (category `dynamic_delay`) and
+  attaches the current OBS log to it automatically — the user never has to find OBS's log file
+  themselves. Built on the existing `src/win-http.cpp` WinHTTP client, extended with a new
+  `HttpsPostMultipartFile()` for the attachment upload; new files `src/bug-report.{hpp,cpp}`
+  (locates/copies the current OBS log, Windows only for now) and
+  `src/report-bug-dialog.{hpp,cpp}` (the dialog itself). New outbound network use — see
+  `docs/OBS_SUBMISSION_CHECKLIST.md`'s disclosure note.
+- **In-app update check.** On load, the plugin checks this repo's latest published GitHub release
+  against its own version (a public, unauthenticated GET, no new trigglow.com backend endpoint
+  needed) and shows a small dismissible-by-nature notice at the top of the dock if a newer version
+  exists, linking straight to the release page. Silent on any failure or when already up to date —
+  never surfaced as an error. New file `src/update-checker.{hpp,cpp}`. New outbound network use —
+  see `docs/OBS_SUBMISSION_CHECKLIST.md`.
+- **Real localization.** Every user-facing string (the dock, the report-a-problem dialog, both
+  filters' names in OBS's own Filters dialog, the 3 hotkey descriptions, and the buffer's status
+  messages) now goes through OBS's own locale system (`obs_module_text()`, via a new
+  `src/i18n.hpp` `Str()` helper) instead of being a hardcoded Spanish literal in the C++ source.
+  `data/locale/en-US.ini` and `es-ES.ini` went from a single `PluginName` key each (all that was
+  ever actually used before this) to the plugin's full real translation. Previously, a user running
+  OBS in English (or anything other than Spanish) still got a 100% Spanish plugin UI regardless of
+  their OBS language.
+
+**Changed:**
+- **Dock redesign**: controls now group into cards (status / account / configuration) instead of
+  one long column of rows, with a consistent semantic color palette (green/amber/red/blue for
+  success/warning/error/accent, independent of the user's OBS theme — everything else still follows
+  `palette(...)` so the dock matches whatever theme is active) and Enable/Disable colored to read at
+  a glance. Delay and minimum quality now sit side by side instead of stacking. Font sizes moved
+  from fixed pixels to points so the dock scales correctly with Windows display scaling.
+
+**Fixed / Performance:**
+- **Real-world RAM usage at 30s/1080p measured live for the first time** (`compression check` log
+  line, `src/video-delay-filter.cpp`) instead of assumed: a full session held a steady ~11-15x MJPEG
+  compression ratio on real gameplay, well above the 3x this had been conservatively assumed at
+  since v0.3.0. Retuned `kAssumedCompressionRatio` from 3.0 to 5.0 on that real data — the ring's
+  own memory dropped from ~1.78GB to an estimated ~1.0GB at that setting, and total OBS process
+  memory in testing went from ~2.8GB to ~2.1GB. A new per-slot growth counter
+  (`encodeGrowthCount_`) logs alongside the ratio so a future retune has real growth-frequency data
+  to check against, not another guess.
+- Removed a real per-tick allocation: `EncodeScratchNv12Into()` used to `av_frame_unref()` +
+  `av_frame_get_buffer()` (a full malloc+free of the encode frame's pixel buffer) on every single
+  encoded frame; the buffer is now reserved once when the codec context opens and reused via
+  `av_frame_make_writable()` every tick. Doesn't change the ring's own memory (unrelated to the
+  retune above), but removes heap churn/fragmentation on the encode path across a long session.
+
 ## v0.3.3 — 2026-09-02 (Early Access)
 
 **Added:**

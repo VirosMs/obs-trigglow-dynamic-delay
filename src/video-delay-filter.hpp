@@ -370,6 +370,32 @@ private:
 	// planes for one frame, reused every tick like everything else here.
 	std::vector<uint8_t> encodeScratchU_;
 	std::vector<uint8_t> encodeScratchV_;
+
+	// Real (not assumed) compression-ratio telemetry -- added 2026-09-07
+	// after a live report that RAM usage at 30s/1080p didn't visibly change
+	// even with EncodeScratchNv12Into()'s per-tick alloc/free churn removed,
+	// which pointed straight back at kAssumedCompressionRatio (video-delay-filter.cpp):
+	// the only real data point logged before this was EncodeScratchNv12Into()'s
+	// one-shot "first encode" line, captured on whatever frame happened to be
+	// live the instant Enable() was pressed -- usually the loading scene, a
+	// static graphic that compresses far better than real gameplay (exactly
+	// the "not representative" caveat docs/ROADMAP.md already flagged).
+	// These accumulate every successful encode for the life of the current
+	// codec context (reset in EnsureCodecContextsOpen(), same as
+	// loggedFirstEncode_) so a periodic log line (kCompressionLogIntervalFrames
+	// in video-delay-filter.cpp) can report a REAL cumulative ratio from
+	// whatever content was actually on screen, plus the ring's actual current
+	// memory footprint -- both needed before kAssumedCompressionRatio can be
+	// safely retuned with real numbers instead of another guess.
+	uint64_t encodeSampleCount_ = 0;
+	uint64_t encodeCompressedBytesTotal_ = 0;
+	uint64_t encodeRawBytesTotal_ = 0;
+	// How many times a slot has needed to grow past its budgeted allocation
+	// this cycle (dst.pixels.resize() in EncodeScratchNv12Into() past its
+	// current size) -- the direct signal for whether kAssumedCompressionRatio
+	// above is set too aggressively for real content. Reset alongside the
+	// three counters above.
+	uint64_t encodeGrowthCount_ = 0;
 #endif
 
 	// audioRing_[channel][frame] — one flat sample buffer per channel, big
