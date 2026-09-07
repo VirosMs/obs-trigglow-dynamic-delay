@@ -44,14 +44,27 @@ struct HttpResult {
 	std::string error; // Human-readable, set when ok is false.
 };
 
-// Both calls are BLOCKING -- callers must not run them on the UI thread. AuthManager runs each
+// All calls are BLOCKING -- callers must not run them on the UI thread. AuthManager runs each
 // on a short-lived background std::thread and marshals the result back via
-// QMetaObject::invokeMethod(..., Qt::QueuedConnection).
+// QMetaObject::invokeMethod(..., Qt::QueuedConnection); ReportBugDialog does the same for the
+// two calls below.
 //
 // host: bare hostname, e.g. "api.trigglow.com" (no scheme, no path). Always connects over
 // HTTPS (port 443). pathAndQuery: e.g. "/auth/plugin/poll?code=...". bearerToken: omit for none.
 HttpResult HttpsGet(const std::wstring &host, const std::wstring &pathAndQuery, const std::wstring &bearerToken = L"");
 HttpResult HttpsPostJson(const std::wstring &host, const std::wstring &pathAndQuery, const std::string &jsonBody,
 			 const std::wstring &bearerToken = L"");
+
+// Single-file multipart/form-data POST -- used by ReportBugDialog to attach OBS's log to a
+// freshly created support ticket (apps/api/src/routes/support.ts's
+// POST /api/support/public/tickets/:id/attachments in the main streampulse monorepo, which reads
+// the file via Fastify's request.file() -- any form field name works server-side there, but
+// fieldName is kept explicit here rather than hardcoded since a raw multipart body is being
+// built by hand, not through a library that would otherwise fix it for us). bearerToken: omit
+// for none -- that endpoint authorizes via its own ?token=... query param instead, not a header.
+HttpResult HttpsPostMultipartFile(const std::wstring &host, const std::wstring &pathAndQuery,
+				  const std::string &fieldName, const std::string &fileName,
+				  const std::string &fileContentType, const std::string &fileBytes,
+				  const std::wstring &bearerToken = L"");
 
 } // namespace trigglow
