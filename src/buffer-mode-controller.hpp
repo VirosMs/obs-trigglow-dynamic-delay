@@ -65,7 +65,11 @@ struct BufferModeStatus {
 	uint32_t minResolutionHeight = 720;
 	std::string liveSceneName;    // Required to Enable(); the streamer's real content.
 	std::string loadingSceneName; // Optional; shown during Filling. Empty = no scene switch while filling.
-	std::string message;          // Human-readable (Spanish), empty outside Error/info states.
+	// Show a "Delay Ns" text overlay on the delayed output while Active.
+	bool showOverlay = true;
+	// Canvas corner for the overlay: 0 top-left (default), 1 top-right, 2 bottom-left, 3 bottom-right.
+	uint32_t overlayCorner = 0;
+	std::string message; // Human-readable (Spanish), empty outside Error/info states.
 };
 
 using BufferStatusChangedCallback = std::function<void(const BufferModeStatus &)>;
@@ -107,6 +111,9 @@ public:
 	void SetLoadingScene(std::string sceneName);
 	void SetDelaySeconds(uint32_t seconds);
 	void SetMinResolutionHeight(uint32_t heightPixels);
+	// Toggles the "Delay Ns" overlay; takes effect immediately if Active.
+	void SetShowOverlay(bool show);
+	void SetOverlayCorner(uint32_t corner);
 
 	BufferModeStatus GetStatus() const { return status_; }
 
@@ -140,12 +147,14 @@ public:
 	// DelayController: this creates/modifies OBS scenes, which should never
 	// happen silently at obs_module_load() time.
 	void LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
-			  std::string loadingSceneName);
+			  std::string loadingSceneName, bool showOverlay = true, uint32_t overlayCorner = 0);
 	struct SettingsSnapshot {
 		uint32_t delaySeconds;
 		uint32_t minResolutionHeight;
 		std::string liveSceneName;
 		std::string loadingSceneName;
+		bool showOverlay;
+		uint32_t overlayCorner;
 	};
 	SettingsSnapshot SaveSettings() const;
 
@@ -187,6 +196,12 @@ private:
 	// on any later delay/quality change while Active, since either can
 	// change whether shortening is needed.
 	void SyncAudioDelayToVideoEffective();
+
+	// Shows (Active + enabled in settings) or hides the "Delay Ns" overlay,
+	// with the delay really in effect (video may have been shortened).
+	void UpdateOverlay();
+
+	uint32_t effectiveDelaySeconds_ = 0; // Set by SyncAudioDelayToVideoEffective().
 
 	ObsFrontendBridge &bridge_;
 	BufferModeStatus status_;

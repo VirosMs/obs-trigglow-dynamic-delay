@@ -31,7 +31,7 @@
 ; override pattern below -- falls back to buildspec.json's value at the time
 ; of this fix for anyone building locally without passing it explicitly.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.4.0"
+  #define MyAppVersion "0.5.0"
 #endif
 #define MyAppPublisher "Trigglow (VirosMs)"
 #define MyAppURL "https://www.trigglow.com/dynamic-delay"
@@ -94,6 +94,18 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "{#PluginStageDir}\bin\64bit\obs-trigglow-dynamic-delay.dll"; DestDir: "{app}\obs-plugins\64bit"; Flags: ignoreversion
 Source: "{#PluginStageDir}\data\locale\en-US.ini"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"; Flags: ignoreversion
+; es-ES.ini was missing here since this installer was first written -- v0.4.0
+; (docs/ROADMAP.md) made it a REAL, fully-translated locale file instead of a
+; single-key placeholder, but this [Files] list was never updated to actually
+; ship it. Every installer build up to and including that release therefore
+; installed only the English strings: obs_module_text() silently falls back
+; to the default locale (en-US) whenever the requested language's .ini isn't
+; on disk at all, which looks identical to "the plugin doesn't support
+; Spanish" from the user's side even though the running OBS was correctly
+; set to it and the .dll's own logic was fine. Found live, 2026-09-08.
+Source: "{#PluginStageDir}\data\locale\es-ES.ini"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"; Flags: ignoreversion
+; Delay overlay badge frame (src/obs-frontend-bridge.cpp SetDelayOverlay loads it via obs_module_file()).
+Source: "{#PluginStageDir}\data\images\delay-badge.png"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\images"; Flags: ignoreversion
 ; v0.3.0 Phase 0 (FFmpeg groundwork, docs/ROADMAP.md): CMake's install() rule
 ; already places these next to the plugin's own .dll in the packaged output
 ; (CMakeLists.txt's OS_WINDOWS block) specifically so Windows' DLL search

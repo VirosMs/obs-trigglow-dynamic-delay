@@ -177,6 +177,20 @@ public:
 	// -- see BufferModeController::SyncAudioDelayToVideoEffective.
 	uint32_t GetVideoEffectiveDelaySeconds(const std::string &liveSceneName) const;
 
+	// Shows/hides a small text overlay ("Delay 30s") inside the wrapper scene
+	// -- the scene that is on Program exactly while the delay is Active, so
+	// the overlay never appears anywhere else. The text source is created
+	// once (with a default style and position) and then only toggled/updated,
+	// so a user who restyles or moves it in OBS keeps their changes. `text`
+	// is ignored when `visible` is false. False if the wrapper scene or a
+	// usable text source type doesn't exist.
+	bool SetDelayOverlay(bool visible, const std::string &text, uint32_t corner = 0) const;
+	// corner: 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right of the canvas.
+
+	// Switches off every Trigglow delay filter in the scene collection (see the
+	// definition for why). Safe to call whenever the delay is Inactive.
+	void DisableAllDelayFilters() const;
+
 	// Switches Program to the wrapper scene created by EnsureBufferWrapperScene.
 	// Callers don't need to know its literal name. False if it doesn't exist
 	// yet (EnsureBufferWrapperScene hasn't been called/succeeded).

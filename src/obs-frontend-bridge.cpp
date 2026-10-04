@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 extern "C" {
 #include <obs.h>
 #include <obs-frontend-api.h>
+#include <obs-module.h> // obs_module_file()
 }
 
 namespace {
@@ -209,6 +210,29 @@ namespace {
 // elsewhere.
 constexpr const char *kBufferWrapperSceneName = "Trigglow Delay Buffer (no tocar)";
 constexpr const char *kBufferFilterInstanceName = "Trigglow Buffer Mode Delay (auto, no tocar)";
+// Text source shown over the wrapper scene while the delay is Active. Kept
+// after Disable (just hidden) so user restyling survives; same "no tocar"
+// naming convention as the other auto-managed objects.
+constexpr const char *kDelayOverlaySourceName = "Trigglow Delay Overlay Text (auto, no tocar)";
+constexpr const char *kDelayBadgeSourceName = "Trigglow Delay Overlay Badge (auto, no tocar)";
+// Names of earlier builds of the overlay (text only, then a full-size badge);
+// removed on sight so users who tried them don't keep a stale second overlay.
+constexpr const char *kLegacyOverlayNames[] = {"Trigglow Delay Overlay (auto, no tocar)",
+					       "Trigglow Delay Text (auto, no tocar)",
+					       "Trigglow Delay Badge (auto, no tocar)"};
+// data/images/delay-badge.png is 480x144 (drawn at 2.5x the size it is shown,
+// so it stays sharp); both items are scaled by kOverlayScale. The logo sits on
+// the left of the badge, the text is centered in a 290x80 box to its right.
+// Distance from the chosen canvas corner to the image edge. The badge PNG already has ~9px (at
+// the shown size) of transparent glow margin, so 0 puts the visible frame ~9px from the screen edge.
+constexpr float kOverlayMargin = 0.0f;
+constexpr float kOverlayBadgeW = 480.0f;
+constexpr float kOverlayBadgeH = 144.0f;
+constexpr float kOverlayScale = 0.4f;
+constexpr float kOverlayTextOffsetX = 160.0f; // In badge pixels, before scaling.
+constexpr float kOverlayTextOffsetY = 32.0f;
+constexpr int kOverlayTextW = 290;
+constexpr int kOverlayTextH = 80;
 
 // Prefix for AudioDelayFilter instance names -- one per audio-capable leaf
 // source inside the live scene, so each needs its own globally-unique name
@@ -241,20 +265,31 @@ obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneNa
 		return nullptr;
 	}
 
+	// Match the item BY NAME, not "the first item": the wrapper scene is
+	// reused across sessions and can still hold a previously chosen live
+	// scene (found live, 2026-10-04: live scene set to "In Game" but the
+	// wrapper kept showing the older "Talk").
 	struct FindCtx {
+		const std::string *liveName;
 		obs_source_t *itemSource = nullptr;
-	} ctx;
+	} ctx{&liveSceneName};
 	obs_scene_enum_items(
 		wrapperScene,
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-			static_cast<FindCtx *>(param)->itemSource = obs_sceneitem_get_source(item);
-			return false; // We only ever add one item (the live scene); stop immediately.
+			auto *c = static_cast<FindCtx *>(param);
+			obs_source_t *source = obs_sceneitem_get_source(item);
+			const char *name = source ? obs_source_get_name(source) : nullptr;
+			if (name && *c->liveName == name) {
+				c->itemSource = source;
+				return false;
+			}
+			return true;
 		},
 		&ctx);
 
 	if (!ctx.itemSource) {
-		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: wrapper scene %p has no scene-items",
-				  static_cast<void *>(wrapperSource));
+		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: wrapper scene %p has no item for live scene \"%s\"",
+				  static_cast<void *>(wrapperSource), liveSceneName.c_str());
 		obs_source_release(wrapperSource);
 		return nullptr;
 	}
@@ -268,7 +303,6 @@ obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneNa
 	}
 
 	obs_source_release(wrapperSource);
-	(void)liveSceneName; // Reserved: current design assumes a single live scene at a time (see header comment).
 	return filter;
 }
 
@@ -302,22 +336,51 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 			  wrapperWasFound ? "found existing" : "created new", static_cast<void *>(wrapperSource),
 			  static_cast<void *>(liveSource));
 
-	// Reuse an existing scene-item if the wrapper already has one (e.g. from
-	// a previous session with a different live scene selected), otherwise
-	// add the live scene now. NOTE: this does NOT duplicate liveSource -
-	// obs_sceneitem_get_source() on the result returns the SAME object, see
-	// the header comment on this function.
+	// The wrapper scene is reused across sessions, so it may still contain a
+	// live scene chosen earlier. Keep the item for the CURRENT live scene (this
+	// does NOT duplicate liveSource -- obs_sceneitem_get_source() returns the
+	// SAME object, see the header comment on this function) and remove every
+	// other scene item, switching off the delay filter left on its source.
 	obs_source_t *itemSource = nullptr;
 	struct FindCtx {
+		const std::string *liveName;
 		obs_source_t *itemSource = nullptr;
-	} ctx;
+		std::vector<obs_sceneitem_t *> stale;
+	} ctx{&liveSceneName};
 	obs_scene_enum_items(
 		wrapperScene,
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-			static_cast<FindCtx *>(param)->itemSource = obs_sceneitem_get_source(item);
-			return false;
+			auto *c = static_cast<FindCtx *>(param);
+			obs_source_t *source = obs_sceneitem_get_source(item);
+			const char *name = source ? obs_source_get_name(source) : nullptr;
+			if (!name)
+				return true;
+			// The delay overlay lives in this scene too; it is never the
+			// live scene the filter attaches to.
+			if (strcmp(name, kDelayOverlaySourceName) == 0 || strcmp(name, kDelayBadgeSourceName) == 0)
+				return true;
+			for (const char *legacy : kLegacyOverlayNames) {
+				if (strcmp(name, legacy) == 0)
+					return true;
+			}
+			if (*c->liveName == name) {
+				c->itemSource = source;
+			} else {
+				c->stale.push_back(item);
+			}
+			return true;
 		},
 		&ctx);
+	for (obs_sceneitem_t *staleItem : ctx.stale) {
+		obs_source_t *oldSource = obs_sceneitem_get_source(staleItem);
+		if (obs_source_t *oldFilter = obs_source_get_filter_by_name(oldSource, kBufferFilterInstanceName)) {
+			obs_source_set_enabled(oldFilter, false);
+			obs_source_release(oldFilter);
+		}
+		TRIGGLOW_LOG_INFO(kComponent, "buffer mode: removing previous live scene \"%s\" from the wrapper",
+				  obs_source_get_name(oldSource));
+		obs_sceneitem_remove(staleItem);
+	}
 	itemSource = ctx.itemSource;
 
 	if (!itemSource) {
@@ -469,6 +532,200 @@ uint32_t ObsFrontendBridge::GetVideoEffectiveDelaySeconds(const std::string &liv
 	return seconds;
 }
 
+void ObsFrontendBridge::DisableAllDelayFilters() const
+{
+	// The filters are persisted with the scene collection, so closing OBS
+	// while the delay was Active leaves them enabled in the saved collection:
+	// the next start would delay the scene permanently with the plugin
+	// showing Inactive. Called once the collection has finished loading.
+	struct Ctx {
+		int disabled = 0;
+	} ctx;
+	obs_enum_sources(
+		[](void *param, obs_source_t *source) -> bool {
+			const char *id = obs_source_get_id(source);
+			if (id &&
+			    (strcmp(id, VideoDelayFilter::Id()) == 0 || strcmp(id, AudioDelayFilter::Id()) == 0) &&
+			    obs_source_enabled(source)) {
+				obs_source_set_enabled(source, false);
+				++static_cast<Ctx *>(param)->disabled;
+			}
+			return true;
+		},
+		&ctx);
+	if (ctx.disabled > 0)
+		TRIGGLOW_LOG_INFO(kComponent, "switched off %d delay filter(s) left enabled by a previous session",
+				  ctx.disabled);
+}
+
+bool ObsFrontendBridge::SetDelayOverlay(bool visible, const std::string &text, uint32_t corner) const
+{
+	obs_source_t *wrapperSource = obs_get_source_by_name(kBufferWrapperSceneName);
+	obs_scene_t *wrapperScene = wrapperSource ? obs_scene_from_source(wrapperSource) : nullptr;
+	if (!wrapperScene) {
+		if (wrapperSource)
+			obs_source_release(wrapperSource);
+		return false;
+	}
+
+	// The first overlay build was a bare text source; replace it so users who
+	// tried that version don't keep a second, unstyled "Delay Ns" on screen.
+	for (const char *legacyName : kLegacyOverlayNames) {
+		if (obs_sceneitem_t *legacy = obs_scene_find_source(wrapperScene, legacyName))
+			obs_sceneitem_remove(legacy);
+	}
+
+	obs_sceneitem_t *badgeItem = obs_scene_find_source(wrapperScene, kDelayBadgeSourceName);
+	obs_sceneitem_t *textItem = obs_scene_find_source(wrapperScene, kDelayOverlaySourceName);
+	if (!visible && !badgeItem && !textItem) {
+		obs_source_release(wrapperSource);
+		return true; // Nothing to hide.
+	}
+
+	// Created once, then only toggled/updated, so restyling or moving them in
+	// OBS sticks. The badge goes in first (drawn below) and the text on top.
+	if (visible && !badgeItem) {
+		char *badgePath = obs_module_file("images/delay-badge.png");
+		if (badgePath) {
+			obs_data_t *settings = obs_data_create();
+			obs_data_set_string(settings, "file", badgePath);
+			obs_source_t *badgeSource =
+				obs_source_create("image_source", kDelayBadgeSourceName, settings, nullptr);
+			obs_data_release(settings);
+			if (badgeSource) {
+				badgeItem = obs_scene_add(wrapperScene, badgeSource);
+				obs_source_release(badgeSource);
+				if (badgeItem) {
+					vec2 pos, scale;
+					vec2_set(&pos, kOverlayMargin, kOverlayMargin);
+					vec2_set(&scale, kOverlayScale, kOverlayScale);
+					obs_sceneitem_set_pos(badgeItem, &pos);
+					obs_sceneitem_set_scale(badgeItem, &scale);
+				}
+			}
+			bfree(badgePath);
+		} else {
+			TRIGGLOW_LOG_WARN(kComponent, "delay overlay: images/delay-badge.png not found, text only");
+		}
+	}
+
+	if (visible && !textItem) {
+		// Windows uses GDI+ text, macOS/Linux FreeType2; try the newest
+		// version of each first since older OBS builds lack the newer ids.
+		static const char *const kTextSourceIds[] = {"text_gdiplus_v3", "text_gdiplus_v2", "text_gdiplus",
+							     "text_ft2_source_v2"};
+		const char *textId = nullptr;
+		for (const char *id : kTextSourceIds) {
+			if (obs_get_source_output_flags(id) != 0) {
+				textId = id;
+				break;
+			}
+		}
+		if (!textId) {
+			TRIGGLOW_LOG_WARN(kComponent, "delay overlay: no text source type available in this OBS");
+		} else {
+			obs_data_t *settings = obs_data_create();
+			obs_data_t *font = obs_data_create();
+			obs_data_set_string(font, "face", "Segoe UI");
+			obs_data_set_int(font, "size", 60);
+			obs_data_set_string(font, "style", "Bold Italic");
+			obs_data_set_int(font, "flags", 3); // OBS_FONT_BOLD | OBS_FONT_ITALIC
+			obs_data_set_obj(settings, "font", font);
+			obs_data_release(font);
+			obs_data_set_string(settings, "text", text.c_str());
+			// Colors are ABGR. White fading to light cyan, like the badge border.
+			obs_data_set_int(settings, "color", 0xFFFFFFFF);
+			obs_data_set_bool(settings, "gradient", true);
+			obs_data_set_int(settings, "gradient_color", 0xFFFDE6BA);
+			obs_data_set_int(settings, "gradient_dir", 90);
+			obs_data_set_int(settings, "gradient_opacity", 100);
+			obs_data_set_int(settings, "color1", 0xFFFFFFFF); // FreeType2 equivalents
+			obs_data_set_int(settings, "color2", 0xFFFDE6BA);
+			// Fixed, centered box so "Delay 5s" and "Delay 60s" both sit in
+			// the middle of the badge (GDI+ only; FreeType2 ignores these).
+			obs_data_set_string(settings, "align", "center");
+			obs_data_set_string(settings, "valign", "center");
+			obs_data_set_bool(settings, "extents", true);
+			obs_data_set_int(settings, "extents_cx", kOverlayTextW);
+			obs_data_set_int(settings, "extents_cy", kOverlayTextH);
+			obs_data_set_bool(settings, "extents_wrap", false);
+
+			obs_source_t *textSource =
+				obs_source_create(textId, kDelayOverlaySourceName, settings, nullptr);
+			obs_data_release(settings);
+			if (textSource) {
+				textItem = obs_scene_add(wrapperScene, textSource);
+				obs_source_release(textSource);
+				if (textItem) {
+					vec2 pos, scale;
+					vec2_set(&pos, kOverlayMargin + kOverlayTextOffsetX * kOverlayScale,
+						 kOverlayMargin + kOverlayTextOffsetY * kOverlayScale);
+					vec2_set(&scale, kOverlayScale, kOverlayScale);
+					obs_sceneitem_set_pos(textItem, &pos);
+					obs_sceneitem_set_scale(textItem, &scale);
+					TRIGGLOW_LOG_INFO(kComponent, "delay overlay: created (%s)", textId);
+				}
+			} else {
+				TRIGGLOW_LOG_WARN(kComponent, "delay overlay: could not create the text source (%s)",
+						  textId);
+			}
+		}
+	} else if (visible && textItem) {
+		obs_source_t *textSource = obs_sceneitem_get_source(textItem);
+		obs_data_t *settings = obs_source_get_settings(textSource);
+		obs_data_set_string(settings, "text", text.c_str());
+		obs_source_update(textSource, settings);
+		obs_data_release(settings);
+	}
+
+	if (visible) {
+		// Position/scale are re-applied on every show so the chosen corner takes
+		// effect immediately (and follows a canvas resolution change).
+		obs_video_info ovi = {};
+		float canvasW = 1920.0f, canvasH = 1080.0f;
+		if (obs_get_video_info(&ovi) && ovi.base_width > 0 && ovi.base_height > 0) {
+			canvasW = static_cast<float>(ovi.base_width);
+			canvasH = static_cast<float>(ovi.base_height);
+		}
+		const float badgeW = kOverlayBadgeW * kOverlayScale;
+		const float badgeH = kOverlayBadgeH * kOverlayScale;
+		const bool right = corner == 1 || corner == 3;
+		const bool bottom = corner == 2 || corner == 3;
+		const float x = right ? canvasW - badgeW - kOverlayMargin : kOverlayMargin;
+		const float y = bottom ? canvasH - badgeH - kOverlayMargin : kOverlayMargin;
+		vec2 scale;
+		vec2_set(&scale, kOverlayScale, kOverlayScale);
+		if (badgeItem) {
+			vec2 pos;
+			vec2_set(&pos, x, y);
+			obs_sceneitem_set_pos(badgeItem, &pos);
+			obs_sceneitem_set_scale(badgeItem, &scale);
+		}
+		if (textItem) {
+			vec2 pos;
+			vec2_set(&pos, x + kOverlayTextOffsetX * kOverlayScale,
+				 y + kOverlayTextOffsetY * kOverlayScale);
+			obs_sceneitem_set_pos(textItem, &pos);
+			obs_sceneitem_set_scale(textItem, &scale);
+		}
+		// The live scene can be (re)added to the wrapper AFTER the overlay was
+		// created (e.g. after switching live scene), which would put it on top
+		// and hide the overlay. Always bring the overlay back above everything.
+		if (badgeItem)
+			obs_sceneitem_set_order(badgeItem, OBS_ORDER_MOVE_TOP);
+		if (textItem)
+			obs_sceneitem_set_order(textItem, OBS_ORDER_MOVE_TOP);
+	}
+
+	if (badgeItem)
+		obs_sceneitem_set_visible(badgeItem, visible);
+	if (textItem)
+		obs_sceneitem_set_visible(textItem, visible);
+
+	obs_source_release(wrapperSource);
+	return badgeItem != nullptr || textItem != nullptr;
+}
+
 bool ObsFrontendBridge::ShowBufferWrapperScene() const
 {
 	return SetCurrentSceneByName(kBufferWrapperSceneName);
@@ -560,6 +817,15 @@ bool ObsFrontendBridge::SetAudioDelayFiltersEnabled(const std::string &liveScene
 		obs_source_t *filter = obs_source_get_filter_by_name(child, filterName.c_str());
 		if (!filter)
 			continue;
+		if (enabled) {
+			// The ring still holds whatever this source sent before the
+			// last Disable; flush it so the new Filling window starts
+			// clean instead of replaying old audio.
+			obs_data_t *settings = obs_source_get_settings(filter);
+			obs_data_set_int(settings, "reset_token", obs_data_get_int(settings, "reset_token") + 1);
+			obs_source_update(filter, settings);
+			obs_data_release(settings);
+		}
 		obs_source_set_enabled(filter, enabled);
 		foundAny = true;
 	}

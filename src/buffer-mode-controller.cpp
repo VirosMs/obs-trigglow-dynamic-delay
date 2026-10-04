@@ -74,7 +74,33 @@ void BufferModeController::SetDelaySeconds(uint32_t seconds)
 		// immediately, same tradeoff as EnsureRingSized's own lazy resize.
 		// See SyncAudioDelayToVideoEffective's comment.
 		SyncAudioDelayToVideoEffective();
+		UpdateOverlay();
 	}
+}
+
+void BufferModeController::SetShowOverlay(bool show)
+{
+	status_.showOverlay = show;
+	NotifyStatusChanged();
+	UpdateOverlay();
+}
+
+void BufferModeController::SetOverlayCorner(uint32_t corner)
+{
+	status_.overlayCorner = corner > 3 ? 0 : corner;
+	NotifyStatusChanged();
+	UpdateOverlay();
+}
+
+void BufferModeController::UpdateOverlay()
+{
+	bool visible = status_.showOverlay && status_.state == BufferModeState::Active;
+	std::string text;
+	if (visible) {
+		uint32_t seconds = effectiveDelaySeconds_ > 0 ? effectiveDelaySeconds_ : status_.delaySeconds;
+		text = FormatOne(Str("Overlay.Text"), std::to_string(seconds));
+	}
+	bridge_.SetDelayOverlay(visible, text, status_.overlayCorner);
 }
 
 void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
@@ -87,6 +113,7 @@ void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
 		// as a delay change can -- re-check whether audio needs shortening
 		// to match. See SyncAudioDelayToVideoEffective's comment.
 		SyncAudioDelayToVideoEffective();
+		UpdateOverlay();
 	}
 }
 
@@ -178,6 +205,7 @@ void BufferModeController::OnFillTimerElapsed()
 	// SyncAudioDelayToVideoEffective's comment.
 	SyncAudioDelayToVideoEffective();
 	SetState(BufferModeState::Active);
+	UpdateOverlay();
 	TRIGGLOW_LOG_INFO(kComponent, "buffer full, now showing delayed content");
 }
 
@@ -192,6 +220,7 @@ void BufferModeController::Disable()
 		liveSceneRenderingHeld_ = false;
 	}
 
+	bridge_.SetDelayOverlay(false, {});
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, false);
 	if (!sceneBeforeEnable_.empty()) {
@@ -215,12 +244,14 @@ void BufferModeController::Toggle()
 }
 
 void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
-					std::string loadingSceneName)
+					std::string loadingSceneName, bool showOverlay, uint32_t overlayCorner)
 {
 	status_.delaySeconds = delaySeconds;
 	status_.minResolutionHeight = minResolutionHeight;
 	status_.liveSceneName = std::move(liveSceneName);
 	status_.loadingSceneName = std::move(loadingSceneName);
+	status_.showOverlay = showOverlay;
+	status_.overlayCorner = overlayCorner > 3 ? 0 : overlayCorner;
 	// Deliberately NOT calling Enable() here even if the user left it on
 	// last session — see header comment. Always starts Inactive.
 	SetState(BufferModeState::Inactive);
@@ -228,7 +259,8 @@ void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResol
 
 BufferModeController::SettingsSnapshot BufferModeController::SaveSettings() const
 {
-	return {status_.delaySeconds, status_.minResolutionHeight, status_.liveSceneName, status_.loadingSceneName};
+	return {status_.delaySeconds,     status_.minResolutionHeight, status_.liveSceneName,
+		status_.loadingSceneName, status_.showOverlay,         status_.overlayCorner};
 }
 
 void BufferModeController::SetState(BufferModeState state, std::string message)
@@ -246,6 +278,8 @@ void BufferModeController::NotifyStatusChanged()
 
 void BufferModeController::OnFrontendEvent(FrontendEvent event)
 {
+	if (event == FrontendEvent::FinishedLoading && status_.state == BufferModeState::Inactive)
+		bridge_.DisableAllDelayFilters();
 	if (event == FrontendEvent::FinishedLoading && onSceneListRefresh_)
 		onSceneListRefresh_();
 }
@@ -270,6 +304,7 @@ void BufferModeController::SyncAudioDelayToVideoEffective()
 				  "shortening audio's delay to match so it doesn't lag behind video",
 				  effectiveSeconds, status_.delaySeconds);
 	}
+	effectiveDelaySeconds_ = targetSeconds;
 	bridge_.SetAudioDelayFiltersDelaySeconds(status_.liveSceneName, targetSeconds);
 }
 

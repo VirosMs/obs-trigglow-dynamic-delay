@@ -25,10 +25,18 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cmath>
 #include <cstring>
 
+extern "C" {
+#include <util/platform.h> // os_gettime_ns()
+}
+
 namespace trigglow {
 
 namespace {
 constexpr const char *kComponent = "video-delay-filter";
+// Slot::timestampNs while its async GPU readback is still in flight. UINT64_MAX
+// keeps the ring's timestamps non-decreasing (the newest slot is always the
+// "youngest"), which playback's binary search relies on.
+constexpr uint64_t kPendingTimestamp = UINT64_MAX;
 constexpr const char *kFilterId = "trigglow_video_delay_filter";
 constexpr const char *kSettingDelaySeconds = "delay_seconds";
 constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
@@ -130,8 +138,10 @@ BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps
 			   uint32_t minResolutionHeight, uint64_t budget, double compressionRatio)
 {
 	// +1 so a full N-second delay has a valid slot to read from, not just
-	// N seconds of frames with none old enough yet.
-	uint64_t desiredFrames = static_cast<uint64_t>(delaySeconds) * fps + 1;
+	// N seconds of frames with none old enough yet, plus a quarter second of
+	// slack: playback is by capture time now, and capture jitter must never
+	// leave the oldest slot younger than the requested delay.
+	uint64_t desiredFrames = static_cast<uint64_t>(delaySeconds) * fps + (delaySeconds > 0 ? fps / 4 : 0) + 1;
 
 	double minScale = std::min(1.0, static_cast<double>(minResolutionHeight) / origHeight);
 
@@ -404,6 +414,7 @@ void VideoDelayFilter::ReleaseRing()
 	ring_.clear();
 	writeIndex_ = 0;
 	bufferedCount_ = 0;
+	lastCaptureCell_ = UINT64_MAX;
 }
 
 void VideoDelayFilter::ReleaseGpuObjects()
@@ -1011,8 +1022,25 @@ void VideoDelayFilter::Render()
 	if (!captureTexrender_)
 		captureTexrender_ = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 
+	// Capture at most once per 1/fps wall-clock cell. The old design wrote one
+	// ring slot per Render() CALL and assumed that was exactly fps per second;
+	// measured live (support log, 2026-10-04) it ran 48-90 slots/s at 60fps, so
+	// a "30s" video delay was really ~20-38s while the audio was exactly 30s.
+	const uint64_t nowNs = os_gettime_ns();
+	const uint64_t frameIntervalNs = 1000000000ULL / std::max<uint32_t>(1, currentFps_);
+	const uint64_t captureCell = nowNs / frameIntervalNs;
+	const bool doCapture = captureCell != lastCaptureCell_;
+	bool kicked = false;
+	if (doCapture) {
+		lastCaptureCell_ = captureCell;
+		// Not readable until the async readback is harvested; the sentinel
+		// keeps timestamps monotonic for playback's binary search.
+		ring_[writeIndex_].valid = false;
+		ring_[writeIndex_].timestampNs = kPendingTimestamp;
+	}
+
 	gs_texrender_reset(captureTexrender_);
-	if (gs_texrender_begin(captureTexrender_, bufferWidth_, bufferHeight_)) {
+	if (doCapture && gs_texrender_begin(captureTexrender_, bufferWidth_, bufferHeight_)) {
 		struct vec4 clearColor = {};
 		gs_clear(GS_CLEAR_COLOR, &clearColor, 0.0f, 0);
 		gs_matrix_push();
@@ -1143,6 +1171,7 @@ void VideoDelayFilter::Render()
 				}
 
 				dst.valid = true;
+				dst.timestampNs = harvest.captureNs;
 				harvest.pending = false;
 			}
 
@@ -1159,19 +1188,62 @@ void VideoDelayFilter::Render()
 				gs_stage_texture(kick.uvSurface, uvTex);
 				kick.pending = true;
 				kick.targetRingIndex = writeIndex_;
+				kick.captureNs = nowNs;
+				kicked = true;
 			}
 		}
 	}
+	// A capture that never made it to the readback stage must not leave the
+	// sentinel in the middle of the ring (it would break the time ordering).
+	if (doCapture && !kicked)
+		ring_[writeIndex_].timestampNs = nowNs;
 
 	// --- Playback: draw whichever slot is configuredDelaySeconds_ old. Both
 	// Y and UV planes get uploaded fresh from RAM into the two reusable
 	// playback textures, then nv12Effect_'s "DrawNV12" technique samples
 	// both and writes RGBA straight out -- no separate RGBA reconstruction
 	// texture needed. ---
-	uint64_t delayFrames = static_cast<uint64_t>(configuredDelaySeconds_) * std::max<uint32_t>(1, currentFps_);
-	delayFrames = std::min(delayFrames, static_cast<uint64_t>(ring_.size() - 1));
-	size_t readIndex = (writeIndex_ + ring_.size() - static_cast<size_t>(delayFrames)) % ring_.size();
-	bool haveEnoughHistory = bufferedCount_ > delayFrames;
+	//
+	// The slot is chosen by capture AGE (wall clock), not by counting slots
+	// back: slots are captured at most once per 1/fps cell, but Render() can
+	// run slower than that under load, and counting slots would then stretch
+	// the delay (and desync it from the wall-clock audio delay).
+	const size_t ringSize = ring_.size();
+	const size_t windowCount = std::min(bufferedCount_ + (doCapture ? 1 : 0), ringSize);
+	const size_t newestIndex = doCapture ? writeIndex_ : (writeIndex_ + ringSize - 1) % ringSize;
+	const size_t oldestIndex = (newestIndex + ringSize - (windowCount > 0 ? windowCount - 1 : 0)) % ringSize;
+
+	const uint64_t ringSpanNs = static_cast<uint64_t>(ringSize - 1) * frameIntervalNs;
+	const uint64_t delayNs = std::min(static_cast<uint64_t>(configuredDelaySeconds_) * 1000000000ULL, ringSpanNs);
+
+	size_t readIndex = 0;
+	bool haveEnoughHistory = false;
+	if (windowCount > 0 && nowNs >= delayNs) {
+		const uint64_t targetNs = nowNs - delayNs;
+		auto tsAt = [&](size_t k) {
+			return ring_[(oldestIndex + k) % ringSize].timestampNs;
+		};
+		// Largest k with tsAt(k) <= targetNs (timestamps are non-decreasing,
+		// the in-flight slot carries the UINT64_MAX sentinel).
+		size_t lo = 0, hi = windowCount; // answer in [lo, hi)
+		if (tsAt(0) <= targetNs) {
+			while (hi - lo > 1) {
+				size_t mid = lo + (hi - lo) / 2;
+				if (tsAt(mid) <= targetNs)
+					lo = mid;
+				else
+					hi = mid;
+			}
+			readIndex = (oldestIndex + lo) % ringSize;
+			haveEnoughHistory = true;
+		} else if (tsAt(0) <= targetNs + 2 * frameIntervalNs) {
+			// Oldest frame is only a couple of frames younger than the
+			// requested delay (right as the fill window ends): use it
+			// rather than flashing nothing.
+			readIndex = oldestIndex;
+			haveEnoughHistory = true;
+		}
+	}
 
 	if (haveEnoughHistory && ring_[readIndex].valid && nv12Effect_) {
 		uint32_t uvWidth = bufferWidth_ / 2;
@@ -1225,8 +1297,10 @@ void VideoDelayFilter::Render()
 	// ObsFrontendBridge::AcquireLiveSceneRendering (otherwise bufferedCount_
 	// would never advance while something else is on Program).
 
-	writeIndex_ = (writeIndex_ + 1) % ring_.size();
-	bufferedCount_ = std::min(bufferedCount_ + 1, ring_.size());
+	if (doCapture) {
+		writeIndex_ = (writeIndex_ + 1) % ring_.size();
+		bufferedCount_ = std::min(bufferedCount_ + 1, ring_.size());
+	}
 }
 
 uint32_t VideoDelayFilter::GetWidth() const

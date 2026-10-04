@@ -115,8 +115,12 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 	const char *liveScene = obs_data_get_string(data, "live_scene");
 	const char *loadingScene = obs_data_get_string(data, "loading_scene");
 
+	bool showOverlay = obs_data_has_user_value(data, "show_overlay") ? obs_data_get_bool(data, "show_overlay")
+									 : true;
+
 	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
-				loadingScene ? loadingScene : "");
+				loadingScene ? loadingScene : "", showOverlay,
+				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")));
 	obs_data_release(data);
 
 	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\")",
@@ -142,6 +146,8 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 	obs_data_set_int(data, "min_resolution_height", snapshot.minResolutionHeight);
 	obs_data_set_string(data, "live_scene", snapshot.liveSceneName.c_str());
 	obs_data_set_string(data, "loading_scene", snapshot.loadingSceneName.c_str());
+	obs_data_set_bool(data, "show_overlay", snapshot.showOverlay);
+	obs_data_set_int(data, "overlay_corner", snapshot.overlayCorner);
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 
