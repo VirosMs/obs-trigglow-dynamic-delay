@@ -2,6 +2,47 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.5.0 — 2026-10-04 (Early Access)
+
+**Añadido:**
+- **Overlay "Delay Ns".** Mientras el delay está Activo, se dibuja sobre la salida retrasada una
+  pequeña insignia con el logo de Dynamic Delay y el delay real ("Delay 30s"); desaparece en cuanto
+  desactivas el delay. El dock tiene un checkbox **"Mostrar overlay"** y un **selector de esquina**
+  (arriba izquierda, arriba derecha, abajo izquierda, abajo derecha; arriba izquierda por defecto)
+  para que nunca tape tu escena. Es una fuente normal de OBS dentro de la escena envoltorio del
+  plugin (`data/images/delay-badge.png` + una fuente de texto), al 40% de tamaño. Si el presupuesto
+  de RAM acorta el delay de vídeo, el overlay muestra el delay realmente aplicado, no el pedido.
+
+**Cambiado:**
+- **Un solo botón Activar/Desactivar.** El dock muestra solo el botón que tiene sentido:
+  **Activar** mientras está inactivo, **Desactivar** desde que empieza a llenar hasta que se apaga.
+- **Dock responsivo.** El panel va dentro de un área con scroll, así que reducirlo ya no aplasta
+  los controles unos sobre otros; las filas en paralelo (cuenta, delay/calidad, botones) se apilan
+  en columnas cuando el dock es estrecho. Corregido el texto cortado en los campos de delay/calidad
+  y ajustados márgenes y paddings.
+
+**Corregido:**
+- **El delay de vídeo se desviaba del tiempo real (medido en un log de producción).** El ring de
+  vídeo escribía un slot por llamada a `Render()` y asumía que eran exactamente `fps` por segundo;
+  en vivo iba a 48-90 slots/s a 60 fps, así que un delay de vídeo de "30s" eran en realidad
+  ~20-38s mientras el audio iba a 30s exactos. Ahora se captura como máximo una vez por celda de
+  tiempo de 1/fps y se reproduce por hora de captura, así que el vídeo mantiene el delay
+  configurado y queda sincronizado con el audio.
+- **El delay de audio también sigue el reloj real.** Las fuentes que dejan de enviar audio cuando
+  están en silencio (captura loopback/de aplicación, medios en pausa, navegadores) ya no alargan el
+  delay de audio: los huecos se rellenan con silencio y una fuente que retrocede o se reinicia
+  reinicia su historial. El audio viejo se descarta en cada Activar, la primera salida tras el
+  calentamiento entra con fundido (sin clic), los planos de audio ausentes escriben silencio y el
+  ajuste de delay es seguro entre hilos.
+- **La escena en directo elegida se ignoraba al reutilizar la escena envoltorio.** Tras cambiar la
+  escena en directo (p. ej. de "Talk" a "In Game") el envoltorio seguía mostrando la anterior, así
+  que el filtro nunca almacenaba lo que había en pantalla y la salida retrasada parecía congelada.
+  Ahora el envoltorio contiene siempre exactamente la escena en directo seleccionada.
+- **Delay en marcha tras cerrar OBS estando Activo.** Los filtros se guardan encendidos en la
+  colección de escenas; ahora se apagan al terminar de cargar OBS si el plugin está Inactivo.
+- **El instalador de Windows nunca incluía `es-ES.ini`**, así que OBS en español mostraba el plugin
+  en inglés. Ahora incluye ambos idiomas, más la imagen del overlay.
+
 ## v0.4.0 — 2026-09-07 (Early Access)
 
 **Añadido:**

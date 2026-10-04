@@ -2,6 +2,45 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.5.0 — 2026-10-04 (Early Access)
+
+**Added:**
+- **"Delay Ns" overlay.** While the delay is Active, a small badge with the Dynamic Delay logo and
+  the real delay ("Delay 30s") is drawn over the delayed output; it disappears the moment you
+  disable the delay. The dock has a **"Show overlay"** checkbox and a **corner selector** (top
+  left, top right, bottom left, bottom right; top left by default) so it never covers your layout.
+  It is a regular OBS source inside the plugin's wrapper scene (`data/images/delay-badge.png` +
+  a text source), shown at 40% size. If the RAM budget shortens the video delay, the overlay shows
+  the delay actually in effect, not the requested one.
+
+**Changed:**
+- **One Enable/Disable button.** The dock now shows only the button that makes sense: **Enable**
+  while inactive, **Disable** from the moment it starts filling until it is switched off.
+- **Responsive dock.** The panel lives in a scroll area, so shrinking it no longer squashes
+  controls on top of each other; side-by-side rows (account, delay/quality, buttons) stack into
+  columns when the dock is narrow. Fixed clipped text in the delay/quality fields and tightened
+  margins and paddings.
+
+**Fixed:**
+- **Video delay drifted from the real time (measured from a production log).** The video ring wrote
+  one slot per `Render()` call and assumed that was exactly `fps` per second; live it ran 48-90
+  slots/s at 60 fps, so a "30s" video delay was really ~20-38s while the audio was exactly 30s.
+  The ring is now captured at most once per 1/fps wall-clock cell and played back by capture time,
+  so video holds the configured delay and stays in sync with audio.
+- **Audio delay now follows the wall clock too.** Sources that stop sending audio while idle
+  (loopback/application capture, paused media, browsers) no longer stretch the audio delay: gaps
+  are filled with silence and a rewound or restarted source resets its history. Stale audio is
+  flushed on every Enable, the first output after warm-up fades in (no click), missing audio
+  planes write silence, and the delay setting is now thread-safe.
+- **The chosen live scene was ignored when the wrapper scene was reused.** After changing the live
+  scene (e.g. "Talk" to "In Game") the wrapper kept showing the old one, so the delay filter never
+  buffered what was on screen and the delayed output looked frozen. The wrapper now always holds
+  exactly the selected live scene.
+- **Delay left running after closing OBS while Active.** The filters are saved enabled in the scene
+  collection; they are now switched off when OBS finishes loading if the plugin is Inactive.
+- **The Windows installer never shipped `es-ES.ini`**, so Spanish OBS installs showed the plugin in
+  English. It now ships both locales, plus the overlay image.
+
 ## v0.4.0 — 2026-09-07 (Early Access)
 
 **Added:**
