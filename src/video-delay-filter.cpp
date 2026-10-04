@@ -1214,7 +1214,9 @@ void VideoDelayFilter::Render()
 	const size_t oldestIndex = (newestIndex + ringSize - (windowCount > 0 ? windowCount - 1 : 0)) % ringSize;
 
 	const uint64_t ringSpanNs = static_cast<uint64_t>(ringSize - 1) * frameIntervalNs;
-	const uint64_t delayNs = std::min(static_cast<uint64_t>(configuredDelaySeconds_) * 1000000000ULL, ringSpanNs);
+	// Explicit <uint64_t>: uint64_t and unsigned long long are different types on Linux.
+	const uint64_t delayNs =
+		std::min<uint64_t>(static_cast<uint64_t>(configuredDelaySeconds_) * 1000000000ULL, ringSpanNs);
 
 	size_t readIndex = 0;
 	bool haveEnoughHistory = false;
