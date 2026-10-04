@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -72,7 +73,16 @@ private:
 
 	// Resizes ring_ for the given channel count/sample rate and the current
 	// configuredDelaySeconds_. No-op if already correctly sized.
-	void EnsureRingSized(uint32_t channels, uint32_t samplesPerSec);
+	void EnsureRingSized(uint32_t channels, uint32_t samplesPerSec, uint32_t delaySeconds);
+
+	// Drops all buffered history (the ring's memory is kept; only the
+	// bookkeeping resets, so stale samples can never be read back).
+	void ResetHistory();
+
+	// Appends `frames` frames of silence to the ring, so the ring keeps
+	// tracking wall-clock time across gaps where the source delivered no
+	// audio. Caller guarantees frames < ring length.
+	void WriteSilence(size_t frames);
 
 	// --- obs_source_info callback trampolines ---
 	static const char *GetName(void *typeData);
@@ -84,7 +94,21 @@ private:
 	static void GetDefaults(obs_data_t *settings);
 
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
-	uint32_t configuredDelaySeconds_ = 0;
+	// Written by Update() (UI thread), read by FilterAudio() (audio thread).
+	std::atomic<uint32_t> configuredDelaySeconds_{0};
+	// Bumped by Update() whenever the "reset_token" setting changes (the
+	// bridge does this on every Enable); consumed by the audio thread.
+	std::atomic<bool> resetRequested_{false};
+	int64_t lastResetToken_ = 0;
+
+	// Timestamp (ns) at which the next chunk is expected to start if the
+	// source is delivering contiguously. Gaps/rewinds vs. this are how we
+	// notice a source that went quiet (e.g. application capture that sends
+	// nothing while the app is silent) or restarted.
+	bool haveExpectedTimestamp_ = false;
+	uint64_t expectedTimestamp_ = 0;
+	bool outputWasActive_ = false;    // Last chunk came from real history (not warm-up silence).
+	uint32_t timelineEventCount_ = 0; // Rate-limits gap/rewind log lines.
 
 	// ring_[channel][frame] -- one flat sample buffer per channel, big
 	// enough for configuredDelaySeconds_ at samplesPerSec_. Resized by

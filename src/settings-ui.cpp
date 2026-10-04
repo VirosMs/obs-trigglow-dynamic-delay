@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <thread>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDesktopServices>
@@ -37,6 +38,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLabel>
 #include <QPointer>
 #include <QPushButton>
+#include <QResizeEvent>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QString>
@@ -89,9 +92,25 @@ TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, Aut
 
 void TrigglowDelayDock::BuildUi()
 {
-	auto *root = new QVBoxLayout(this);
-	root->setContentsMargins(12, 12, 12, 12);
-	root->setSpacing(10);
+	// Everything lives in a scroll area: when the dock is dragged small (in
+	// either direction) the content keeps its natural size and scrolls,
+	// instead of Qt squashing rows on top of each other. Rows that can
+	// reflow (see ApplyNarrowLayout) switch to a column below kNarrowWidth.
+	auto *outer = new QVBoxLayout(this);
+	outer->setContentsMargins(0, 0, 0, 0);
+	auto *scroll = new QScrollArea(this);
+	scroll->setObjectName(QStringLiteral("dockScroll"));
+	scroll->setWidgetResizable(true);
+	scroll->setFrameShape(QFrame::NoFrame);
+	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	auto *content = new QWidget(scroll);
+	content->setObjectName(QStringLiteral("dockContent"));
+	scroll->setWidget(content);
+	outer->addWidget(scroll);
+
+	auto *root = new QVBoxLayout(content);
+	root->setContentsMargins(14, 14, 14, 14);
+	root->setSpacing(12);
 
 	// Small, uppercased field labels ("ESCENA EN DIRECTO") placed ABOVE
 	// their control rather than beside it -- reads better than a label+field
@@ -125,8 +144,8 @@ void TrigglowDelayDock::BuildUi()
 	auto *statusCard = new QFrame(this);
 	statusCard->setObjectName(QStringLiteral("card"));
 	auto *statusLayout = new QVBoxLayout(statusCard);
-	statusLayout->setContentsMargins(12, 10, 12, 10);
-	statusLayout->setSpacing(3);
+	statusLayout->setContentsMargins(14, 12, 14, 12);
+	statusLayout->setSpacing(4);
 	stateLabel_ = new QLabel(this);
 	statusLayout->addWidget(stateLabel_);
 	detailLabel_ = new QLabel(this);
@@ -141,8 +160,10 @@ void TrigglowDelayDock::BuildUi()
 	// and hit an Error state at Enable() time. ---
 	auto *accountCard = new QFrame(this);
 	accountCard->setObjectName(QStringLiteral("card"));
-	auto *accountLayout = new QHBoxLayout(accountCard);
-	accountLayout->setContentsMargins(12, 10, 12, 10);
+	auto *accountLayout = new QBoxLayout(QBoxLayout::LeftToRight, accountCard);
+	accountLayout_ = accountLayout;
+	accountLayout->setContentsMargins(14, 12, 14, 12);
+	accountLayout->setSpacing(10);
 	accountLabel_ = new QLabel(this);
 	accountLabel_->setWordWrap(true);
 	accountButton_ = new QPushButton(this);
@@ -156,19 +177,24 @@ void TrigglowDelayDock::BuildUi()
 	auto *configCard = new QFrame(this);
 	configCard->setObjectName(QStringLiteral("card"));
 	auto *configLayout = new QVBoxLayout(configCard);
-	configLayout->setContentsMargins(12, 10, 12, 10);
-	configLayout->setSpacing(6);
+	configLayout->setContentsMargins(14, 12, 14, 14);
+	configLayout->setSpacing(5);
 
 	configLayout->addWidget(makeSectionLabel(T("Dock.Scene.Live")));
 	liveSceneCombo_ = new SceneComboBox(this);
+	liveSceneCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	liveSceneCombo_->setMinimumContentsLength(8);
 	liveSceneCombo_->setToolTip(T("Dock.Scene.Live.Tooltip"));
 	liveSceneCombo_->SetRefreshCallback(
 		[this] { RefreshSceneCombo(liveSceneCombo_, bufferController_.GetStatus().liveSceneName, false); });
 	configLayout->addWidget(liveSceneCombo_);
 	RefreshSceneCombo(liveSceneCombo_, bufferController_.GetStatus().liveSceneName, false);
 
+	configLayout->addSpacing(8);
 	configLayout->addWidget(makeSectionLabel(T("Dock.Scene.Loading")));
 	loadingSceneCombo_ = new SceneComboBox(this);
+	loadingSceneCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	loadingSceneCombo_->setMinimumContentsLength(8);
 	loadingSceneCombo_->setToolTip(T("Dock.Scene.Loading.Tooltip"));
 	loadingSceneCombo_->SetRefreshCallback([this] {
 		RefreshSceneCombo(loadingSceneCombo_, bufferController_.GetStatus().loadingSceneName, true);
@@ -178,11 +204,13 @@ void TrigglowDelayDock::BuildUi()
 
 	// Delay + quality side by side -- two related, similarly-sized controls;
 	// no reason to spend a full row each in a narrow dock.
-	auto *tuningRow = new QHBoxLayout();
-	tuningRow->setSpacing(10);
+	configLayout->addSpacing(8);
+	auto *tuningRow = new QBoxLayout(QBoxLayout::LeftToRight);
+	tuningRow_ = tuningRow;
+	tuningRow->setSpacing(12);
 
 	auto *delayColumn = new QVBoxLayout();
-	delayColumn->setSpacing(4);
+	delayColumn->setSpacing(5);
 	delayColumn->addWidget(makeSectionLabel(T("Dock.Delay.Label")));
 	secondsSpin_ = new QSpinBox(this);
 	secondsSpin_->setRange(1, 60);
@@ -192,23 +220,48 @@ void TrigglowDelayDock::BuildUi()
 	tuningRow->addLayout(delayColumn, /*stretch=*/1);
 
 	auto *qualityColumn = new QVBoxLayout();
-	qualityColumn->setSpacing(4);
+	qualityColumn->setSpacing(5);
 	qualityColumn->addWidget(makeSectionLabel(T("Dock.Quality.Label")));
 	minResolutionCombo_ = new QComboBox(this);
 	minResolutionCombo_->addItem(QStringLiteral("480p"), 480);
 	minResolutionCombo_->addItem(QStringLiteral("720p"), 720);
 	minResolutionCombo_->addItem(QStringLiteral("1080p"), 1080);
+	minResolutionCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	minResolutionCombo_->setMinimumContentsLength(5);
 	minResolutionCombo_->setToolTip(T("Dock.Quality.Tooltip"));
 	qualityColumn->addWidget(minResolutionCombo_);
 	tuningRow->addLayout(qualityColumn, /*stretch=*/1);
 
 	configLayout->addLayout(tuningRow);
 
+	overlayCheck_ = new QCheckBox(T("Dock.Overlay.Label"), this);
+	overlayCheck_->setToolTip(T("Dock.Overlay.Tooltip"));
+	overlayCheck_->setStyleSheet(QStringLiteral("QCheckBox { padding: 2px 0; }"));
+	overlayCheck_->setChecked(bufferController_.GetStatus().showOverlay);
+	configLayout->addSpacing(6);
+	configLayout->addWidget(overlayCheck_);
+
+	overlayCornerCombo_ = new QComboBox(this);
+	overlayCornerCombo_->addItem(T("Dock.Overlay.Corner.TopLeft"), 0);
+	overlayCornerCombo_->addItem(T("Dock.Overlay.Corner.TopRight"), 1);
+	overlayCornerCombo_->addItem(T("Dock.Overlay.Corner.BottomLeft"), 2);
+	overlayCornerCombo_->addItem(T("Dock.Overlay.Corner.BottomRight"), 3);
+	overlayCornerCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	overlayCornerCombo_->setMinimumContentsLength(8);
+	overlayCornerCombo_->setToolTip(T("Dock.Overlay.Corner.Tooltip"));
+	{
+		int idx = overlayCornerCombo_->findData(static_cast<int>(bufferController_.GetStatus().overlayCorner));
+		overlayCornerCombo_->setCurrentIndex(idx >= 0 ? idx : 0);
+	}
+	overlayCornerCombo_->setEnabled(overlayCheck_->isChecked());
+	configLayout->addWidget(overlayCornerCombo_);
+
 	// Live-updated by RefreshFitEstimate() whenever secondsSpin_/
 	// minResolutionCombo_ change -- see that method and
 	// BufferModeController::EstimateBufferFit's comment.
 	fitLabel_ = new QLabel(this);
 	fitLabel_->setWordWrap(true);
+	configLayout->addSpacing(4);
 	configLayout->addWidget(fitLabel_);
 
 	// Informational only, computed once from real hardware where possible
@@ -226,8 +279,9 @@ void TrigglowDelayDock::BuildUi()
 
 	// --- Primary actions: color-coded (green go / red stop) so their
 	// purpose reads at a glance, not just from their labels. ---
-	auto *buttonRow = new QHBoxLayout();
-	buttonRow->setSpacing(8);
+	auto *buttonRow = new QBoxLayout(QBoxLayout::LeftToRight);
+	buttonRow_ = buttonRow;
+	buttonRow->setSpacing(10);
 	enableButton_ = new QPushButton(T("Dock.Enable"), this);
 	enableButton_->setObjectName(QStringLiteral("enableButton"));
 	disableButton_ = new QPushButton(T("Dock.Disable"), this);
@@ -270,14 +324,16 @@ void TrigglowDelayDock::BuildUi()
 			"QFrame#card { background-color: palette(base); border: 1px solid palette(mid); border-radius: 8px; }"
 			"QLabel#sectionLabel { color: palette(placeholderText); font-size: 8pt; font-weight: 600; }"
 			"QLabel#mutedLabel { color: palette(placeholderText); font-size: 8pt; }"
-			"QComboBox, QSpinBox { padding: 4px 6px; border: 1px solid palette(mid); border-radius: 5px; "
-			"background-color: palette(window); }"
+			"QComboBox, QSpinBox { min-height: 24px; padding: 3px 8px; border: 1px solid palette(mid); "
+			"border-radius: 5px; background-color: palette(window); }"
+			"QCheckBox { spacing: 8px; }"
+			"QScrollArea#dockScroll, QWidget#dockContent { background: transparent; border: none; }"
 			"QPushButton#enableButton { background-color: %1; color: #FFFFFF; border: none; "
-			"border-radius: 6px; padding: 8px; font-weight: 600; font-size: 9pt; }"
+			"border-radius: 6px; padding: 10px 8px; font-weight: 600; font-size: 9pt; }"
 			"QPushButton#enableButton:hover { background-color: #16A34A; }"
 			"QPushButton#enableButton:disabled { background-color: palette(button); color: palette(placeholderText); }"
 			"QPushButton#disableButton { background-color: %2; color: #FFFFFF; border: none; "
-			"border-radius: 6px; padding: 8px; font-weight: 600; font-size: 9pt; }"
+			"border-radius: 6px; padding: 10px 8px; font-weight: 600; font-size: 9pt; }"
 			"QPushButton#disableButton:hover { background-color: #DC2626; }"
 			"QPushButton#disableButton:disabled { background-color: palette(button); color: palette(placeholderText); }"
 			"QPushButton#accountButton { background: transparent; border: 1px solid palette(mid); "
@@ -317,6 +373,15 @@ void TrigglowDelayDock::BuildUi()
 		bufferController_.SetMinResolutionHeight(
 			static_cast<uint32_t>(minResolutionCombo_->itemData(index).toInt()));
 		RefreshFitEstimate();
+	});
+	connect(overlayCheck_, &QCheckBox::toggled, this, [this](bool checked) {
+		overlayCornerCombo_->setEnabled(checked);
+		bufferController_.SetShowOverlay(checked);
+	});
+	connect(overlayCornerCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+		if (index >= 0)
+			bufferController_.SetOverlayCorner(
+				static_cast<uint32_t>(overlayCornerCombo_->itemData(index).toInt()));
 	});
 	connect(enableButton_, &QPushButton::clicked, this, [this] {
 		TRIGGLOW_LOG_INFO(kComponent, "Enable pressed in dock");
@@ -428,6 +493,10 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	// up front is a clearer signal than a click that visibly bounces.
 	enableButton_->setEnabled(!busy && !status.liveSceneName.empty() && authManager_.IsLoggedIn());
 	disableButton_->setEnabled(busy);
+	// One button at a time, full width: Activar while inactive, Desactivar
+	// from the moment it starts filling until it is switched off again.
+	enableButton_->setVisible(!busy);
+	disableButton_->setVisible(busy);
 
 	const QSignalBlocker blockSeconds(secondsSpin_);
 	secondsSpin_->setValue(static_cast<int>(status.delaySeconds));
@@ -436,6 +505,16 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	int qualityIndex = minResolutionCombo_->findData(static_cast<int>(status.minResolutionHeight));
 	if (qualityIndex >= 0)
 		minResolutionCombo_->setCurrentIndex(qualityIndex);
+
+	const QSignalBlocker blockOverlay(overlayCheck_);
+	overlayCheck_->setChecked(status.showOverlay);
+	const QSignalBlocker blockCorner(overlayCornerCombo_);
+	{
+		int idx = overlayCornerCombo_->findData(static_cast<int>(status.overlayCorner));
+		if (idx >= 0)
+			overlayCornerCombo_->setCurrentIndex(idx);
+	}
+	overlayCornerCombo_->setEnabled(status.showOverlay);
 
 	const QSignalBlocker blockLive(liveSceneCombo_);
 	int liveIndex = liveSceneCombo_->findText(QString::fromStdString(status.liveSceneName));
@@ -454,6 +533,30 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	// the estimate is never stale.
 	if (fitLabel_)
 		RefreshFitEstimate();
+}
+
+void TrigglowDelayDock::resizeEvent(QResizeEvent *event)
+{
+	QWidget::resizeEvent(event);
+	ApplyNarrowLayout(event->size().width());
+}
+
+void TrigglowDelayDock::ApplyNarrowLayout(int width)
+{
+	// Side-by-side rows turn into stacked ones when there's not enough room
+	// for both columns (approx. what a ~300px dock leaves after card padding).
+	constexpr int kNarrowWidth = 330;
+	constexpr int kTinyWidth = 250;
+	const bool narrow = width < kNarrowWidth;
+	const bool tiny = width < kTinyWidth;
+	const auto stacked = QBoxLayout::TopToBottom;
+	const auto sideBySide = QBoxLayout::LeftToRight;
+	if (accountLayout_)
+		accountLayout_->setDirection(narrow ? stacked : sideBySide);
+	if (tuningRow_)
+		tuningRow_->setDirection(tiny ? stacked : sideBySide);
+	if (buttonRow_)
+		buttonRow_->setDirection(tiny ? stacked : sideBySide);
 }
 
 void TrigglowDelayDock::RefreshAccountUi()

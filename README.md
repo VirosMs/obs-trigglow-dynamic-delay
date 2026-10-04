@@ -6,7 +6,7 @@ Native OBS Studio plugin that delays your stream's **video and audio together**,
 number of seconds, from a button, a native OBS hotkey, or a Stream Deck — **without the streaming
 output ever being touched.** No reconnection, no cut, at any point, for any reason. No external
 app, no web panel, no separate process: everything lives inside the OBS process.
-**Status: MVP / v0.4.0 — Early Access.**
+**Status: MVP / v0.5.0 — Early Access.**
 
 As of v0.3.0, the RAM ring buffer is real MJPEG-compressed on Windows and Linux (vendored FFmpeg),
 with an automatic, safe fallback to uncompressed storage if the codec isn't available — no quality
@@ -36,6 +36,12 @@ compression assumption using the first real measurement of live gameplay compres
 (~11-15x, not the 3x conservatively assumed since v0.3.0) — measured total OBS process memory at
 30s/1080p60 went from ~2.8GB to ~2.1GB — and redesigns the dock's layout. See `CHANGELOG.md` for
 all of the above.
+
+v0.5.0 adds an optional **"Delay Ns" overlay** (with a four-corner selector), a single
+Enable/Disable button and a responsive dock, and fixes the video delay drifting from real time
+(it now follows the wall clock like the audio does), the chosen live scene being ignored when
+the wrapper scene was reused, and the Windows installer missing the Spanish locale. See
+`CHANGELOG.md`.
 
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried

@@ -184,6 +184,11 @@ private:
 		size_t usedBytes = 0;
 		bool compressed = false;
 		bool valid = false; // false until first successfully captured.
+		// Wall-clock capture time (os_gettime_ns). Playback picks the slot by
+		// AGE, not by "N slots back", so the delay stays exact even when
+		// Render() runs at a different rate than the configured fps.
+		// kPendingTimestamp while the async readback is still in flight.
+		uint64_t timestampNs = 0;
 	};
 
 	// One in-flight (or just-finished) async GPU->CPU readback -- BOTH
@@ -195,6 +200,7 @@ private:
 		gs_stagesurf_t *uvSurface = nullptr; // GS_R8G8, half resolution (chroma subsampled).
 		bool pending = false;       // true from gs_stage_texture() until the deferred harvest reads it back.
 		size_t targetRingIndex = 0; // Which ring_ slot the pending readback belongs to.
+		uint64_t captureNs = 0;     // When that frame was captured (becomes Slot::timestampNs).
 	};
 
 	explicit VideoDelayFilter(obs_source_t *filterSource);
@@ -305,6 +311,11 @@ private:
 	uint32_t bufferHeight_ = 0;
 	size_t writeIndex_ = 0;
 	size_t bufferedCount_ = 0; // How many ring_ slots hold a real rendered frame so far.
+	// Index of the 1/fps wall-clock cell of the last capture. Render() can be
+	// called several times per OBS frame (preview, projectors, a second
+	// canvas, the keep-alive callback...) or slower than fps under load;
+	// capturing at most once per cell keeps the ring at <= fps slots/second.
+	uint64_t lastCaptureCell_ = UINT64_MAX;
 	uint32_t currentFps_ = 30; // Updated from obs_get_video_info() each Tick().
 
 	// The fixed, small GPU object pool -- see this file's header comment.

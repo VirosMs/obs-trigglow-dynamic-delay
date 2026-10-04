@@ -6,7 +6,7 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.4.0 — Early Access.**
+OBS. **Estado: MVP / v0.5.0 — Early Access.**
 
 A partir de v0.3.0, el ring buffer de RAM se comprime de verdad con MJPEG en Windows y Linux
 (FFmpeg vendorizado), con un fallback automático y seguro a almacenamiento sin comprimir si el codec
@@ -40,6 +40,12 @@ RAM usando la primera medición real de ratios de compresión sobre gameplay en 
 3x asumido de forma conservadora desde v0.3.0) — la memoria total medida del proceso de OBS a
 30s/1080p60 bajó de ~2.8GB a ~2.1GB — y rediseña la disposición del dock. Ver `CHANGELOG-es.md`
 para todo lo anterior.
+
+La v0.5.0 añade un **overlay "Delay Ns"** opcional (con selector de cuatro esquinas), un solo botón
+Activar/Desactivar y un dock responsivo, y corrige que el delay de vídeo se desviara del tiempo real
+(ahora sigue el reloj igual que el audio), que se ignorara la escena en directo elegida al reutilizar
+la escena envoltorio, y que el instalador de Windows no incluyera el idioma español. Ver
+`CHANGELOG-es.md`.
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"

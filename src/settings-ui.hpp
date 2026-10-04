@@ -26,9 +26,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 class QLabel;
 class QSpinBox;
+class QBoxLayout;
+class QCheckBox;
 class QComboBox;
 class QPushButton;
 class QTimer;
+class QResizeEvent;
 
 // TrigglowDelayDock is the plugin's ONLY Qt-facing file. It is a thin view
 // over BufferModeController: every button click calls straight into the
@@ -63,6 +66,9 @@ public:
 
 private:
 	void BuildUi();
+	void resizeEvent(QResizeEvent *event) override;
+	// Reflows rows that don't fit side by side at the current dock width.
+	void ApplyNarrowLayout(int width);
 	void OnStatusChanged(const BufferModeStatus &status);
 	void RefreshFromStatus(const BufferModeStatus &status);
 
@@ -141,6 +147,14 @@ private:
 	// "Calidad minima" -- floor on the delayed video's resolution; see
 	// BufferModeStatus::minResolutionHeight / VideoDelayFilter::EnsureRingSized.
 	QComboBox *minResolutionCombo_ = nullptr;
+	// "Show overlay" -- BufferModeStatus::showOverlay (the "Delay 30s" text
+	// shown on the delayed output while Active).
+	QCheckBox *overlayCheck_ = nullptr;
+	QComboBox *overlayCornerCombo_ = nullptr; // Which canvas corner the overlay sits in.
+	// Rows that reflow to a column when the dock is narrow -- see ApplyNarrowLayout().
+	QBoxLayout *accountLayout_ = nullptr;
+	QBoxLayout *tuningRow_ = nullptr;
+	QBoxLayout *buttonRow_ = nullptr;
 	// Shows what secondsSpin_/minResolutionCombo_'s current combo would
 	// actually achieve -- see RefreshFitEstimate().
 	QLabel *fitLabel_ = nullptr;
