@@ -1,7 +1,7 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*, and since v0.6.0 src/frame-arena.* and
-# src/frame-ring.*). No libobs, no Qt, no FFmpeg, no test framework. Two ways
-# to build them:
+# src/encoder-check.*, and since v0.6.0 src/frame-arena.*, src/frame-ring.*
+# and src/degradation-policy.*). No libobs, no Qt, no FFmpeg, no test
+# framework. Two ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
 #      cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
@@ -50,7 +50,8 @@ target_include_directories(encoder_check_tests PRIVATE "${_src}")
 set_target_properties(encoder_check_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME encoder_check_tests COMMAND encoder_check_tests)
 
-# v0.6.0 codec workers: the payload arena and the ring's slot state machine.
+# v0.6.0 codec workers: the payload arena, the ring's slot state machine and
+# the degradation policy.
 find_package(Threads REQUIRED)
 
 add_executable(frame_arena_tests frame_arena_tests.cpp check.hpp "${_src}/frame-arena.cpp" "${_src}/frame-arena.hpp")
@@ -71,3 +72,16 @@ add_executable(
 target_include_directories(frame_ring_tests PRIVATE "${_src}")
 set_target_properties(frame_ring_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME frame_ring_tests COMMAND frame_ring_tests)
+
+add_executable(
+  degradation_policy_tests
+  degradation_policy_tests.cpp
+  check.hpp
+  "${_src}/degradation-policy.cpp"
+  "${_src}/degradation-policy.hpp"
+  "${_src}/buffer-fit.cpp"
+  "${_src}/buffer-fit.hpp"
+)
+target_include_directories(degradation_policy_tests PRIVATE "${_src}")
+set_target_properties(degradation_policy_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME degradation_policy_tests COMMAND degradation_policy_tests)
