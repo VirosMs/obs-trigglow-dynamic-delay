@@ -192,10 +192,11 @@ void AuthManager::RequestDeviceCode()
 
 			pendingDeviceCode_ = deviceCode;
 			pendingUrl_ = verificationUrl;
-			TRIGGLOW_LOG_INFO(kComponent, "opening browser at %s", verificationUrl);
+			// Never log verificationUrl or the device code: the link carries the
+			// code, and OBS logs get uploaded and pasted in public channels.
 			bool opened = QDesktopServices::openUrl(QUrl(QString::fromUtf8(verificationUrl)));
-			TRIGGLOW_LOG_INFO(kComponent, "QDesktopServices::openUrl returned %s",
-					  opened ? "true" : "false");
+			TRIGGLOW_LOG_INFO(kComponent, "sign-in page %s in the system browser",
+					  opened ? "opened" : "could not be opened");
 			obs_data_release(data);
 			// Keep waiting either way: the user can open the copied link.
 			lastError_ = opened ? LoginError::None : LoginError::Browser;

@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDesktopServices>
+#include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -137,11 +138,14 @@ SubmitResult SubmitTicket(const std::string &guestName, const std::string &guest
 	result.accessToken = accessToken;
 	obs_data_release(responseData);
 
+	// The ticket ID alone grants nothing; the access token (and any URL that
+	// carries it) must never reach the log.
 	TRIGGLOW_LOG_INFO(kComponent, "support ticket created: %s", result.ticketId.c_str());
 
 	if (hasLog) {
 		// ticketId/accessToken are both server-generated ASCII (a UUID and a
-		// hex token respectively), so this byte-for-byte widening is safe; nothing here ever contains non-ASCII input.
+		// hex token respectively), so this byte-for-byte widening is safe;
+		// nothing here ever contains non-ASCII input.
 		std::wstring ticketIdW(result.ticketId.begin(), result.ticketId.end());
 		std::wstring accessTokenW(result.accessToken.begin(), result.accessToken.end());
 		std::wstring path = L"/api/support/public/tickets/" + ticketIdW + L"/attachments?token=" + accessTokenW;
@@ -529,8 +533,8 @@ void ReportBugDialog::OnSubmitClicked()
 	std::string logBytes;
 	bool haveLogBytes = logFound_ && ReadFileBytes(logPath_.toUtf8().constData(), logBytes);
 	if (logFound_ && !haveLogBytes)
-		TRIGGLOW_LOG_WARN(kComponent, "found a copied log at %s but failed to read it back",
-				  logPath_.toUtf8().constData());
+		TRIGGLOW_LOG_WARN(kComponent, "found a copied log (%%TEMP%%\\Trigglow\\%s) but failed to read it back",
+				  QFileInfo(logPath_).fileName().toUtf8().constData());
 
 	std::string nameUtf8 = name.toUtf8().constData();
 	std::string emailUtf8 = email.toUtf8().constData();

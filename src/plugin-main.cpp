@@ -273,7 +273,8 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 
-	TRIGGLOW_LOG_INFO(kComponent, "settings saved to %s", path.toUtf8().constData());
+	// File name only: the full path carries the Windows user name.
+	TRIGGLOW_LOG_INFO(kComponent, "settings saved (%s in the plugin's OBS config folder)", kBufferSettingsFile);
 }
 
 } // namespace

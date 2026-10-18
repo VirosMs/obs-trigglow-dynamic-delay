@@ -141,7 +141,9 @@ BugReportLogResult CopyCurrentObsLogForSupport()
 
 	result.copiedPath = destPath.u8string();
 	result.copiedDir = destDir.u8string();
-	TRIGGLOW_LOG_INFO(kComponent, "copied OBS log to %s", result.copiedPath.c_str());
+	// File name only: the full path carries the Windows user name.
+	TRIGGLOW_LOG_INFO(kComponent, "copied OBS log to %%TEMP%%\\Trigglow\\%s",
+			  destPath.filename().u8string().c_str());
 	return result;
 }
 
