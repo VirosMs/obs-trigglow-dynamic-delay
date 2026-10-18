@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "buffer-fit.hpp"
+
 #include <cstdint>
 #include <vector>
 
@@ -126,11 +128,12 @@ public:
 
 	// What EnsureRingSized() would actually do for a given
 	// (requestedDelaySeconds, minResolutionHeight) at the live scene's real
-	// (sourceWidth, sourceHeight, fps) -- same math, exposed as a pure
-	// query so the dock can warn the user BEFORE they press Enable, not
-	// just after. Never restricts their choice: this is purely informational,
-	// "aconsejar segun el hardware, pero a su eleccion" per the 2026-08-25
-	// live feedback that asked for exactly this.
+	// (sourceWidth, sourceHeight) and OBS's current video settings (canvas
+	// base*, output*, exact fpsNum/fpsDen) -- the same bufferfit::Compute()
+	// call, exposed as a pure query so the dock can warn the user BEFORE they
+	// press Enable, not just after. Never restricts their choice: this is
+	// purely informational, "aconsejar segun el hardware, pero a su eleccion"
+	// per the 2026-08-25 live feedback that asked for exactly this.
 	struct BufferFitEstimate {
 		uint32_t width = 0;
 		uint32_t height = 0;
@@ -141,7 +144,9 @@ public:
 		bool fitsFullDuration = true;
 	};
 	static BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight,
-						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t fps);
+						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t baseWidth,
+						   uint32_t baseHeight, uint32_t outputWidth, uint32_t outputHeight,
+						   uint32_t fpsNum, uint32_t fpsDen);
 
 private:
 	// One buffered historical frame, plain RAM -- NOT a GPU object. See this
@@ -282,7 +287,7 @@ private:
 
 	// "get_effective_delay_seconds" proc handler -- lets
 	// ObsFrontendBridge::GetVideoEffectiveDelaySeconds() find out what this
-	// filter is ACTUALLY delaying by right now (ring_.size()/currentFps_),
+	// filter is ACTUALLY delaying by right now (the ring's span, whole seconds),
 	// which can be less than configuredDelaySeconds_ if the RAM budget
 	// didn't fit the full requested duration at the chosen quality floor
 	// (EnsureRingSized). Added 2026-08-27 after a real live report of audio
@@ -291,7 +296,7 @@ private:
 	// PCM, never RAM-shortened), so BufferModeController needs this to know
 	// when it must clamp audio's delay down to match what video can really
 	// deliver -- see BufferModeController::SyncAudioDelayToVideoEffective.
-	// Same cross-thread pattern as ReleaseBuffersProc: ring_/currentFps_ are
+	// Same cross-thread pattern as ReleaseBuffersProc: ring_/fpsNum_/fpsDen_ are
 	// only safe to read from the graphics thread, so this hops onto it and
 	// blocks (wait=true) rather than racing a Render() call in flight.
 	static void GetEffectiveDelaySecondsProc(void *data, calldata_t *params);
@@ -316,7 +321,23 @@ private:
 	// canvas, the keep-alive callback...) or slower than fps under load;
 	// capturing at most once per cell keeps the ring at <= fps slots/second.
 	uint64_t lastCaptureCell_ = UINT64_MAX;
-	uint32_t currentFps_ = 30; // Updated from obs_get_video_info() each Tick().
+	// Updated from obs_get_video_info() each Tick(). Integer, so only for the
+	// codec time_base -- nothing timing-related uses it anymore (see below).
+	uint32_t currentFps_ = 30;
+	// Exact frame rate and frame interval, also from Tick() (v0.5.1): the
+	// capture cell, the ring span and the ring sizing all use these, so
+	// 59.94fps gets 16.683ms cells instead of integer currentFps_'s
+	// 1e9 / 59 = 16.949ms (which captured ~59 of every 59.94 frames).
+	uint32_t fpsNum_ = 30;
+	uint32_t fpsDen_ = 1;
+	uint64_t frameIntervalNs_ = 1000000000ULL / 30;
+	// OBS main mix geometry, also from Tick(): base_* is the canvas, output_*
+	// the scaled output. EnsureRingSized() never buffers above the output
+	// (bufferfit::OutputCapScale). 0 until the first Tick().
+	uint32_t mixBaseWidth_ = 0;
+	uint32_t mixBaseHeight_ = 0;
+	uint32_t mixOutputWidth_ = 0;
+	uint32_t mixOutputHeight_ = 0;
 
 	// The fixed, small GPU object pool -- see this file's header comment.
 	// Independent of ring_.size(): a 5s buffer and a 60s buffer both use

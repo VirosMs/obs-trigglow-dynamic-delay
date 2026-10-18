@@ -74,20 +74,10 @@ constexpr uint64_t kMinBufferBytes = 1024ULL * 1024 * 1024;             // Floor
 constexpr uint64_t kMaxRecommendedBufferBytes = 24576ULL * 1024 * 1024; // Ceiling even on a very high-RAM machine.
 constexpr double kRamFractionForBuffer = 0.50;                          // Don't hog more than ~50% of total system RAM.
 
-// Pure math shared by EnsureRingSized() (actually resizes the ring) and
-// VideoDelayFilter::EstimateBufferFit() (predicts the outcome without one --
-// see that method's header comment). Quality floor first, duration second
-// (flipped 2026-08-25 -- see kDefaultMinResolutionHeight's comment): never
-// go narrower than minResolutionHeight pixels tall; shrink the FRAME COUNT
-// instead if the full requested duration doesn't fit the budget at that
-// floor.
-struct BufferFit {
-	uint32_t bufferWidth;
-	uint32_t bufferHeight;
-	uint64_t actualFrames;
-	uint64_t desiredFrames;
-	double scale;
-};
+// The ring sizing math itself (output cap, quality floor, RAM budget, exact
+// fps) lives in src/buffer-fit.hpp/.cpp since v0.5.1 -- pure and free of OBS
+// so it can be unit-tested (tests/buffer_fit_tests.cpp). EnsureRingSized()
+// and VideoDelayFilter::EstimateBufferFit() both call bufferfit::Compute().
 
 // v0.3.0: on TRIGGLOW_HAVE_FFMPEG platforms, actualFrames is computed against
 // an ASSUMED compression ratio (real per-frame size isn't known until after
@@ -133,49 +123,6 @@ constexpr uint64_t kCompressionLogIntervalFrames = 300;
 #else
 constexpr double kAssumedCompressionRatio = 1.0;
 #endif
-
-BufferFit ComputeBufferFit(uint32_t origWidth, uint32_t origHeight, uint32_t fps, uint32_t delaySeconds,
-			   uint32_t minResolutionHeight, uint64_t budget, double compressionRatio)
-{
-	// +1 so a full N-second delay has a valid slot to read from, not just
-	// N seconds of frames with none old enough yet, plus a quarter second of
-	// slack: playback is by capture time now, and capture jitter must never
-	// leave the oldest slot younger than the requested delay.
-	uint64_t desiredFrames = static_cast<uint64_t>(delaySeconds) * fps + (delaySeconds > 0 ? fps / 4 : 0) + 1;
-
-	double minScale = std::min(1.0, static_cast<double>(minResolutionHeight) / origHeight);
-
-	// NV12 (Y + subsampled UV): 1.5 bytes/pixel, not 4 -- see Slot's comment
-	// in video-delay-filter.hpp for why the ring stores NV12 rather than
-	// RGBA. Divided by compressionRatio for the EFFECTIVE per-frame cost
-	// used in ring-length sizing below -- the actual per-slot allocation
-	// (EnsureRingSized()) stays at the full raw size regardless.
-	uint64_t fullResBytesPerFrame = (static_cast<uint64_t>(origWidth) * origHeight * 3) / 2;
-	double fullResEffectiveBytesPerFrame = static_cast<double>(fullResBytesPerFrame) / compressionRatio;
-	double fullResTotalBytes = static_cast<double>(desiredFrames) * fullResEffectiveBytesPerFrame;
-
-	double scale = 1.0;
-	if (fullResTotalBytes > static_cast<double>(budget) && fullResEffectiveBytesPerFrame > 0) {
-		double idealScale = std::sqrt(static_cast<double>(budget) /
-					      (static_cast<double>(desiredFrames) * fullResEffectiveBytesPerFrame));
-		scale = std::max(minScale, std::min(1.0, idealScale));
-	}
-
-	uint32_t bufferWidth = std::max<uint32_t>(2, static_cast<uint32_t>(origWidth * scale));
-	uint32_t bufferHeight = std::max<uint32_t>(2, static_cast<uint32_t>(origHeight * scale));
-	// NV12 chroma subsampling needs even dimensions -- both inputs to this
-	// mask are already >=2, so the result stays >=2 too.
-	bufferWidth &= ~1u;
-	bufferHeight &= ~1u;
-
-	uint64_t bufferBytesPerFrame = (static_cast<uint64_t>(bufferWidth) * bufferHeight * 3) / 2;
-	double bufferEffectiveBytesPerFrame = static_cast<double>(bufferBytesPerFrame) / compressionRatio;
-	uint64_t maxFramesAtBufferRes = std::max<uint64_t>(
-		1, static_cast<uint64_t>(static_cast<double>(budget) / bufferEffectiveBytesPerFrame));
-	uint64_t actualFrames = std::min(desiredFrames, maxFramesAtBufferRes);
-
-	return {bufferWidth, bufferHeight, actualFrames, desiredFrames, scale};
-}
 
 uint64_t GetBufferBudget()
 {
@@ -337,22 +284,33 @@ uint64_t VideoDelayFilter::GetBufferBudgetBytes()
 	return GetBufferBudget();
 }
 
-VideoDelayFilter::BufferFitEstimate VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds,
-									uint32_t minResolutionHeight,
-									uint32_t sourceWidth, uint32_t sourceHeight,
-									uint32_t fps)
+VideoDelayFilter::BufferFitEstimate
+VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight, uint32_t sourceWidth,
+				    uint32_t sourceHeight, uint32_t baseWidth, uint32_t baseHeight,
+				    uint32_t outputWidth, uint32_t outputHeight, uint32_t fpsNum, uint32_t fpsDen)
 {
-	if (sourceWidth == 0 || sourceHeight == 0 || fps == 0)
+	bufferfit::Input in;
+	in.sourceWidth = sourceWidth;
+	in.sourceHeight = sourceHeight;
+	in.baseWidth = baseWidth;
+	in.baseHeight = baseHeight;
+	in.outputWidth = outputWidth;
+	in.outputHeight = outputHeight;
+	in.fpsNum = fpsNum;
+	in.fpsDen = fpsDen;
+	in.delaySeconds = requestedDelaySeconds;
+	in.minResolutionHeight = minResolutionHeight;
+	in.budgetBytes = GetBufferBudget();
+	in.compressionRatio = kAssumedCompressionRatio;
+	const bufferfit::Result fit = bufferfit::Compute(in);
+	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return {};
-
-	BufferFit fit = ComputeBufferFit(sourceWidth, sourceHeight, fps, requestedDelaySeconds, minResolutionHeight,
-					 GetBufferBudget(), kAssumedCompressionRatio);
 
 	BufferFitEstimate estimate;
 	estimate.width = fit.bufferWidth;
 	estimate.height = fit.bufferHeight;
-	estimate.actualSeconds = static_cast<double>(fit.actualFrames) / fps;
-	estimate.fitsFullDuration = fit.actualFrames >= fit.desiredFrames;
+	estimate.actualSeconds = static_cast<double>(fit.actualFrames) * fpsDen / fpsNum;
+	estimate.fitsFullDuration = fit.fitsFullDuration;
 	return estimate;
 }
 
@@ -763,23 +721,66 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	if (origWidth == 0 || origHeight == 0)
 		return;
 
-	uint32_t fps = std::max<uint32_t>(1, currentFps_);
-	BufferFit fit = ComputeBufferFit(origWidth, origHeight, fps, configuredDelaySeconds_,
-					 configuredMinResolutionHeight_, GetBufferBudget(), kAssumedCompressionRatio);
+	bufferfit::Input in;
+	in.sourceWidth = origWidth;
+	in.sourceHeight = origHeight;
+	in.baseWidth = mixBaseWidth_;
+	in.baseHeight = mixBaseHeight_;
+	in.outputWidth = mixOutputWidth_;
+	in.outputHeight = mixOutputHeight_;
+	in.fpsNum = fpsNum_;
+	in.fpsDen = fpsDen_;
+	if (mixBaseWidth_ == 0 || mixOutputWidth_ == 0) {
+		// Before the first Tick(): read the mix geometry directly.
+		obs_video_info ovi = {};
+		if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0) {
+			in.baseWidth = ovi.base_width;
+			in.baseHeight = ovi.base_height;
+			in.outputWidth = ovi.output_width;
+			in.outputHeight = ovi.output_height;
+			in.fpsNum = ovi.fps_num;
+			in.fpsDen = ovi.fps_den;
+		}
+	}
+	in.delaySeconds = configuredDelaySeconds_;
+	in.minResolutionHeight = configuredMinResolutionHeight_;
+	in.budgetBytes = GetBufferBudget();
+	in.compressionRatio = kAssumedCompressionRatio;
+	const bufferfit::Result fit = bufferfit::Compute(in);
+	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
+		return;
 
 	bool resolutionChanged = bufferWidth_ != fit.bufferWidth || bufferHeight_ != fit.bufferHeight;
 	if (!resolutionChanged && ring_.size() == fit.actualFrames)
 		return; // Already correctly sized.
 
-	if (fit.scale < 1.0) {
+	const double fps = static_cast<double>(in.fpsNum) / in.fpsDen;
+	if (bufferedCount_ > 0) {
+		// Only possible with real frames in the ring: OBS Settings > Video
+		// (canvas, output or fps -- OBS only allows that with no outputs
+		// running), or the delay/quality changed while the delay was on. The
+		// ring restarts from empty, so the delayed view is blank for `delay`
+		// seconds while it refills.
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "buffer geometry changed (%ux%u, %zu slots -> %ux%u, %llu slots) with %zu frames in "
+				  "the ring -- restarting and refilling it",
+				  bufferWidth_, bufferHeight_, ring_.size(), fit.bufferWidth, fit.bufferHeight,
+				  static_cast<unsigned long long>(fit.actualFrames), bufferedCount_);
+	}
+	if (fit.cappedByOutput) {
+		TRIGGLOW_LOG_INFO(kComponent, "buffering at %ux%u (capped to OBS output %ux%u, canvas %ux%u)",
+				  fit.bufferWidth, fit.bufferHeight, in.outputWidth, in.outputHeight, in.baseWidth,
+				  in.baseHeight);
+	}
+	if (fit.reducedByRam) {
 		TRIGGLOW_LOG_INFO(kComponent,
-				  "buffering at %ux%u (%.0f%% of the source's %ux%u) to fit %us at %ufps within "
+				  "buffering at %ux%u (%.0f%% of the source's %ux%u) to fit %us at %.2ffps within "
 				  "the %lluMB budget",
 				  fit.bufferWidth, fit.bufferHeight, fit.scale * 100.0, origWidth, origHeight,
 				  configuredDelaySeconds_, fps,
 				  static_cast<unsigned long long>(GetBufferBudget() / (1024 * 1024)));
 	}
-	if (fit.actualFrames < fit.desiredFrames) {
+	if (!fit.fitsFullDuration) {
 		TRIGGLOW_LOG_WARN(kComponent, "even at %ux%u this still doesn't fit the full %us; clamped to ~%.1fs",
 				  fit.bufferWidth, fit.bufferHeight, configuredDelaySeconds_,
 				  static_cast<double>(fit.actualFrames) / fps);
@@ -807,11 +808,11 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// NV12: Y plane (bufferWidth_*bufferHeight_ bytes) + interleaved UV
 	// plane at half resolution ((bufferWidth_/2)*(bufferHeight_/2)*2 bytes,
 	// i.e. bufferWidth_*bufferHeight_/2) -- 1.5 bytes/pixel total. Always an
-	// exact integer since ComputeBufferFit() forces both dimensions even.
+	// exact integer since bufferfit::Compute() forces both dimensions even.
 	size_t frameBytes = (static_cast<size_t>(bufferWidth_) * bufferHeight_ * 3) / 2;
 
 	// v0.3.0 Phase 2: slots start at a BUDGETED size (frameBytes divided by
-	// the same kAssumedCompressionRatio ComputeBufferFit() already assumed
+	// the same kAssumedCompressionRatio bufferfit::Compute() already assumed
 	// for ring LENGTH above) instead of the full raw ceiling -- this is what
 	// actually realizes the RAM win Phase 1 only allocated for on paper
 	// (Slot::pixels was always the full raw size there, so a compressed
@@ -972,8 +973,18 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 void VideoDelayFilter::Tick(float /*secondsSinceLastTick*/)
 {
 	obs_video_info ovi = {};
-	if (obs_get_video_info(&ovi) && ovi.fps_den > 0)
-		currentFps_ = ovi.fps_num / ovi.fps_den;
+	if (!obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+		return;
+	currentFps_ = ovi.fps_num / ovi.fps_den; // Codec time_base only.
+	fpsNum_ = ovi.fps_num;
+	fpsDen_ = ovi.fps_den;
+	// 1e9 * den / num: exact for fractional rates (59.94 -> 16683333ns).
+	// Never 0, it's a divisor in Render().
+	frameIntervalNs_ = std::max<uint64_t>(1, bufferfit::FrameIntervalNs(ovi.fps_num, ovi.fps_den));
+	mixBaseWidth_ = ovi.base_width;
+	mixBaseHeight_ = ovi.base_height;
+	mixOutputWidth_ = ovi.output_width;
+	mixOutputHeight_ = ovi.output_height;
 }
 
 void VideoDelayFilter::Render()
@@ -1027,7 +1038,10 @@ void VideoDelayFilter::Render()
 	// measured live (support log, 2026-10-04) it ran 48-90 slots/s at 60fps, so
 	// a "30s" video delay was really ~20-38s while the audio was exactly 30s.
 	const uint64_t nowNs = os_gettime_ns();
-	const uint64_t frameIntervalNs = 1000000000ULL / std::max<uint32_t>(1, currentFps_);
+	// Exact 1/fps from Tick() (fps_den/fps_num): 16.683ms at 59.94fps. The
+	// integer 1e9/currentFps_ used before made it 1e9/59 = 16.949ms, so ~1 of
+	// every 60 real frames was never captured and the delayed view repeated one.
+	const uint64_t frameIntervalNs = frameIntervalNs_;
 	const uint64_t captureCell = nowNs / frameIntervalNs;
 	const bool doCapture = captureCell != lastCaptureCell_;
 	bool kicked = false;
@@ -1383,8 +1397,13 @@ void VideoDelayFilter::GetEffectiveDelaySecondsTask(void *param)
 {
 	auto *query = static_cast<EffectiveDelayQuery *>(param);
 	VideoDelayFilter *filter = query->filter;
-	uint32_t fps = std::max<uint32_t>(1, filter->currentFps_);
-	uint32_t seconds = filter->ring_.empty() ? 0 : static_cast<uint32_t>((filter->ring_.size() - 1) / fps);
+	// The ring's span ((slots - 1) frames at the exact fps_num/fps_den, the
+	// same span Render() caps the video delay at), floored to whole seconds
+	// for the audio side. Rational math rather than slots * frameIntervalNs_:
+	// the truncated interval would floor e.g. 1800 slots at 60fps to 29s.
+	const uint64_t spanFrames = filter->ring_.empty() ? 0 : static_cast<uint64_t>(filter->ring_.size() - 1);
+	const auto seconds = static_cast<uint32_t>(spanFrames * std::max<uint32_t>(1, filter->fpsDen_) /
+						   std::max<uint32_t>(1, filter->fpsNum_));
 	calldata_set_int(query->params, "seconds", seconds);
 }
 

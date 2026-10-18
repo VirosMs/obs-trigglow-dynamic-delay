@@ -975,12 +975,24 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 	uint32_t height = obs_source_get_base_height(liveSource);
 	obs_source_release(liveSource);
 
+	// Canvas (base_*) and output (output_*) geometry plus the exact fps_num/
+	// fps_den: the same inputs EnsureRingSized() reads in Tick(), so the
+	// estimate includes the cap at OBS's output resolution. Zeros (query
+	// failed) just mean "no cap", same as the filter.
 	obs_video_info ovi = {};
-	uint32_t fps = 30;
-	if (obs_get_video_info(&ovi) && ovi.fps_den > 0)
-		fps = ovi.fps_num / ovi.fps_den;
+	uint32_t baseWidth = 0, baseHeight = 0, outputWidth = 0, outputHeight = 0;
+	uint32_t fpsNum = 30, fpsDen = 1;
+	if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0) {
+		baseWidth = ovi.base_width;
+		baseHeight = ovi.base_height;
+		outputWidth = ovi.output_width;
+		outputHeight = ovi.output_height;
+		fpsNum = ovi.fps_num;
+		fpsDen = ovi.fps_den;
+	}
 
-	return VideoDelayFilter::EstimateBufferFit(requestedDelaySeconds, minResolutionHeight, width, height, fps);
+	return VideoDelayFilter::EstimateBufferFit(requestedDelaySeconds, minResolutionHeight, width, height, baseWidth,
+						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen);
 }
 
 void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, void *privateData)
