@@ -220,9 +220,10 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   valores por defecto y los escribía encima al cerrar OBS. Ahora se aparta como
   `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (se copia si no se puede renombrar) con un
   WARN que da las dos rutas; si no funciona ninguna de las dos cosas, el archivo no se toca al salir.
-- **Corregidos el tooltip del dock y el texto de la propiedad del filtro para la calidad mínima.**
-  Decían que el vídeo retrasado "nunca baja de" esa resolución, lo que dejó de ser cierto con el
-  límite de salida.
+- **Corregido el tooltip del dock para la calidad mínima.** Decía que el vídeo retrasado "nunca
+  baja de" esa resolución, lo que dejó de ser cierto con el límite de salida. Las propiedades del
+  filtro ya no tienen ningún campo de calidad: solo muestran la nota de que el filtro lo gestiona el
+  dock.
 
 **Cambiado:**
 - **La "Calidad mínima" es un suelo para la reducción por RAM y para la degradación, acotado por la
@@ -422,6 +423,10 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   simulado).
 
 **Limitaciones conocidas:**
+- **Cambiar a mano el Programa a la escena en directo con el delay Activo** (en vez de la escena
+  auxiliar del plugin, "Trigglow Delay Buffer (auto)") emite el vídeo en directo sin delay: el filtro
+  de delay está en la escena auxiliar. Ya pasaba antes de la 0.6.0. Deja el Programa en la escena que
+  eligió el plugin mientras el delay está en marcha, y desactiva antes el delay desde el dock.
 - **Borrar a mano un filtro de delay "(auto)" con el delay en marcha** deja salir el vídeo en
   directo sin delay (la escena auxiliar muestra entonces la escena en directo sin filtro) hasta que
   desactivas y vuelves a activar el delay desde el dock, que lo vuelve a crear. No borres los filtros

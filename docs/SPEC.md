@@ -277,6 +277,12 @@ Known limitation: deleting an "(auto)" delay filter by hand while the delay is o
 the wrapper then shows the live scene with no filter, undelayed, until the user disables and
 re-enables the delay from the dock (`Enable()` recreates the filter).
 
+Known limitation, already present before v0.6.0: the plugin doesn't watch Program while the delay is
+`Active`. If the user (or a Stream Deck/obs-websocket action) switches Program to the live scene
+itself instead of the wrapper, the live scene is shown and streamed directly, without delay, since
+the video filter sits on the wrapper scene. Program must stay on the scene the plugin chose while
+the delay runs; changing scenes means turning the delay off first.
+
 ### 3.4. Freeing the RAM ring on Disable
 
 OBS bypasses a **disabled** filter's `video_render` entirely — `VideoDelayFilter::Render()` never

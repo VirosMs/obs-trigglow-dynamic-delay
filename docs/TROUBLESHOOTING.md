@@ -279,6 +279,15 @@ again.
   fills again first).
 - Don't delete or rename the plugin's scene and filters; to stop the delay, use the dock.
 
+## I switched Program to my live scene and the stream went out without delay (known issue)
+- While the delay is on, Program has to stay on the scene the plugin chose: the loading scene while
+  it fills, then its helper scene "Trigglow Delay Buffer (auto)", which holds your live scene with
+  the delay filter. If you click your live scene in OBS's scene list (or a Stream Deck/obs-websocket
+  action switches to it), Program shows the live scene directly and the stream gets it **without
+  delay**. This was already the case before v0.6.0.
+- Leave Program on the scene the plugin chose while the delay runs. To change scenes, turn the delay
+  off from the dock first, switch, and turn it on again (the buffer fills again).
+
 ## The buffer never seems to fill / `Preparing delay` never reaches `Delay on`
 - Check the OBS log for `[obs-trigglow-dynamic-delay]`-prefixed warnings around the time you pressed
   Enable. Two known causes that log a specific warning instead of silently doing nothing:

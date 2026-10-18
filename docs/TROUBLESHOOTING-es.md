@@ -289,6 +289,17 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
   el buffer se vuelve a llenar).
 - No borres ni renombres la escena ni los filtros del plugin; para parar el delay, usa el dock.
 
+## Cambié el Programa a mi escena en directo y el directo salió sin delay (problema conocido)
+- Con el delay en marcha, el Programa tiene que quedarse en la escena que eligió el plugin: la escena
+  de carga mientras se llena, y después su escena auxiliar "Trigglow Delay Buffer (auto)", que
+  contiene tu escena en directo con el filtro de delay. Si haces clic en tu escena en directo en la
+  lista de escenas de OBS (o una acción de Stream Deck u obs-websocket cambia a ella), el Programa
+  muestra la escena en directo tal cual y el directo la emite **sin delay**. Ya pasaba antes de la
+  v0.6.0.
+- Deja el Programa en la escena que eligió el plugin mientras el delay está en marcha. Para cambiar
+  de escena, desactiva antes el delay desde el dock, cambia y vuelve a activarlo (el buffer se vuelve
+  a llenar).
+
 ## El buffer nunca parece llenarse / `Preparando delay` nunca llega a `Delay activo`
 - Revisa el log de OBS buscando avisos con el prefijo `[obs-trigglow-dynamic-delay]` alrededor del
   momento en que pulsaste Activar. Dos causas conocidas que registran un aviso específico en vez de

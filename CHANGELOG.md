@@ -197,8 +197,9 @@ was prepared but never published: everything in it ships here.
   defaults and wrote them over the file when OBS closed. It is now moved aside as
   `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (copied if it can't be renamed) with a WARN
   giving both paths; if neither works, the file is left untouched at exit.
-- **Dock tooltip and filter property text for the minimum quality corrected.** They said the
-  delayed video "never drops below" that resolution, which stopped being true with the output cap.
+- **Dock tooltip for the minimum quality corrected.** It said the delayed video "never drops
+  below" that resolution, which stopped being true with the output cap. The filter's properties no
+  longer have a quality field at all: they only show the note that the dock manages the filter.
 
 **Changed:**
 - **"Minimum quality" is a floor for the RAM reduction and for the degradation, bounded by OBS's
@@ -382,6 +383,10 @@ was prepared but never published: everything in it ships here.
   order, and no ring is ever freed on the simulated graphics thread).
 
 **Known limitations:**
+- **Switching Program to the live scene by hand while the delay is Active** (instead of the
+  plugin's helper scene, "Trigglow Delay Buffer (auto)") sends the live video without delay: the
+  delay filter sits on the helper scene. This was already the case before 0.6.0. Leave Program on
+  the scene the plugin chose while the delay runs, and turn the delay off from the dock first.
 - **Deleting an "(auto)" delay filter by hand while the delay is on** lets the live video out
   without delay (the helper scene then shows the live scene with no filter) until you disable and
   re-enable the delay from the dock, which recreates it. Don't delete the plugin's filters; turn the

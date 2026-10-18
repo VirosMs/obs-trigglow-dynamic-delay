@@ -304,6 +304,13 @@ Limitación conocida: borrar a mano un filtro de delay "(auto)" con el delay en 
 — la escena contenedora muestra entonces la escena en directo sin filtro, sin delay, hasta que el
 usuario desactiva y vuelve a activar el delay desde el dock (`Enable()` vuelve a crear el filtro).
 
+Limitación conocida, que ya existía antes de la v0.6.0: el plugin no vigila el Programa con el delay
+en `Active`. Si el usuario (o una acción de Stream Deck u obs-websocket) cambia el Programa a la
+propia escena en directo en vez de a la escena contenedora, la escena en directo se muestra y se
+emite tal cual, sin delay, porque el filtro de vídeo está en la escena contenedora. El Programa tiene
+que quedarse en la escena que eligió el plugin mientras el delay está en marcha; para cambiar de
+escena hay que desactivar antes el delay.
+
 ### 3.4. Liberar el ring de RAM al hacer Disable
 
 OBS se salta por completo el `video_render` de un filtro **deshabilitado** — `VideoDelayFilter::Render()`
