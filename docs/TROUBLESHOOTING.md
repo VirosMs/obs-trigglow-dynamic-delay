@@ -9,137 +9,229 @@
   check that the binary is in the correct plugins folder for your OS (see README) and that the
   architecture (64-bit) matches your OBS installation.
 
-## The "Enable" button is greyed out
-- `Enable` stays disabled until you've picked a **live scene** in the dock's scene combo box — the
-  plugin refuses to arm itself with nothing to buffer, rather than letting you press it and land in
-  `Error`. Pick your live scene from the dropdown; `Enable` becomes clickable as soon as one is
-  selected.
-- `Enable`/`Disable` are also both disabled while a stream-safe operation is already in progress
-  (the dock shows this via the other controls — scene combos, the seconds spinner, and the quality
-  combo — being greyed out too during `Filling`/`Active`). This is expected: change scenes/seconds/
-  quality only while `Inactive`.
+## The "Enable delay" button is greyed out
+- `Enable delay` stays disabled until you've signed in with your free Trigglow account and picked a
+  **live scene** in the dock. While it's disabled, a checklist under it shows which of the two is
+  missing. The plugin's own helper scene ("Trigglow Delay Buffer (auto)") is never offered as a
+  live scene, and a saved scene that no longer exists counts as not chosen.
+- While the delay is preparing or on, `Enable delay` is replaced by `Disable delay`: there is only
+  ever one button.
 
-## The dock shows an "Error" state
-- The dock's status line reads `● Error` with a human-readable detail line underneath it explaining
-  what went wrong (e.g. no live scene resolves to an actual OBS scene anymore, or a source that used
-  to exist was removed). This is a controlled, crash-free failure state, not a hang.
-- Press `Disable` to reset back to `Inactive`, fix whatever the detail line describes (usually:
-  re-pick the live scene, since a saved scene name may no longer exist), and press `Enable` again.
+## I can't change the delay seconds, the quality or the scenes
+- **This is on purpose.** While the delay is preparing (`Preparing delay`) or on (`Delay on`), the
+  live and loading scene pickers, the delay seconds and the minimum quality are locked: they show a
+  lock instead of their arrows, and the line under them reads "Turn the delay off to change it."
+  Before v0.6.0 the seconds stayed editable while the delay was on and every keystroke resized the
+  buffer in the middle of a live stream.
+- Press `Disable delay`, change what you need and press `Enable delay` again. The buffer fills
+  again for the new number of seconds (with the loading scene on Program, if you set one).
+- **Don't change the delay from the filter's own properties** (the "Trigglow Buffer Mode Delay
+  (auto)" filter in OBS) while it runs. The buffer restarts behind the loading scene, but audio and
+  the dock keep the dock's delay, so a higher value there leaves video and audio apart. Use the
+  dock.
+
+## The dock shows an error
+- The status card turns red, with an alert icon, the headline "Couldn't enable" and a detail line
+  explaining what went wrong (for example: sign in first, choose a live scene, or the helper scene
+  couldn't be created). This is a controlled, crash-free state, not a hang.
+- Fix what the detail line describes (usually: re-pick the live scene, since a saved scene name may
+  no longer exist) and press `Enable delay` again.
 - If the detail line is unclear or seems wrong, check the OBS log for lines prefixed
-  `[obs-trigglow-dynamic-delay]` around the time `Error` appeared — they carry more detail than the
-  short message the dock can show.
+  `[obs-trigglow-dynamic-delay]` around the time the error appeared — they carry more detail than
+  the short message the dock can show.
 
 ## "Encoding overloaded" (or lagged frames) as soon as the delay is on
 
-**What causes it.** While the delay is on, the plugin compresses every captured frame (MJPEG) and
-decompresses the delayed one inside OBS's graphics thread — the same thread that has to finish each
-frame of your stream in time (16.7 ms per frame at 60 fps, 33.3 ms at 30 fps). When that work takes
-too long, OBS falls behind and shows "Encoding overloaded" (frames skipped due to encoding lag) or
-rendering lag (frames missed). Up to v0.5.0 the buffer was stored at your **canvas** resolution, so
-with a 2560x1440 canvas and a 1920x1080 output each frame cost 14.3/17.4 ms p50/p95 there in our
-benchmarks — most of a 60 fps frame — even though OBS throws those extra pixels away when it scales
-to the output.
+**What caused it before v0.6.0.** While the delay is on, the plugin compresses every captured frame
+(MJPEG) and decompresses the delayed one. Up to v0.5.0 that ran inside OBS's graphics thread — the
+same thread that has to finish each frame of your stream in time (16.7 ms per frame at 60 fps,
+33.3 ms at 30 fps) — and the buffer was stored at your **canvas** resolution. With a 2560x1440
+canvas and a 1920x1080 output that cost 14.3/17.4 ms p50/p95 per frame in our benchmarks, most of a
+60 fps frame, even though OBS throws those extra pixels away when it scales to the output. When that
+work takes too long, OBS falls behind and shows "Encoding overloaded" (frames skipped due to
+encoding lag) or rendering lag (frames missed).
 
-**v0.5.1 fixes the canvas-larger-than-output case.** The buffer is never stored above OBS's output
-resolution (`Settings → Video → Output (Scaled) Resolution`), and compression uses several threads:
-the same 1440p-canvas / 1080p-output setup now costs ~5.2/5.9 ms per frame in the same benchmark.
-Update to v0.5.1 first (the dock shows a notice when a newer version exists). If you lowered your
-canvas to work around this, you can set it back.
+**v0.6.0 fixes it.** Update first (the dock shows a notice when a newer version exists).
+- The buffer is never stored above OBS's output resolution (`Settings → Video → Output (Scaled)
+  Resolution`). If you lowered your canvas to work around the problem, you can set it back.
+- Compression and decompression run on the plugin's own threads, not on OBS's graphics thread. What
+  the plugin still does there (reading the frame back from the GPU and uploading the delayed one)
+  costs ~1.2–1.7/1.6–2.1 ms p50/p95 per frame at 1440p60 in our offline benchmark, instead of
+  ~14/17 ms.
+- **A 1440p output at 60 fps is supported.** If your computer can't keep up with it, the plugin
+  lowers the buffer's quality step by step instead of letting OBS fall behind, and tells you so in
+  the dock (next section). The delay itself never changes.
 
-**If it still happens on v0.5.1:**
+**If it still happens on v0.6.0:**
+- **Rule out the encoder itself:** if "Encoding overloaded" also shows up with the delay off, the
+  plugin isn't the cause — check your encoder preset and settings.
+- **Look at the dock while it happens.** An amber "Buffer quality lowered" notice means the plugin
+  is already lightening its own work (see the next section).
 - **Make the canvas equal to the output if you can** (`Settings → Video`: Base (Canvas) Resolution =
   Output (Scaled) Resolution). A larger canvas no longer costs the plugin anything extra, but OBS
   itself still renders every scene at canvas resolution.
-- **Close the projectors, multiview and extra previews you don't need.** Since v0.5.1 each delayed
-  frame is decompressed only once however many views are open, but every open view is still extra
-  rendering work for OBS.
-- **1440p output (not just canvas):** at 30 fps it should work; at 60 fps it may still overload OBS,
-  because compression still runs inside the graphics thread. Moving it off that thread, with 1440p60
-  as the target, is the plan for the next version (v0.6.0, see `docs/ROADMAP.md`); there's no date
-  yet. Until then use a 1080p output for 60 fps, or 30 fps with a 1440p output.
-- **Rule out the encoder itself:** if "Encoding overloaded" also shows up with the delay off, the
-  plugin isn't the cause — check your encoder preset and settings.
-- Still stuck: use the dock's **Report a problem** button after having the delay Active for at least
+- **Close the projectors, multiview and extra previews you don't need.** Each delayed frame is
+  decompressed only once however many views are open, but every open view is still extra rendering
+  work for OBS.
+- Still stuck: use the dock's **Report a problem** button after having the delay on for at least
   30 seconds in the same OBS session. It attaches the current OBS log automatically, including the
-  `perf check` lines below.
+  `perf check` and `pipeline check` lines described below.
 
-**Reading the `perf check` line (for support).** While the delay is on (Filling or Active), the
-plugin writes one line to the OBS log every 10 seconds, plus a last one when you disable the delay
-or close OBS. Example (illustrative values — yours will differ):
+## The dock says "Buffer quality lowered" (amber notice)
+
+**What it means.** Your computer couldn't keep up with the delay buffer at full quality, so the
+plugin lightened it instead of letting OBS drop frames. The notice says what it lowered and why, for
+example "Buffering at 1592×896 instead of 1920×1080 because compressing the frames takes a lot of
+CPU. Your 30 s delay is unchanged." The causes it can name are OBS's graphics thread being under
+heavy load, compressing the frames, or decompressing them. If any frames were repeated or dropped
+in the last 10 seconds, a second line gives how many per minute; on stream they show as a repeated
+frame, never as a change of the delay.
+
+**What the plugin does, in order:**
+1. Adds compression threads (up to two compression contexts with up to four threads each). You
+   don't see a notice for this: quality is untouched.
+2. Buffers at a lower resolution, in steps of about 17%, **never below the minimum quality** you
+   chose in the dock.
+3. As a last step, captures every other frame (30 fps on a 60 fps stream), only when your output
+   runs at 48 fps or more.
+
+It never shortens the delay and never empties the buffer for this. When the load drops and the
+next step up has stayed comfortably within budget for 30 seconds in a row, it goes back up one
+step at a time, and the notice disappears once the buffer is back at full quality.
+
+**What you can do:**
+- Nothing, if the delayed picture looks fine to you: it's working as designed.
+- Close what's competing for the CPU (browser tabs with video, background encodes, a second
+  recording) or lower the game's CPU load.
+- Lower the output resolution or frame rate in `Settings → Video` if the notice shows up all the
+  time at your current settings.
+- A higher minimum quality keeps the buffer sharper, but leaves the plugin fewer steps before it
+  has to halve the capture rate.
+- If you think the notice is wrong, send a report with **Report a problem** with the delay on for
+  at least 30 seconds: every rung change is a WARN line in the log, with its cause and the numbers
+  behind it.
+
+## Reading the log lines (for support)
+
+While the delay is on (Filling or Active), the plugin writes two lines to the OBS log every 10
+seconds, plus a last pair when you disable the delay, set it to 0 s or close OBS. Example
+(illustrative values — yours will differ; each is one line in the log):
 
 ```
-[obs-trigglow-dynamic-delay] [video-delay-filter] perf check (periodic, 10.0s): buf=1920x1080 (capped to OBS output 1920x1080, canvas 2560x1440) fps=60.00 | render p50/p95/max=5.20/5.90/8.40ms readback=0.35/0.52/1.10 encode=2.10/2.60/4.30 decode=1.70/2.00/3.10 upload=0.40/0.55/1.20 | calls=60.0/s captures=60.0/s uploads=60.0/s holds=0 rawFallback=0 | obs frames+600 lagged+0 skipped+0 | ratio=12.4x (cycle 12.1x) ring=1077MB/1816 slots growths=0
+[obs-trigglow-dynamic-delay] [video-delay-filter] perf check (periodic, 10.0s): buf=1920x1080 (capped to OBS output 1920x1080, canvas 2560x1440) fps=60.00 | render p50/p95/max=2.10/2.90/4.80ms own=0.70/1.00/1.90 readback=0.25/0.40/0.90 upload=0.15/0.22/0.60 | calls=60.0/s captures=60.0/s uploads=60.0/s holds=0 (late decode 0, dropped 0, encoding 0) | obs frames+600 lagged+0 skipped+0
+[obs-trigglow-dynamic-delay] [video-delay-filter] pipeline check (periodic): mode=workers rung=0/4 capture=1920x1080@60.00fps enc=1x1 L=3 S=3 | enc0 p50/p95/max=5.10/6.20/9.80ms busy=31% enc1=0.00/0.00/0.00 busy=0% dec=3.60/4.30/6.90 busy=22% | drops reserve=0 backpressure=0 arena=0 capture=0 rawFallback=0 encFail=0 decFail=0 staleEnc=0 decJumps=0 staleDec=0 | queue enc max=1 avg=0.05 dec ahead avg=2.90 min=2 | ratio=16.5x arena=192MB committed (live 110MB, peak 192MB, 6 blocks of 32MB, limit 16384MB) ring=1816 slots (ready 1810, dropped 0, in flight 2, pinned 0)
 ```
+
+**`perf check`** (what the plugin costs on OBS's graphics thread):
 
 | Field | What it tells you |
 |---|---|
-| `perf check (reason, Ns)` | Why the line was written (`periodic`, `resumed after a pause`, `filter disabled`, `filter destroyed`) and how many seconds it covers. |
-| `buf=WxH (…)` | Resolution the buffer is stored at, and why: `capped to OBS output …` (the v0.5.1 cap is active), `not capped …` (usually: the canvas is already equal to or smaller than the output), `cap off (buffer_output_cap=false) …` (cap disabled by hand, see below). `, reduced for RAM` means it also had to shrink to fit the delay in the RAM budget. |
-| `render p50/p95/max` | Total time the plugin spends per call on OBS's graphics thread, in ms. Compare it with the frame budget: 16.7 ms at 60 fps, 33.3 ms at 30 fps. A p95 well below the budget means the plugin isn't what's overloading OBS. |
-| `readback` / `encode` / `decode` / `upload` | The same, per phase: GPU→CPU copy, compression, decompression, upload of the delayed frame to the GPU. |
-| `calls`, `captures`, `uploads` (per second) | Plugin render calls (one per open view: Program, preview, projectors…), frames captured (should be close to your fps) and delayed frames uploaded. |
-| `holds` | Times the last frame was repeated because the one due couldn't be shown. An occasional one is harmless; a steadily growing count means capture is falling behind. |
-| `rawFallback` | Frames stored uncompressed because compression failed. Should be 0. |
-| `obs frames+ lagged+ skipped+` | OBS's own counters over the same window: frames rendered, frames missed due to rendering lag, frames skipped due to encoding lag. Non-zero `lagged`/`skipped` with `render` p95 close to the frame budget points at the plugin; with a low `render`, look elsewhere (game, encoder, GPU load). |
-| `ratio`, `ring`, `growths` | Compression ratio (this window, and the whole delay cycle), RAM reserved for the buffer and its slot count, and how many slots had to grow beyond their budgeted size. Since v0.5.1 the buffer isn't zero-filled, so the memory Task Manager shows for it (resident) is usually well below `ring`: only what frames have actually written. |
+| `perf check (reason, Ns)` | Why the line was written (`periodic`, `resumed after a pause`, `filter disabled`, `filter destroyed`, `delay set to 0`) and how many seconds it covers. |
+| `buf=WxH (…)` | Full-quality buffer resolution, and why: `capped to OBS output …` (the output cap is active), `not capped …` (usually: the canvas is already equal to or smaller than the output), `cap off (buffer_output_cap=false) …` (cap disabled by hand, see below). `, reduced for RAM` means it also had to shrink to fit the delay in the RAM budget. What is captured right now, after any degradation, is `capture=` in `pipeline check`. |
+| `render p50/p95/max` | Total time of each plugin call on the graphics thread, in ms, **including rendering your live scene**, which OBS would do anyway. |
+| `own` | The plugin's own part of it: conversion, readback and copy, upload (and the codec in sync mode). This is what the degradation judges. Compare it with the frame budget: 16.7 ms at 60 fps, 33.3 ms at 30 fps. |
+| `readback` / `upload` | GPU→CPU copy of each capture, and upload of the delayed frame to the GPU. |
+| `calls`, `captures`, `uploads` (per second) | Plugin render calls (one per open view: Program, preview, projectors…), frames captured (close to your fps, or half of it on the last degradation step) and delayed frames uploaded. |
+| `holds (late decode, dropped, encoding)` | Times the last frame was repeated because the one due wasn't ready, split by why: not decompressed in time, dropped at capture, or still being compressed. An occasional one is harmless; a steadily growing count is what makes the degradation step in. |
+| `obs frames+ lagged+ skipped+` | OBS's own counters over the same window: frames rendered, frames missed due to rendering lag, frames skipped due to encoding lag. Non-zero `lagged`/`skipped` with a high `own` points at the plugin; with a low `own`, look elsewhere (game, encoder, GPU load). |
 
-The `settings loaded` line (when OBS starts) and the `enabled` line (each time you press Enable)
-end in `output_cap=on` or `output_cap=off`, so support can tell which sizing was in use.
+**`pipeline check`** (the compression threads, the buffer memory and the degradation):
 
-**Turning the output cap off (`buffer_output_cap`).** Only for someone who records (or sends an
+| Field | What it tells you |
+|---|---|
+| `mode` | `workers` (normal) or `sync` (`codec_workers` turned off, see below: the codec runs on the graphics thread). |
+| `rung=N/M` | Degradation step: `0` is full quality, `M` the last step. Anything above 0 is what the dock's amber notice is about. |
+| `capture=WxH@fps` | What is being captured right now. |
+| `enc=CxS`, `L`, `S` | Compression contexts × threads per context, frames decompressed ahead (`L`) and staging slots (`S`). |
+| `enc0`, `enc1`, `dec` | p50/p95/max ms per frame of each compression thread and of the decompression thread, and how busy each was over the window. |
+| `drops reserve/backpressure/arena/capture` | Captures that never made it into the buffer: no free slot, compression behind (the newest capture is dropped), buffer memory at its limit, or a GPU readback that failed. Each shows as a repeated frame, never as a shift of the delay. |
+| `rawFallback`, `encFail`, `decFail` | Frames stored uncompressed because compression failed, and compression/decompression failures. Should be 0. |
+| `staleEnc`, `decJumps`, `staleDec` | Compressions thrown away because the slot was reused, times the decompressor jumped ahead to catch up, and frames decompressed ahead that were too old to show after a pause in rendering. |
+| `queue enc`, `dec ahead` | Compression queue depth (max, average) and frames ready ahead of what's on screen (average, minimum). |
+| `ratio`, `arena`, `ring` | Compression ratio, buffer memory (committed, live, peak, blocks and their size, limit) and slot states. `committed` is close to what Task Manager shows for the buffer. |
+
+Other lines worth knowing: `settings loaded` (when OBS starts) and `enabled` (each time you press
+Enable) end in `output_cap=on|off` and `codec_workers=on|off`; `delay pipeline: …` (each time the
+buffer starts) gives the configuration chosen and the degradation ladder; a WARN starting with
+`delay buffer lower rung` or `delay buffer higher rung` marks each degradation step, with its cause
+and the last 2 seconds of numbers.
+
+## Hidden settings for support: `buffer_output_cap` and `codec_workers`
+
+Two switches with no dock control on purpose. Use them only if support asks you to, or if you know
+exactly why you need one.
+
+**`buffer_output_cap`: turning the output cap off.** Only for someone who records (or sends an
 Enhanced Broadcasting track) above the output resolution and prefers that quality for the delayed
-part at the cost of CPU. It brings back v0.5.0's sizing, including the risk of "Encoding
-overloaded" described above, and with more pixels to store per second the same RAM holds less: if
-RAM runs short, the buffer is reduced or the delay ends up shorter than requested. When it would
-make a difference, the log warns with a line like `video encoder "…" (output "…") is 2560x1440,
-above the delay buffer's 1920x1080 …: its delayed video is upscaled`, which also gives the size the
-buffer would have without the cap (and, if it wouldn't fit, how many seconds it would hold).
+part at the cost of CPU and RAM. It brings back v0.5.0's sizing (canvas resolution, only reduced
+for RAM): more pixels to compress per frame, and with more to store per second the same RAM holds
+less, so if RAM runs short the buffer is reduced or the delay ends up shorter than requested. When
+it would make a difference, the log warns with a line like `video encoder "…" (output "…") is
+2560x1440, above the delay buffer's 1920x1080 …: its delayed video is upscaled`, which also gives
+the size the buffer would have without the cap (and, if it wouldn't fit, how many seconds it would
+hold).
 
-1. **Close OBS completely.** The setting is only read when OBS starts, and OBS rewrites this file
+**`codec_workers`: running the codec on OBS's graphics thread again (kill switch).** Turns the
+compression threads off: compression and decompression go back to OBS's graphics thread, as before
+v0.6.0 (with the slice-threaded compressor). Memory is still freed off that thread, and the
+degradation still works (it adds compression threads first). It exists to find out whether a
+problem comes from the compression threads — for example a frozen or out-of-order delayed picture,
+or a crash in a thread named `trigglow-enc`, `trigglow-dec` or `trigglow-reap`. It brings back the
+graphics-thread cost, so at 1440p60 expect "Encoding overloaded" or the amber notice much sooner.
+
+**How to set either one:**
+1. **Close OBS completely.** The settings are only read when OBS starts, and OBS rewrites this file
    when it exits, so a change made with OBS open is lost.
 2. Open `%APPDATA%\obs-studio\plugin_config\obs-trigglow-dynamic-delay\buffer-mode-settings.json`
    in a text editor (portable OBS: `config\obs-studio\plugin_config\obs-trigglow-dynamic-delay\`
    inside the OBS folder; macOS/Linux: the same `plugin_config/obs-trigglow-dynamic-delay/` folder
    inside OBS's config directory). If the file doesn't exist yet, open and close OBS once with the
    plugin installed.
-3. Add `"buffer_output_cap": false` as one more key, keeping everything else as it is (mind the
-   comma on the line before). It has to be a literal `false`, without quotes: `"false"` (a string),
-   `0` or anything else keeps the cap on and the log says why (`"buffer_output_cap" … is not a JSON
-   boolean`).
+3. Add `"buffer_output_cap": false` and/or `"codec_workers": false` as one more key, keeping
+   everything else as it is (mind the comma on the line before). It has to be a literal `false`,
+   without quotes: `"false"` (a string), `0` or anything else keeps the setting on and the log says
+   why (`"codec_workers" … is not a JSON boolean`), and that value is dropped from the file when OBS
+   closes.
 
    ```json
    {
        "delay_seconds": 30,
        "overlay_corner": 0,
-       "buffer_output_cap": false
+       "codec_workers": false
    }
    ```
 
    (Your file has more keys and your own values; only the last line is new.)
-4. Start OBS. The log shows `output_cap=off` in the `settings loaded` line, and again when you press
-   Enable; the `perf check` line says `cap off (buffer_output_cap=false)`.
-
-If the file ends up as invalid JSON (a missing comma or quote is enough), the plugin doesn't
-overwrite it: at start it moves it aside as
-`buffer-mode-settings.json.<date-time>.invalid` in the same folder, uses the defaults (your live
-and loading scenes, delay and overlay settings too, until you set them again) and writes a WARN
-with both paths (`settings file … is not valid JSON -- moved it to …`). Fix the copy, close OBS,
-rename it back to `buffer-mode-settings.json` and start OBS again.
+4. Start OBS. The `settings loaded` line ends in `output_cap=off` and/or `codec_workers=off`, and
+   again in the `enabled` line when you press Enable. With the cap off, `perf check` says
+   `cap off (buffer_output_cap=false)`; with the compression threads off, `pipeline check` says
+   `mode=sync`.
 
 To undo it: with OBS closed, delete the key (or set it to `true`) and start OBS again.
 
+**If the file ends up as invalid JSON** (a missing comma or quote is enough), the plugin doesn't
+overwrite it: at start it moves it aside as `buffer-mode-settings.json.<date-time>.invalid` in the
+same folder, uses the defaults (your live and loading scenes, delay and overlay settings too, until
+you set them again) and writes a WARN with both paths (`settings file … is not valid JSON -- moved
+it to …`). Fix the copy, close OBS, rename it back to `buffer-mode-settings.json` and start OBS
+again.
+
 ## The delayed video looks lower quality than expected
-- This is buffer sizing behavior, not a bug: `EnsureRingSized()` computes a RAM budget from your
+- **Check the dock first.** An amber "Buffer quality lowered" notice means the plugin is buffering
+  at a lower resolution or frame rate for now because your computer can't keep up (see above). It
+  goes back to full quality by itself when the load drops.
+- Otherwise it's buffer sizing, not a bug: `EnsureRingSized()` computes a RAM budget from your
   machine's total system RAM (50% of it, clamped between 1GB and 24GB) and never lets the buffered
-  video drop below the **minimum quality** you selected (480p/720p/1080p) — instead, if your requested
-  seconds × that quality don't fit the budget, it silently shortens the **actual buffered duration**.
-  The one exception, since v0.5.1: the buffer is never stored above OBS's output resolution, so with a
-  720p output it's 720p even with a 1080p minimum — OBS doesn't send anything above its output
-  anyway. So if the picture itself looks soft, it's very unlikely to be the plugin lowering quality;
-  check your OBS canvas/output resolution and encoder settings instead.
+  video drop below the **minimum quality** you selected (480p/720p/1080p) — instead, if your
+  requested seconds × that quality don't fit the budget, it shortens the **actual buffered
+  duration**. And the buffer is never stored above OBS's output resolution, so with a 720p output
+  it's 720p even with a 1080p minimum — OBS doesn't send anything above its output anyway.
+- With a canvas larger than the output, the delayed frame is drawn back at canvas size and OBS
+  scales it down again, which can look slightly softer than the live picture. If you don't need the
+  larger canvas, set canvas = output.
 - If you **record** at a resolution above your output (e.g. recording rescaled to the canvas), the
-  delayed part of that recording is upscaled from the output-sized buffer since v0.5.1; the log
-  warns about it. See `buffer_output_cap` in the section above if you prefer the old behavior.
+  delayed part of that recording is upscaled from the output-sized buffer; the log warns about it.
+  See `buffer_output_cap` above if you prefer the old behavior.
 - To see whether your requested combination of seconds + quality actually fits your hardware, watch
   the dock's live fit estimate line *before* pressing Enable — it warns (non-blocking) when the full
   requested duration won't fit at the chosen quality, and tells you what will actually be achieved.
@@ -147,7 +239,23 @@ To undo it: with OBS closed, delete the key (or set it to `true`) and start OBS 
 - If you want the full requested duration guaranteed, lower the quality floor, lower the requested
   seconds, or free up system RAM (close other RAM-heavy applications) before pressing Enable.
 
-## The buffer never seems to fill / `Filling` never reaches `Active`
+## After updating, a Stream Deck or obs-websocket action no longer works
+- v0.6.0 renamed the objects the plugin manages: "(no tocar)" / "(auto, no tocar)" became "(auto)".
+  The scene is now **Trigglow Delay Buffer (auto)**, the filters **Trigglow Buffer Mode Delay
+  (auto)** and `Trigglow Audio Delay (auto) - <source>`, and the overlay **Trigglow Delay Badge
+  (auto)**. Your collections were renamed automatically the first time they loaded.
+- Any action that refers to them **by name** (switch to the helper scene, toggle a delay filter or
+  the overlay source) must be pointed at the new names. Actions that use the plugin's hotkeys
+  ("Trigglow: Toggle Dynamic Delay"…) aren't affected.
+
+## I went back to an older version and now there are two helper scenes
+- v0.5.0 and earlier don't know the "(auto)" names, so they create their own "(no tocar)" helper
+  scene, delay filters and overlay next to the renamed ones (the "(auto)" filters are switched off
+  when the collection loads, so they stay inert).
+- Delete the set you don't use. If you come back to v0.6.0 later, the "(auto)" set is used, and a
+  leftover "(no tocar)" set isn't renamed while its new name is taken: delete it.
+
+## The buffer never seems to fill / `Preparing delay` never reaches `Delay on`
 - Check the OBS log for `[obs-trigglow-dynamic-delay]`-prefixed warnings around the time you pressed
   Enable. Two known causes that log a specific warning instead of silently doing nothing:
   - `Render(): obs_filter_get_target() returned null` — the wrapper scene's filter target
@@ -157,18 +265,23 @@ To undo it: with OBS closed, delete the key (or set it to `true`) and start OBS 
     resolve itself; if it persists, check that the live scene actually has visible, active sources in
     it).
 - If neither warning appears and the countdown just seems slow, that's expected: the fill window is
-  exactly as long as the `delaySeconds` you requested — a 60-second delay takes 60 real seconds to
-  fill before switching to `Active`.
+  exactly as long as the delay you requested — a 60-second delay takes 60 real seconds to fill
+  before switching to `Delay on`.
+- If the dock goes back to `Preparing delay` while the delay was on, the buffer had to restart (an
+  OBS video settings change, or the delay changed from the filter's properties). The log says
+  `the video buffer restarted empty`; Program shows the loading scene until it refills.
 
-## The status stays stuck in "Filling" far longer than the requested seconds
+## The status stays stuck in `Preparing delay` far longer than the requested seconds
 - This is a symptom, not a documented mode — the plugin has no reconnection or "Applying" state to
-  wait on. If `Filling` genuinely never reaches `Active`, follow the "buffer never seems to fill"
-  section above and check the OBS log for warnings.
+  wait on. If it genuinely never reaches `Delay on`, follow the section above and check the OBS log
+  for warnings.
 
 ## The hotkey doesn't do anything
 - Confirm you assigned it in `Settings → Hotkeys` (searching for "Trigglow") — the plugin registers
   3 hotkeys (`Trigglow: Toggle Dynamic Delay`, `Trigglow: Enable Dynamic Delay`,
-  `Trigglow: Disable Dynamic Delay`) with no key assigned by default.
+  `Trigglow: Disable Dynamic Delay`; in Spanish, `Trigglow: Activar/desactivar Dynamic Delay`,
+  `Trigglow: Activar Dynamic Delay` and `Trigglow: Desactivar Dynamic Delay`) with no key assigned
+  by default.
 - Try the dock button first to rule out an issue with the plugin's own configuration (e.g. no live
   scene chosen, which also blocks the hotkey's Enable/Toggle from doing anything), as opposed to the
   hotkey/Stream Deck binding itself.
@@ -176,14 +289,17 @@ To undo it: with OBS closed, delete the key (or set it to `true`) and start OBS 
 ## The Stream Deck button doesn't do anything
 - Verify that the combination configured in Stream Deck exactly matches the one assigned in
   OBS.
+- If the button switches scenes or toggles filters by name instead of using the hotkey, see "After
+  updating, a Stream Deck or obs-websocket action no longer works" above.
 - See `docs/STREAM_DECK.md` for the full step-by-step flow.
 
 ## The plugin doesn't compile
 - Check `docs/BUILD_VALIDATION.md` — it documents what's been verified (real CI builds against the
   real OBS SDK and Qt6 on Windows/macOS/Ubuntu, plus live testing inside a real OBS instance on
-  Windows) and what hasn't (live testing on macOS/Linux, a confirmed fix for the GPU
-  Device-Remove/Reset risk described in `docs/SPEC.md` §7, and any broad automated test suite —
-  v0.5.1 only adds unit tests for the buffer sizing math, built with `-DTRIGGLOW_BUILD_TESTS=ON`).
+  Windows) and what hasn't (live testing on macOS/Linux, and a confirmed fix for the GPU
+  Device-Remove/Reset risk described in `docs/SPEC.md` §7). The unit tests (9 suites, no OBS
+  needed) build with `-DTRIGGLOW_BUILD_TESTS=ON` or on their own with `cmake -S tests -B
+  build_tests`, and CI runs them on every platform.
 - A compile error on your own machine is valuable information — it's likely a difference between
   your exact OBS/Qt version and the ones pinned in `buildspec.json`. Open an issue in the repository
   with the full error log.

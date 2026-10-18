@@ -16,15 +16,18 @@ uses a separate filter attached to each individual audio-capable source inside y
 (OBS doesn't allow an audio filter to attach directly to a scene itself), but both run off the same
 `delaySeconds` value. As of v0.3.2, this stays true even if the RAM budget forces video to actually
 buffer less than the full requested duration (see the next question) — audio automatically matches
-whatever video is really able to deliver instead of drifting ahead. See `docs/SPEC.md` §3.2/§3.3.
+whatever video is really able to deliver instead of drifting ahead. Since v0.6.0 both use exactly
+the same delay in whole seconds in that case too (before, they could end up to ~1 s apart), and the
+dock and the live overlay show that same figure. See `docs/SPEC.md` §3.2/§3.3.
 
 **How do the "Delay (seconds)" and "Minimum quality" settings interact?**
 Independently, by design — you pick both freely. The minimum quality (480p/720p/1080p) is how far
 the plugin may lower the buffer's resolution to save RAM: it never goes below it, and shortens the
 actual buffered duration instead if your requested seconds don't fit the RAM budget detected on
-your machine at that quality. Since v0.5.1 it never raises the buffer above OBS's output resolution,
+your machine at that quality. Since v0.6.0 it never raises the buffer above OBS's output resolution,
 though (Settings → Video → Output (Scaled) Resolution): with a 720p output the buffer is 720p even
-if you pick 1080p, because OBS has nothing above its output to send. The dock shows a live,
+if you pick 1080p, because OBS has nothing above its output to send. It's also the floor for the
+automatic quality reduction when your computer can't keep up (see below). The dock shows a live,
 non-blocking estimate of what a given combination will actually achieve (seconds and resolution) as
 you adjust either setting, before you ever press Enable. See `docs/SPEC.md` §3.5.
 
@@ -34,41 +37,61 @@ The plugin simply buffers fewer seconds than requested at your chosen quality ra
 dropping below it; lowering the seconds or the quality floor gets you back to the full requested
 duration.
 
+**Why can't I change the delay while it's on?**
+Since v0.6.0 the scenes, the delay seconds and the minimum quality are locked while the delay is
+preparing or on, with a line that says "Turn the delay off to change it." Before, the seconds stayed
+editable and every keystroke resized the buffer in the middle of a live stream. Turn the delay off,
+change it and turn it on again; it fills again for the new number of seconds.
+
 **What's the maximum delay it supports?**
 The dock's spinner accepts 1–60 seconds as a UI sanity range. The real ceiling is whatever fits
 your machine's detected RAM budget (roughly half of total system RAM, floored at 1GB and capped at
 24GB) at your chosen quality — if 60s at your chosen quality doesn't fit, the dock's live estimate
 will tell you before you enable it, and the plugin buffers as many seconds as actually fit instead.
 
-**Does it compress the buffer now? Does that lower quality?**
-As of v0.3.0, yes — on Windows and Linux, each buffered frame is now MJPEG-compressed in RAM and
+**Does it compress the buffer? Does that lower quality?**
+Yes, since v0.3.0 — on Windows and Linux, each buffered frame is MJPEG-compressed in RAM and
 decompressed back on playback, with an automatic, safe fallback to uncompressed storage if the codec
-isn't available for any reason. No quality loss: the quality floor you pick (480p/720p/1080p) works
-exactly as before, this only changes how the buffered frames are stored in memory. On a real 30s@1080p60
-test session, this cut the buffer's RAM usage roughly in half (~6.3GB → ~2.9GB). The exact reduction
-depends heavily on what's on screen and hasn't been measured against sustained real gameplay yet — see
-`docs/SPEC.md` §4. macOS isn't part of this yet and keeps working exactly as before, uncompressed.
+isn't available for any reason. The compression is visually close to lossless, and the quality floor
+you pick (480p/720p/1080p) works exactly as before: this only changes how the buffered frames are
+stored in memory. Real gameplay compresses about 11–15x (measured live since v0.4.0), though it
+depends on what's on screen. Since v0.6.0 the compression runs on the plugin's own threads, not on
+OBS's graphics thread, and memory follows what the frames really weigh: about 0.6–0.8 GB for 30 s at
+1440p60 in our offline simulation. See `docs/SPEC.md` §4. macOS isn't part of this yet and stores
+the buffer uncompressed.
 
 **OBS shows "Encoding overloaded" as soon as I enable the delay. Why?**
-Compressing and decompressing the buffered frames runs inside OBS's graphics thread, which has
-16.7 ms per frame at 60 fps. Up to v0.5.0 the buffer was stored at your canvas resolution, so with a
+Up to v0.5.0, compressing and decompressing the buffered frames ran inside OBS's graphics thread,
+which has 16.7 ms per frame at 60 fps, and the buffer was stored at your canvas resolution: with a
 canvas larger than the output (for example 2560x1440 canvas, 1920x1080 output) that work took most
-of the frame and OBS fell behind. **v0.5.1 fixes that case**: the buffer is never stored above OBS's
-output resolution and compression uses several threads, so a 1440p canvas with a 1080p output costs
-about the same as a plain 1080p setup. Update to v0.5.1; if you lowered your canvas to work around
-it, you can set it back. If it still happens, see the "Encoding overloaded" section of
+of the frame and OBS fell behind. **v0.6.0 fixes it**: the buffer is never stored above OBS's output
+resolution, and compression runs on the plugin's own threads, so what's left on OBS's graphics
+thread is a millisecond or two per frame. Update to v0.6.0; if you lowered your canvas to work
+around it, you can set it back. If it still happens, see the "Encoding overloaded" section of
 `docs/TROUBLESHOOTING.md`.
 
 **Does it only work at 1080p? What about 2K (1440p)?**
 It works at any resolution — the buffer follows OBS's output resolution. What matters for
 performance is the *output* resolution and frame rate, not the canvas:
-- **Canvas larger than the output** (e.g. 1440p canvas, 1080p output): fine since v0.5.1, same cost
+- **Canvas larger than the output** (e.g. 1440p canvas, 1080p output): fine since v0.6.0, same cost
   as a 1080p output.
-- **1440p output at 30 fps:** should work.
-- **1440p output at 60 fps:** may still overload OBS on many machines, because compression still runs
-  inside OBS's graphics thread. Moving it off that thread, with 1440p60 as the target, is the main
-  goal of the next version (v0.6.0, see `docs/ROADMAP.md`); there's no date for it yet. Until then,
-  use a 1080p output for 60 fps, or 30 fps for a 1440p output.
+- **1440p output at 30 or 60 fps:** supported since v0.6.0. In our offline benchmark at 1440p60 (an
+  8-core/16-thread CPU) the plugin's work on OBS's graphics thread is ~1.2–1.7/1.6–2.1 ms p50/p95 per
+  frame, and compression and decompression keep under one CPU core busy in total on their own
+  threads.
+- **If your computer can't keep up** at your settings, the plugin lowers the buffer's resolution
+  (never below your minimum quality) and, as a last step, its capture frame rate, instead of
+  letting OBS fall behind or cutting the delay. The dock tells you with an amber notice (next
+  question).
+
+**What does the amber "Buffer quality lowered" notice in the dock mean?**
+Your computer couldn't keep up with the delay buffer at full quality, so the plugin lightened it:
+first it adds compression threads (no notice for that), then it buffers at a lower resolution, never
+below your minimum quality, and as a last step it captures every other frame (only with an output at
+48 fps or more). The notice says what was lowered and why. The delay in seconds never changes and
+the stream never cuts; repeated frames, if any, show as a brief stutter. When the load drops, it goes
+back up by itself after 30 s with room to spare, and the notice disappears. What to do about it, if
+anything: `docs/TROUBLESHOOTING.md`.
 
 **Does it affect local recording or the Replay Buffer?**
 Indirectly, yes, and this is worth understanding: buffer mode works by switching what OBS's Program
@@ -77,6 +100,14 @@ you're recording (or have the Replay Buffer running) while the delay is `Active`
 the delayed content too, same as what viewers see. There's currently no way to delay the stream
 without also delaying recording/Replay Buffer, or vice versa — that per-output split is explicitly
 out of scope for now (see `docs/ROADMAP.md`).
+
+**The plugin's scene and filters have new names. Do I need to do anything?**
+Since v0.6.0 they end in "(auto)" instead of "(no tocar)": **Trigglow Delay Buffer (auto)**,
+**Trigglow Buffer Mode Delay (auto)**, `Trigglow Audio Delay (auto) - <source>` and **Trigglow Delay
+Badge (auto)**. Your scene collections are renamed automatically. Only update Stream Deck,
+obs-websocket or other remote-control actions that use those objects **by name**; the plugin's
+hotkeys aren't affected. If you go back to v0.5.0 or earlier afterwards, it creates its own
+"(no tocar)" set next to the "(auto)" one: delete the set you don't use.
 
 **What triggers the `Error` state?**
 Anything that would otherwise leave the plugin in a broken but silent condition: no live scene
