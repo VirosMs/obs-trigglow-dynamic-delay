@@ -21,12 +21,15 @@ siguiente pregunta) — el audio se ajusta automáticamente a lo que el vídeo r
 en vez de quedarse por delante. Ver `docs/SPEC.md` §3.2/§3.3.
 
 **¿Cómo interactúan los ajustes "Delay (segundos)" y "Calidad mínima"?**
-De forma independiente, por diseño — eliges ambos libremente, y el plugin nunca baja en silencio tu
-calidad mínima elegida (480p/720p/1080p). Lo que sí puede hacer es acortar el tiempo real de buffer
-si los segundos pedidos no caben en el presupuesto de RAM detectado en tu máquina a esa calidad. El
-dock muestra una estimación en vivo, no bloqueante, de lo que una combinación concreta va a lograr
-realmente mientras ajustas cualquiera de los dos, antes incluso de pulsar Enable. Ver `docs/SPEC.md`
-§3.5.
+De forma independiente, por diseño — eliges ambos libremente. La calidad mínima (480p/720p/1080p)
+marca hasta dónde puede bajar el plugin la resolución del buffer para ahorrar RAM: nunca baja de
+ahí, y en su lugar acorta el tiempo real de buffer si los segundos pedidos no caben en el
+presupuesto de RAM detectado en tu máquina a esa calidad. Eso sí, desde la v0.5.1 nunca eleva el
+buffer por encima de la resolución de salida de OBS (Ajustes → Vídeo → Resolución de salida
+(escalada)): con una salida de 720p el buffer es 720p aunque elijas 1080p, porque OBS no tiene nada
+por encima de su salida que emitir. El dock muestra una estimación en vivo, no bloqueante, de lo que
+una combinación concreta va a lograr realmente (segundos y resolución) mientras ajustas cualquiera
+de los dos, antes incluso de pulsar Enable. Ver `docs/SPEC.md` §3.5.
 
 **¿Qué pasa si el delay + calidad que pido no caben en RAM?**
 Recibes un aviso claro en el dock *antes* de activarlo — nunca falla en silencio ni crashea. El
@@ -51,6 +54,27 @@ depende mucho de lo que haya en pantalla y todavía no se ha medido contra gamep
 ver `docs/SPEC.md` §4. macOS todavía no forma parte de esto y sigue funcionando exactamente igual
 que antes, sin comprimir.
 
+**OBS muestra "Encoding overloaded" (sobrecarga al codificar) en cuanto activo el delay. ¿Por qué?**
+La compresión y descompresión de los frames del buffer se ejecuta dentro del hilo gráfico de OBS,
+que tiene 16,7 ms por frame a 60 fps. Hasta la v0.5.0 el buffer se guardaba a la resolución del
+lienzo, así que con un lienzo mayor que la salida (por ejemplo lienzo 2560x1440, salida 1920x1080)
+ese trabajo se comía la mayor parte del frame y OBS se quedaba atrás. **La v0.5.1 corrige ese
+caso**: el buffer nunca se guarda por encima de la resolución de salida de OBS y la compresión usa
+varios hilos, así que un lienzo 1440p con salida 1080p cuesta más o menos lo mismo que un montaje
+1080p normal. Actualiza a la v0.5.1; si bajaste el lienzo para esquivarlo, puedes volver a subirlo.
+Si aun así sigue pasando, mira la sección "Encoding overloaded" de `docs/TROUBLESHOOTING-es.md`.
+
+**¿Solo funciona a 1080p? ¿Y a 2K (1440p)?**
+Funciona a cualquier resolución — el buffer sigue la resolución de salida de OBS. Para el
+rendimiento lo que cuenta es la resolución y los fps de *salida*, no el lienzo:
+- **Lienzo mayor que la salida** (p. ej. lienzo 1440p, salida 1080p): bien desde la v0.5.1, mismo
+  coste que una salida 1080p.
+- **Salida 1440p a 30 fps:** debería funcionar.
+- **Salida 1440p a 60 fps:** todavía puede sobrecargar OBS en muchos equipos, porque la compresión
+  sigue ejecutándose dentro del hilo gráfico de OBS. Sacarla de ese hilo, con 1440p60 como meta,
+  es lo principal de la siguiente versión (v0.6.0, ver `docs/ROADMAP-es.md`); todavía no tiene
+  fecha. Mientras tanto, usa salida 1080p para 60 fps, o 30 fps con salida 1440p.
+
 **¿Afecta a la grabación local o al Replay Buffer?**
 Indirectamente sí, y merece la pena entenderlo bien: el modo buffer funciona cambiando lo que
 muestra el Programa de OBS, y tanto la grabación local como el Replay Buffer capturan ese mismo
@@ -72,8 +96,9 @@ conexión de streaming a una plataforma concreta, así que el comportamiento es 
 independientemente de a dónde emitas.
 
 **¿Necesito un panel web o una cuenta de Trigglow para usarlo?**
-No. Todo el control vive dentro de OBS. La web de Trigglow es solo para descargarlo y consultar la
-documentación.
+Panel web no: todo el control vive dentro de OBS. Desde la v0.3.3 sí necesitas iniciar sesión una
+vez con una cuenta gratuita de trigglow.com para que Enable funcione (el inicio de sesión se hace en
+tu navegador, y el plugin sigue siendo 100% gratis) — ver `docs/ACCOUNT_GATE.md`.
 
 **¿Necesito el plugin de Stream Deck de Trigglow?**
 No — el plugin usa hotkeys nativas de OBS, que Stream Deck puede disparar directamente con su propia

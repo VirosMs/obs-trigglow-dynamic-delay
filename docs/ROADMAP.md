@@ -83,14 +83,41 @@
   v0.4.0 (currently in production) — small enough on its own that it doesn't need to wait on the
   unrelated features below.
 
-## v0.6.0 (proposed)
+## v0.5.1 (shipped — 2026-10-18)
+Performance hotfix for "Encoding overloaded" as soon as the delay was enabled with a canvas larger
+than the output (reported live: 2560x1440 canvas, 1920x1080 output at 60 fps).
+- **Buffer capped at OBS's output resolution.** The ring was sized from the canvas, so a 1440p
+  canvas streamed at 1080p was MJPEG-encoded/decoded at 1440p on OBS's graphics thread
+  (14.3/17.4 ms p50/p95 per frame). Now ~5.2/5.9 ms. The minimum quality became a RAM floor that
+  never exceeds the output. Sizing math extracted into `src/buffer-fit.*` with unit tests
+  (`-DTRIGGLOW_BUILD_TESTS=ON`).
+- **Slice-threaded MJPEG encoder** (up to 4 threads): 1080p from 8.6/10.4 to 5.2/5.9 ms p50/p95 on
+  the graphics thread.
+- **Each ring slot decoded and uploaded at most once** however many views are open; the last frame
+  is held instead of drawing black when a slot can't be shown.
+- **Exact frame interval** at fractional rates (59.94 fps no longer loses ~1 frame/s) and rational
+  math for the effective delay used to sync audio.
+- **`perf check` telemetry** every 10 s in the OBS log (replaces `compression check`), a **warning
+  for encoders above the buffer**, and the hidden **`buffer_output_cap`** support setting.
+- **Delay filters left on by an OBS close while Active are really switched off on load** now (the
+  v0.5.0 attempt never reached the filters). Still not done when switching scene collection without
+  restarting.
+
+## v0.6.0 (next)
+- **Encode/decode on worker threads, off OBS's graphics thread — target 1440p60.** v0.5.1 still
+  compresses and decompresses synchronously inside `Render()`, so a 1440p *output* at 60 fps can
+  still overload OBS (1440p30 should be fine). Moving that work to worker threads is the main goal of
+  this version. No date yet.
+- **Align audio with the exact video span** when the RAM budget trims the ring (today video uses the
+  fractional span and audio whole seconds, up to ~1 s apart — see `docs/SPEC.md` §3.3).
 - Saved delay presets (e.g. "Short delay 5s", "Long delay 30s"), selectable from the dock and from
   additional hotkeys.
 - macOS/Linux **live verification** — both already build green in CI; this is about actually
   running and confirming the plugin on those platforms, not new build-system work.
 - Measure the v0.4.0 RAM retune (`kAssumedCompressionRatio = 5.0`) against more sessions/games
-  using the new per-slot growth counter (`encodeGrowthCount_`) before considering raising it
-  further — see that constant's comment in `src/video-delay-filter.cpp`.
+  using the per-slot growth counter (`encodeGrowthCount_`, the `growths=` field of the v0.5.1
+  `perf check` line) before considering raising it further — see that constant's comment in
+  `src/video-delay-filter.cpp`.
 
 ## v0.7.0 (paused — scoped, not started, 2026-09-08)
 Goal: a "true-live" Replay Buffer (dedicated to Trigglow, saved via its own hotkey — OBS's native

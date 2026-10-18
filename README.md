@@ -6,7 +6,7 @@ Native OBS Studio plugin that delays your stream's **video and audio together**,
 number of seconds, from a button, a native OBS hotkey, or a Stream Deck — **without the streaming
 output ever being touched.** No reconnection, no cut, at any point, for any reason. No external
 app, no web panel, no separate process: everything lives inside the OBS process.
-**Status: MVP / v0.5.0 — Early Access.**
+**Status: MVP / v0.5.1 — Early Access.**
 
 As of v0.3.0, the RAM ring buffer is real MJPEG-compressed on Windows and Linux (vendored FFmpeg),
 with an automatic, safe fallback to uncompressed storage if the codec isn't available — no quality
@@ -42,6 +42,14 @@ Enable/Disable button and a responsive dock, and fixes the video delay drifting 
 (it now follows the wall clock like the audio does), the chosen live scene being ignored when
 the wrapper scene was reused, and the Windows installer missing the Spanish locale. See
 `CHANGELOG.md`.
+
+v0.5.1 fixes OBS showing **"Encoding overloaded"** as soon as the delay was enabled with a canvas
+larger than the output (e.g. 2560x1440 canvas, 1920x1080 output): the buffer is now never stored
+above OBS's output resolution, compression uses several threads, and each delayed frame is decoded
+once however many previews/projectors are open — ~5.2/5.9 ms p50/p95 per frame instead of
+14.3/17.4 ms in that setup. It also adds a `perf check` line to the OBS log for support, and really
+switches off delay filters left on when OBS was closed while Active. A 1440p *output* at 60 fps is
+still pending (planned for v0.6.0). See `CHANGELOG.md` and `docs/TROUBLESHOOTING.md`.
 
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried
@@ -119,10 +127,11 @@ macOS/Linux don't have a one-click installer yet — manual install is the only 
 2. In the dock, pick your **live scene** (required — the scene with your real content) and,
    optionally, a **loading scene** to show while the buffer fills instead of staying on the
    undelayed live scene. Set **Delay (seconds)** (1–60) and the **minimum quality** floor
-   (480p/720p/1080p) the delayed video must never drop below. The dock shows a live estimate of
-   whether your chosen seconds actually fit in RAM at that quality *before* you press Enable — if
-   they don't, it warns that the buffered duration will be shortened instead of ever lowering the
-   quality, but never blocks your choice.
+   (480p/720p/1080p) the delayed video won't drop below to save RAM (it's never stored above OBS's
+   output resolution either: with a 720p output the buffer is 720p even with a 1080p minimum). The
+   dock shows a live estimate of whether your chosen seconds actually fit in RAM at that quality
+   *before* you press Enable — if they don't, it warns that the buffered duration will be shortened
+   instead of lowering the quality further, but never blocks your choice.
 3. Go to `Settings → Hotkeys`, search for "Trigglow", and assign a key to **Toggle Dynamic
    Delay** (and optionally to Enable/Disable separately).
 4. Press Enable (from the dock button, the hotkey, or Stream Deck). The dock shows `Filling` with
@@ -163,6 +172,8 @@ src/
                                      scene wiring
   video-delay-filter.{hpp,cpp}     → RAM/NV12 ring buffer for delayed video + its small, fixed
                                      GPU object pool
+  buffer-fit.{hpp,cpp}             → pure buffer sizing math (output-resolution cap, quality
+                                     floor, RAM budget), unit-tested in tests/
   audio-delay-filter.{hpp,cpp}     → per-leaf-source audio delay ring, kept in sync with video
   hardware-info.{hpp,cpp}          → total system RAM query, used to size the buffer budget
   scene-combo-box.{hpp,cpp}        → dock combo box populated from OBS's own scene list
@@ -186,6 +197,9 @@ src/
                                      instantiated by plugin-main.cpp; ships in no current build
 data/
   locale/en-US.ini, es-ES.ini      → the plugin's actual translated strings (see src/i18n.hpp)
+tests/
+  buffer_fit_tests.cpp             → unit tests for buffer-fit (off by default:
+                                     -DTRIGGLOW_BUILD_TESTS=ON, then ctest)
 docs/
   SPEC.md                  → full technical specification (start here)
   INSTALL_GUIDE.md          → step-by-step install walkthrough with screenshots (SmartScreen,

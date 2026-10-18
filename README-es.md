@@ -6,7 +6,7 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.5.0 — Early Access.**
+OBS. **Estado: MVP / v0.5.1 — Early Access.**
 
 A partir de v0.3.0, el ring buffer de RAM se comprime de verdad con MJPEG en Windows y Linux
 (FFmpeg vendorizado), con un fallback automático y seguro a almacenamiento sin comprimir si el codec
@@ -46,6 +46,15 @@ Activar/Desactivar y un dock responsivo, y corrige que el delay de vídeo se des
 (ahora sigue el reloj igual que el audio), que se ignorara la escena en directo elegida al reutilizar
 la escena envoltorio, y que el instalador de Windows no incluyera el idioma español. Ver
 `CHANGELOG-es.md`.
+
+La v0.5.1 corrige que OBS mostrara **"Encoding overloaded" (sobrecarga al codificar)** en cuanto se
+activaba el delay con un lienzo mayor que la salida (p. ej. lienzo 2560x1440, salida 1920x1080):
+el buffer ya nunca se guarda por encima de la resolución de salida de OBS, la compresión usa varios
+hilos y cada frame retrasado se descomprime una sola vez haya las vistas previas/proyectores que
+haya — ~5,2/5,9 ms p50/p95 por frame en vez de 14,3/17,4 ms en ese montaje. También añade una línea
+`perf check` al log de OBS para soporte, y apaga de verdad los filtros de delay que quedaban
+encendidos al cerrar OBS estando Activo. Una *salida* 1440p a 60 fps queda pendiente (prevista para
+la v0.6.0). Ver `CHANGELOG-es.md` y `docs/TROUBLESHOOTING-es.md`.
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
@@ -124,10 +133,12 @@ por ahora (ver `docs/ROADMAP-es.md`).
 2. En el dock, elige tu **escena en directo** (obligatoria — la escena con tu contenido real) y,
    opcionalmente, una **escena de carga** para mostrar mientras se llena el buffer en vez de
    quedarte en la escena en directo sin delay. Configura el **Delay (segundos)** (1–60) y la
-   **calidad mínima** (480p/720p/1080p) por debajo de la cual el vídeo delayed nunca debe caer. El
-   dock muestra una estimación en vivo de si los segundos elegidos caben realmente en la RAM a esa
-   calidad *antes* de pulsar Enable — si no caben, avisa de que el tiempo real de buffer se
-   acortará en vez de bajar nunca la calidad, pero nunca bloquea tu elección.
+   **calidad mínima** (480p/720p/1080p) por debajo de la cual el vídeo delayed no baja para ahorrar
+   RAM (tampoco se guarda nunca por encima de la resolución de salida de OBS: con una salida de 720p
+   el buffer es 720p aunque el mínimo sea 1080p). El dock muestra una estimación en vivo de si los
+   segundos elegidos caben realmente en la RAM a esa calidad *antes* de pulsar Enable — si no caben,
+   avisa de que el tiempo real de buffer se acortará en vez de bajar más la calidad, pero nunca
+   bloquea tu elección.
 3. Ve a `Configuración → Atajos de teclado`, busca "Trigglow" y asigna una tecla a **Toggle Dynamic
    Delay** (y opcionalmente a Enable/Disable por separado).
 4. Pulsa Enable (desde el botón del dock, la hotkey o Stream Deck). El dock muestra `Filling` con
@@ -168,6 +179,9 @@ src/
                                      filtros/escenas
   video-delay-filter.{hpp,cpp}     → el ring buffer en RAM/NV12 del vídeo delayed + su pequeño pool
                                      fijo de objetos GPU
+  buffer-fit.{hpp,cpp}             → aritmética pura de dimensionado del buffer (límite de
+                                     resolución de salida, suelo de calidad, presupuesto de RAM),
+                                     con tests unitarios en tests/
   audio-delay-filter.{hpp,cpp}     → ring de delay de audio por fuente hoja, sincronizado con el
                                      vídeo
   hardware-info.{hpp,cpp}          → consulta de RAM total del sistema, usada para dimensionar el
@@ -197,6 +211,9 @@ src/
                                      build actual
 data/
   locale/en-US.ini, es-ES.ini      → las cadenas traducidas reales del plugin (ver src/i18n.hpp)
+tests/
+  buffer_fit_tests.cpp             → tests unitarios de buffer-fit (desactivados por defecto:
+                                     -DTRIGGLOW_BUILD_TESTS=ON, después ctest)
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
   INSTALL_GUIDE-es.md       → guía de instalación paso a paso con capturas (SmartScreen,

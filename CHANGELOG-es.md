@@ -2,6 +2,123 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.5.1 — 2026-10-18 (Early Access)
+
+Hotfix de rendimiento. Con un lienzo mayor que la salida (reportado en directo: lienzo 2560x1440,
+salida 1920x1080 a 60 fps), OBS mostraba **"Encoding overloaded" / sobrecarga al codificar** en
+cuanto se activaba el delay.
+
+**Corregido / Rendimiento:**
+- **Sobrecarga al codificar con el delay activo cuando el lienzo es mayor que la salida.** El
+  buffer de vídeo se guardaba a la resolución del lienzo, así que con un lienzo 1440p emitido a
+  1080p el plugin comprimía y descomprimía en MJPEG cada frame del buffer a 1440p dentro del hilo
+  gráfico de OBS: 14,3/17,4 ms p50/p95 por frame, la mayor parte de los 16,7 ms que tiene un frame
+  a 60 fps, y OBS se quedaba atrás. Esos píxeles de más los descartaba de todos modos el propio
+  reescalado de salida de OBS. Ahora el buffer nunca supera la resolución de salida de OBS
+  (Ajustes → Vídeo → Resolución de salida (escalada)) y, junto con la compresión con varios hilos
+  de abajo, el mismo montaje cuesta ~5,2/5,9 ms p50/p95. Puedes volver a usar un lienzo 2560x1440
+  con salida 1920x1080. `EnsureRingSized()` y la estimación del dock pasan ambos por la nueva
+  función pura de dimensionado `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, sin dependencia
+  de libobs/FFmpeg) con la geometría del lienzo (`obs_video_info::base_*`) y de la salida
+  (`output_*`). El techo es una escala uniforme, `min(1, max(outW/baseW, outH/baseH))`, que
+  conserva la relación de aspecto y nunca baja de la salida en ningún eje; solo se aplica cuando el
+  objetivo del buffer tiene el tamaño del lienzo (la escena en directo). Ver `docs/SPEC-es.md`
+  §3.5.
+- **Compresión MJPEG con varios hilos.** El codificador divide cada frame en slices que se
+  comprimen en paralelo, hasta 4 hilos según la CPU (uno por cada 4 CPU lógicas: 4 en una CPU de 8
+  núcleos/16 hilos, 1 en una de 4 hilos). A 1080p el coste del plugin en el hilo gráfico de OBS
+  baja de 8,6/10,4 a 5,2/5,9 ms p50/p95 por frame. `thread_type = FF_THREAD_SLICE` se fija de forma
+  explícita: con solo `thread_count > 1`, FFmpeg elige threading por frames para MJPEG,
+  `receive_packet()` devuelve `EAGAIN` en el mismo tick y todos los frames se guardarían en crudo.
+  Si aun así FFmpeg arranca con threading por frames, el codificador se reabre con un solo hilo y
+  un WARN. Solo la codificación a 1080p: de 5,1 a 1,8 ms p50, el mismo CPU total, frames ~3,5% más
+  grandes.
+- **Cada frame retrasado se descomprime y sube una sola vez, haya las vistas que haya.** OBS
+  renderiza la escena una vez por vista (Programa, vista previa, proyectores, multiview), y cada
+  una de esas llamadas volvía a descomprimir y subir a la GPU el mismo frame retrasado. Ahora
+  ocurre como mucho una vez por frame; las vistas extra solo lo vuelven a dibujar. Si un frame no
+  se puede mostrar (nunca se capturó, o falla al descomprimir), se repite el último en vez de
+  dibujar negro: un tirón de un frame que nunca alarga el delay. La caché se indexa por slot +
+  hora de captura y se invalida en `ReleaseRing()`/`ReleaseSizedGpuObjects()`, así que un frame
+  repetido nunca viene de un ciclo anterior.
+- **Intervalo de frame exacto con frame rates fraccionarios.** A 59,94 fps el intervalo de
+  captura era `1e9 / 59` ns, así que se perdía casi un frame real por segundo. Ahora es
+  `1e9 × fps_den / fps_num` (16.683.333 ns a 59,94), y se usa para la captura, el tramo del ring y
+  su dimensionado. El delay efectivo con el que se sincroniza el audio
+  (`get_effective_delay_seconds`) también usa aritmética racional: multiplicar por el intervalo
+  truncado podía redondear a 29 s un tramo de exactamente 1800 frames a 60 fps (30 s).
+- **Delay que se quedaba puesto tras cerrar OBS estando Activo (el fix de v0.5.0 no funcionaba).**
+  Si OBS se cerraba con el delay activo, en el siguiente arranque la escena en directo quedaba con
+  delay permanente mientras el dock decía "Inactivo". La v0.5.0 intentaba apagar esos filtros al
+  cargar, pero los buscaba con `obs_enum_sources()`, que nunca devuelve filtros, así que no apagaba
+  nada. Ahora recorre los filtros (`obs_source_enum_filters`) de inputs, grupos, escenas y fuentes
+  de audio globales, y los apaga fuera de los locks de libobs. Limitación conocida: se ejecuta una
+  vez, cuando OBS termina de cargar, no al cambiar de colección de escenas sin reiniciar OBS.
+- **Corregidos el tooltip del dock y el texto de la propiedad del filtro para la calidad mínima.**
+  Decían que el vídeo retrasado "nunca baja de" esa resolución, lo que dejó de ser cierto con el
+  techo de salida (ver Cambiado).
+
+**Cambiado:**
+- **La "Calidad mínima" es un suelo para la reducción por RAM, acotado por la salida de OBS.**
+  Cuando falta RAM sigue decidiendo hasta dónde puede encogerse el buffer (antes que bajar de ahí,
+  se guardan menos segundos), pero ya no eleva el buffer por encima de la resolución de salida:
+  con una salida de 720p el buffer es 720p aunque el mínimo sea 1080p. Guardar más filas de las que
+  OBS emite no aportaba nada.
+- **La línea de log `compression check` se sustituye por `perf check`** (abajo), que incluye los
+  mismos datos de compresión.
+
+**Añadido:**
+- **Línea `perf check` en el log de OBS.** Cada 10 s con el delay activo (Filling y Active), y una
+  última al desactivar el delay o cerrar OBS. Indica la resolución del buffer y si está limitada
+  (`capped to OBS output …`, `not capped …`, `cap off …`), tiempos p50/p95/max por fase (render
+  completo, lectura, codificación, decodificación, subida), llamadas/capturas/subidas por segundo,
+  frames repetidos (`holds`), fallbacks a crudo, los contadores propios de OBS de frames
+  renderizados/perdidos/saltados en la misma ventana, ratio de compresión y memoria del ring. Es lo
+  que lee soporte cuando el delay parece costar demasiado; guía campo a campo en
+  `docs/TROUBLESHOOTING-es.md`. Arrays fijos de 4096 muestras por fase, sin asignaciones por frame.
+- **Aviso cuando una salida codifica por encima del buffer.** Si una salida activa tiene un encoder
+  de vídeo por encima de la resolución del buffer (por ejemplo una grabación reescalada a la
+  resolución del lienzo, o pistas de Enhanced Broadcasting por encima de la salida), el log avisa
+  una vez por encoder y ciclo de delay de que su vídeo diferido se reescala hacia arriba, con
+  ambas resoluciones y cómo quitar el límite. Se comprueba al activar, al llenarse el buffer y al
+  empezar el streaming, la grabación o el Replay Buffer; solo cuando quitar el límite cambiaría de
+  verdad el buffer. Los encoders de otros lienzos se ignoran.
+- **Ajuste oculto `buffer_output_cap`, para soporte.** `"buffer_output_cap": false` en el
+  `buffer-mode-settings.json` del plugin recupera el dimensionado de v0.5.0 (resolución de la
+  fuente/lienzo, reducida solo por RAM) para quien graba a resolución de lienzo y prefiere esa
+  calidad a costa de CPU. Sin control en el dock a propósito; solo se lee al cargar OBS, y el log
+  lo confirma con `output_cap=off`. Pasos en `docs/TROUBLESHOOTING-es.md`.
+- **Tests unitarios del cálculo de dimensionado del buffer** (`tests/buffer_fit_tests.cpp`,
+  desactivados por defecto: configura con `-DTRIGGLOW_BUILD_TESTS=ON`, o por separado con
+  `cmake -S tests -B build_tests` sin ninguna dependencia de OBS; ejecuta con `ctest`). Cubren
+  lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que el lienzo, relaciones de aspecto
+  distintas, un suelo por encima de la salida, reducción por RAM, redondeo, dimensiones impares,
+  entradas degeneradas, 59,94 fps y barridos de presupuesto/salida.
+
+**Build / CI:**
+- **FFmpeg de Windows fijado a otra versión**: el build de fin de mes de BtbN
+  `autobuild-2026-09-30-13-08` (`ffmpeg-n9.0.2-17-g2a571b6068`, misma rama 9.0 y mismas DLL:
+  avcodec-63, avutil-61, swresample-7). La versión fijada anterior, `autobuild-2026-10-03-18-14`
+  (`n9.0.2-22`), se borró en origen y devolvía 404, lo que rompía el build de Windows al configurar.
+  BtbN borra sus autobuilds diarios a las dos semanas más o menos pero conserva los de fin de mes,
+  así que a partir de ahora solo se fijan builds de fin de mes (`buildspec.json`,
+  `cmake/windows/buildspec.cmake`).
+- **CI compila y ejecuta los tests unitarios** en Ubuntu, Windows y macOS: nuevo job `unit-tests` en
+  `.github/workflows/build-project.yaml`, con el nuevo `tests/CMakeLists.txt`, que se configura por
+  separado sin descargar OBS, Qt ni FFmpeg (`cmake -S tests -B build_tests`) y también sirve para la
+  ruta `-DTRIGGLOW_BUILD_TESTS=ON` del proyecto principal. Se ejecuta en PRs y pushes, y bloquea el
+  job de release.
+- Versión subida a 0.5.1 en `buildspec.json` y en el script del instalador de Windows.
+
+**Limitaciones conocidas:**
+- **Salida 1440p a 60 fps.** Con una *salida* de 2560x1440 (no solo el lienzo) el buffer también es
+  1440p, y la compresión sigue ejecutándose dentro del hilo gráfico de OBS: a 30 fps debería
+  funcionar, a 60 fps todavía puede sobrecargar OBS. Sacar la compresión del hilo gráfico (objetivo
+  1440p60) es el plan para la v0.6.0 — ver `docs/ROADMAP-es.md`.
+- Cuando el presupuesto de RAM recorta el ring, el vídeo se retrasa el tramo exacto (fraccionario)
+  y el audio en segundos enteros, así que pueden quedar hasta ~1 s separados. Alinearlos también
+  está previsto para la v0.6.0.
+
 ## v0.5.0 — 2026-10-04 (Early Access)
 
 **Añadido:**

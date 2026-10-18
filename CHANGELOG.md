@@ -2,6 +2,113 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.5.1 — 2026-10-18 (Early Access)
+
+Performance hotfix. With a canvas larger than the output (reported live: 2560x1440 canvas,
+1920x1080 output at 60 fps), OBS showed **"Encoding overloaded"** as soon as the delay was enabled.
+
+**Fixed / Performance:**
+- **"Encoding overloaded" with the delay on when the canvas is larger than the output.** The video
+  buffer was stored at canvas resolution, so with a 1440p canvas streamed at 1080p the plugin
+  MJPEG-compressed and decompressed every buffered frame at 1440p inside OBS's graphics thread:
+  14.3/17.4 ms p50/p95 per frame, most of the 16.7 ms a 60 fps frame has, and OBS fell behind.
+  Those extra pixels were discarded by OBS's own output rescale anyway. The buffer now never
+  exceeds OBS's output resolution (Settings → Video → Output (Scaled) Resolution), and together
+  with the multi-threaded compression below the same setup costs ~5.2/5.9 ms p50/p95. You can go
+  back to a 2560x1440 canvas with a 1920x1080 output. `EnsureRingSized()` and the dock estimate
+  both go through the new pure sizing function `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`,
+  no libobs/FFmpeg dependency) with the canvas (`obs_video_info::base_*`) and output (`output_*`)
+  geometry. The ceiling is a uniform scale, `min(1, max(outW/baseW, outH/baseH))`, which keeps
+  the aspect ratio and never goes below the output on either axis; it only applies when the
+  buffered target is canvas-sized (the live scene). See `docs/SPEC.md` §3.5.
+- **Multi-threaded MJPEG compression.** The encoder splits each frame into slices compressed in
+  parallel, up to 4 threads depending on the CPU (one per 4 logical CPUs: 4 on an 8-core/16-thread
+  CPU, 1 on a 4-thread one). At 1080p the plugin's cost on OBS's graphics thread drops from
+  8.6/10.4 to 5.2/5.9 ms p50/p95 per frame. `thread_type = FF_THREAD_SLICE` is set explicitly: with
+  only `thread_count > 1`, FFmpeg picks frame threading for MJPEG, `receive_packet()` returns
+  `EAGAIN` within the same tick and every frame would be stored raw. If FFmpeg still comes up
+  frame-threaded, the encoder is reopened single-threaded with a WARN. Encode path alone at 1080p:
+  5.1 → 1.8 ms p50, same total CPU, ~3.5% bigger frames.
+- **Each delayed frame is decoded and uploaded once, however many views are open.** OBS renders
+  the scene once per view (Program, preview, projectors, multiview), and every one of those calls
+  used to decompress and upload the same delayed frame to the GPU again. Now it happens at most
+  once per frame; extra views just redraw it. If a frame can't be shown (never captured, or it
+  fails to decode), the last one is repeated instead of drawing black: a one-frame stutter that
+  never stretches the delay. The cache is keyed by slot index + capture timestamp and invalidated
+  in `ReleaseRing()`/`ReleaseSizedGpuObjects()`, so a repeated frame never comes from a previous
+  cycle.
+- **Exact frame interval at fractional frame rates.** At 59.94 fps the capture interval was
+  `1e9 / 59` ns, so almost one real frame per second was lost. It is now `1e9 × fps_den / fps_num`
+  (16,683,333 ns at 59.94), used for capture, the ring span and its sizing. The effective delay
+  that keeps audio in sync (`get_effective_delay_seconds`) uses rational arithmetic as well:
+  multiplying by the truncated interval could floor a span of exactly 1800 frames at 60 fps (30 s)
+  to 29 s.
+- **Delay stuck on after closing OBS while Active (the v0.5.0 fix didn't work).** If OBS was closed
+  with the delay on, the next start left the live scene delayed for good while the dock said
+  "Inactive". v0.5.0 tried to switch those filters off on load, but it enumerated with
+  `obs_enum_sources()`, which never returns filters, so it disabled nothing. It now walks the
+  filters (`obs_source_enum_filters`) of inputs, groups, scenes and the global audio sources, with
+  every filter switched off outside libobs locks. Known limitation: this runs once, when OBS
+  finishes loading, not when you switch scene collection without restarting OBS.
+- **Dock tooltip and filter property text for the minimum quality corrected.** They said the
+  delayed video "never drops below" that resolution, which stopped being true with the output
+  ceiling (see Changed).
+
+**Changed:**
+- **"Minimum quality" is a floor for the RAM reduction, bounded by OBS's output.** When RAM is
+  short it still decides how far the buffer may shrink (rather than go below it, fewer seconds are
+  stored), but it no longer raises the buffer above the output resolution: with a 720p output the
+  buffer is 720p even with a 1080p minimum. Storing more rows than OBS emits bought nothing.
+- **The `compression check` log line is replaced by `perf check`** (below), which carries the same
+  compression numbers.
+
+**Added:**
+- **`perf check` line in the OBS log.** Every 10 s while the delay is on (Filling and Active), plus
+  a last one when the delay is disabled or OBS closes. It reports the buffer resolution and whether
+  it is capped (`capped to OBS output …`, `not capped …`, `cap off …`), p50/p95/max timings per
+  phase (whole render, readback, encode, decode, upload), calls/captures/uploads per second,
+  repeated frames (`holds`), raw fallbacks, OBS's own rendered/lagged/skipped frame counters over
+  the same window, compression ratio and ring memory. It's what support reads when the delay seems
+  to cost too much; field-by-field guide in `docs/TROUBLESHOOTING.md`. Fixed 4096-sample arrays per
+  phase, no allocation per frame.
+- **Warning when an output encodes above the buffer.** If an active output has a video encoder
+  above the buffer's resolution (for example a recording rescaled to canvas resolution, or Enhanced
+  Broadcasting tracks above the output), the log warns once per encoder and delay cycle that its
+  delayed video is upscaled, with both resolutions and how to lift the cap. Checked on Enable, when
+  the buffer fills, and when streaming, recording or the Replay Buffer start; only when lifting the
+  cap would actually change the buffer. Encoders of other canvases are skipped.
+- **Hidden `buffer_output_cap` setting, for support.** `"buffer_output_cap": false` in the
+  plugin's `buffer-mode-settings.json` brings back v0.5.0's sizing (source/canvas resolution, only
+  reduced for RAM) for someone who records at canvas resolution and prefers that quality at the
+  cost of CPU. No dock control on purpose; read only when OBS loads, and confirmed in the log with
+  `output_cap=off`. Steps in `docs/TROUBLESHOOTING.md`.
+- **Unit tests for the buffer sizing math** (`tests/buffer_fit_tests.cpp`, off by default:
+  configure with `-DTRIGGLOW_BUILD_TESTS=ON`, or standalone with `cmake -S tests -B build_tests`
+  without any OBS dependency; run with `ctest`). They cover canvas = output, 1440p → 1080p,
+  4K → 1080p, output above canvas, mismatched aspect ratios, a floor above the output, RAM
+  reduction, rounding, odd dimensions, degenerate input, 59.94 fps, and budget/output sweeps.
+
+**Build / CI:**
+- **Windows FFmpeg re-pinned** to BtbN's month-end build `autobuild-2026-09-30-13-08`
+  (`ffmpeg-n9.0.2-17-g2a571b6068`, same 9.0 branch and DLLs: avcodec-63, avutil-61, swresample-7).
+  The previous pin, `autobuild-2026-10-03-18-14` (`n9.0.2-22`), was deleted upstream and returned
+  404, which broke the Windows build at configure. BtbN deletes its daily autobuilds after about two
+  weeks but keeps the month-end ones, so only month-end builds are pinned from now on
+  (`buildspec.json`, `cmake/windows/buildspec.cmake`).
+- **CI builds and runs the unit tests** on Ubuntu, Windows and macOS: new `unit-tests` job in
+  `.github/workflows/build-project.yaml`, using the new `tests/CMakeLists.txt`, which configures on
+  its own without downloading OBS, Qt or FFmpeg (`cmake -S tests -B build_tests`) and also backs the
+  top-level `-DTRIGGLOW_BUILD_TESTS=ON` path. It runs on PRs and pushes, and gates the release job.
+- Version bumped to 0.5.1 in `buildspec.json` and the Windows installer script.
+
+**Known limitations:**
+- **1440p output at 60 fps.** With a 2560x1440 *output* (not just canvas) the buffer is 1440p too,
+  and compression still runs inside OBS's graphics thread: at 30 fps it should work, at 60 fps it
+  may still overload OBS. Moving compression off the graphics thread (target 1440p60) is the plan
+  for v0.6.0 — see `docs/ROADMAP.md`.
+- When the RAM budget trims the ring, video is delayed by the exact (fractional) span and audio by
+  whole seconds, so they can be up to ~1 s apart. Aligning them is also planned for v0.6.0.
+
 ## v0.5.0 — 2026-10-04 (Early Access)
 
 **Added:**
