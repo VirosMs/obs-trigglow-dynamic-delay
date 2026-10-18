@@ -2,6 +2,65 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## 0.6.0 (sin publicar)
+
+Rediseño de la interfaz alineado con la marca Trigglow. Para fusionar con las notas de la 0.6.0.
+
+**Cambiado / Dock:**
+- **Aspecto de marca sobre tu tema de OBS.** Tarjetas, campos y fondos siguen el tema activo de OBS
+  (oscuro, claro, alto contraste de Windows); la marca entra por tarjetas cuadradas con hairlines,
+  titulares en Archivo y etiquetas y cifras en Geist Mono (empaquetadas, ver abajo), iconos SVG en
+  lugar de glifos de texto y el degradado cian→magenta solo en la acción principal, la casilla
+  marcada y el estado Activo. Los colores se derivan de la paleta del tema en un único sitio
+  (`src/ui-tokens.*`, `src/ui-theme.*`): todo texto llega a WCAG AA (4,5:1) y todo borde de campo y
+  anillo de foco a 3:1 en las paletas de los temas de OBS 31, comprobado en
+  `tests/ui_tokens_tests.cpp`. El foco de teclado se ve en todos los controles.
+- **Tarjeta de estado**: icono, titular y chip con los segundos en cada estado, nunca solo color.
+  Preparando delay muestra una barra de progreso con "12 / 30 s" y "Faltan 18 s"; Delay activo va
+  en cian con un escudo (adiós al verde, la web no tiene verde); los errores llevan regla roja e
+  icono de alerta.
+- **Activar delay se explica**: mientras está deshabilitado, una lista indica si falta la cuenta
+  gratuita o la escena en directo.
+- **Los fallos de inicio de sesión ya no son mudos**: la tarjeta de cuenta dice si no se pudo
+  conectar con trigglow.com, si el enlace caducó, si el navegador no se abrió (con **Copiar
+  enlace**) o si la sesión terminó, y la espera se puede cancelar.
+- La rueda del ratón sobre la escena, los segundos o la calidad ya no los cambia si no tienen el
+  foco; desplaza el dock.
+- Los números siguen el idioma de OBS (`15.910 MB`, `41,2 s` en español), las resoluciones usan
+  `×` y las unidades espacio duro (`30 s`). En docks estrechos (menos de 300 px) el botón de cuenta
+  y el pie se apilan.
+- **Reportar un problema**: cabecera, etiquetas encima de su campo, errores bajo el campo con el
+  foco en él, errores de red en un banner y una fila de adjunto que dice si el log de OBS va con el
+  ticket. Los errores técnicos de red quedan en el log de OBS.
+- **Textos**: microcopy reescrito en inglés y español (tildes, sin `--`, sin glifos, los tooltips
+  más cortos de la propuesta). Los atajos se llaman "Trigglow: Activar/desactivar Dynamic Delay",
+  "Activar" y "Desactivar"; las asignaciones de teclas existentes se conservan.
+
+**Cambiado / Overlay del directo:**
+- El overlay "DELAY 30 s" es ahora **una única imagen que pinta el propio plugin** (placa tinta,
+  regla de marca, marca de Dynamic Delay, Archivo), guardada en la carpeta de configuración del
+  plugin (`overlay/delay-badge-30s.png`) y mostrada por una sola fuente de imagen. Se ve igual en
+  Windows, macOS y Linux (el texto anterior usaba Segoe UI, solo Windows) y se mueve de una pieza.
+  Queda a un 2,2 % del alto del lienzo de la esquina elegida y mantiene su tamaño relativo al lienzo
+  (el mismo que antes a 1080p).
+- La fuente de texto antigua ("Trigglow Delay Overlay Text (auto, no tocar)") se elimina sola. Si
+  le habías cambiado la fuente o el color, ese ajuste se pierde; la imagen se puede seguir moviendo
+  o escalando.
+
+**Cambiado / Nombres de los objetos que gestiona el plugin:**
+- Adiós a "(no tocar)" en todos los idiomas: la escena pasa a ser **Trigglow Delay Buffer (auto)**,
+  los filtros **Trigglow Buffer Mode Delay (auto)** y `Trigglow Audio Delay (auto) - <fuente>`,
+  y el overlay **Trigglow Delay Badge (auto)**. Las colecciones existentes se renombran una vez, en
+  su sitio, al cargarse (se conservan posición, filtros y ajustes); si un nombre nuevo ya está en uso
+  se queda el antiguo y sigue funcionando. Una acción de Stream Deck o websocket que cambie a mano a
+  la escena con el nombre antiguo hay que apuntarla al nuevo.
+
+**Empaquetado:**
+- Nuevo `data/fonts/` (subconjuntos de Archivo SemiBold/Bold y Geist Mono Medium, SIL OFL 1.1 con
+  sus `OFL-*.txt`) y `data/licenses/` (iconos de Lucide, ISC), ambos en el instalador. Sin las
+  fuentes, el plugin usa la fuente de la interfaz de OBS y lo indica una vez en el log. El plugin
+  enlaza ahora `Qt6::Svg`.
+
 ## v0.5.1 — 2026-10-18 (Early Access)
 
 Hotfix de rendimiento. Con un lienzo mayor que la salida (reportado en directo: lienzo 2560x1440,

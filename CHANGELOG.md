@@ -2,6 +2,60 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## 0.6.0 (unreleased)
+
+UI redesign aligned with the Trigglow brand. To be merged with the 0.6.0 release notes.
+
+**Changed / Dock:**
+- **Brand look on top of your OBS theme.** Cards, fields and backgrounds still follow the active OBS
+  theme (dark, light, Windows high contrast); the brand comes in through square cards with
+  hairlines, Archivo headlines and Geist Mono labels and figures (bundled, see below), SVG icons
+  instead of text glyphs, and the cyan-to-magenta gradient only on the main action, the checked box
+  and the Active state. Colors are derived from the theme's palette in one place
+  (`src/ui-tokens.*`, `src/ui-theme.*`): every text reaches WCAG AA (4.5:1) and every field border
+  and focus ring 3:1 on the palettes of OBS 31's themes, checked by `tests/ui_tokens_tests.cpp`.
+  Keyboard focus is now visible on every control.
+- **Status card**: icon, headline and a seconds chip per state, never color alone. Preparing delay
+  shows a progress bar with "12 / 30 s" and "18 s left"; Delay on is cyan with a shield (the green
+  is gone, the web has no green); errors get a red rule and an alert icon.
+- **Enable delay explains itself**: while it's disabled, a checklist shows whether the free account
+  and the live scene are missing.
+- **Sign-in failures are no longer silent**: the account card says when trigglow.com can't be
+  reached, the link expired, the browser didn't open (with **Copy link**) or the session ended, and
+  the wait can be cancelled.
+- The mouse wheel over a scene, seconds or quality control no longer changes it unless it has focus;
+  it scrolls the dock instead.
+- Numbers follow OBS's language (`15.910 MB`, `41,2 s` in Spanish), resolutions use `×`, units a
+  no-break space (`30 s`). The narrow dock (below 300 px) stacks the account button and the footer.
+- **Report a problem**: header, labels above their fields, errors under the field with focus moved
+  to it, network errors in a banner, and an attachment row that says whether the OBS log goes with
+  the ticket. Raw transport errors stay in the OBS log.
+- **Texts**: English and Spanish microcopy rewritten (Spanish accents, no `--`, no glyphs, the
+  shorter tooltips of the proposal). Hotkeys read "Trigglow: Toggle/Enable/Disable Dynamic Delay"
+  in Spanish too ("Activar/desactivar Dynamic Delay"); existing hotkey bindings are kept.
+
+**Changed / Live overlay:**
+- The "DELAY 30 s" overlay is now **one image the plugin renders itself** (ink plate, brand rule,
+  Dynamic Delay mark, Archivo), written to the plugin's config folder (`overlay/delay-badge-30s.png`)
+  and shown by a single image source. It looks the same on Windows, macOS and Linux (the old text
+  used Segoe UI, Windows only) and moves in one piece. It sits 2.2 % of the canvas height away from
+  the chosen corner and keeps its size relative to the canvas (same as before at 1080p).
+- The old text source ("Trigglow Delay Overlay Text (auto, no tocar)") is removed automatically.
+  A custom font or color applied to that text is lost; the image can still be moved or scaled.
+
+**Changed / Names of the objects the plugin manages:**
+- "(no tocar)" is gone from every language: the scene is now **Trigglow Delay Buffer (auto)**, the
+  filters **Trigglow Buffer Mode Delay (auto)** and `Trigglow Audio Delay (auto) - <source>`,
+  the overlay **Trigglow Delay Badge (auto)**. Existing collections are renamed once, in place, when
+  they load (position, filters and settings kept); if a new name is already taken the old one stays
+  and keeps working. A Stream Deck or websocket action that switches to the old scene name by hand
+  must be pointed at the new one.
+
+**Packaging:**
+- New `data/fonts/` (Archivo SemiBold/Bold, Geist Mono Medium subsets, SIL OFL 1.1 with their
+  `OFL-*.txt`) and `data/licenses/` (Lucide icons, ISC), both in the installer. Without the fonts
+  the plugin falls back to OBS's UI font and logs it once. The plugin now links `Qt6::Svg`.
+
 ## v0.5.1 — 2026-10-18 (Early Access)
 
 Performance hotfix. With a canvas larger than the output (reported live: 2560x1440 canvas,
