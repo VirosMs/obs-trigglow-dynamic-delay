@@ -551,21 +551,25 @@ void TrigglowDelayDock::BuildUi()
 	delayLockedRow_->setVisible(false);
 	configLayout->addWidget(delayLockedRow_);
 
-	// Live-updated by RefreshFitEstimate() whenever secondsSpin_/
-	// minResolutionCombo_ change -- see that method and
-	// BufferModeController::EstimateBufferFit's comment.
+	// The RAM estimate, live-updated by RefreshFitEstimate() whenever
+	// secondsSpin_/minResolutionCombo_ change -- see that method and
+	// BufferModeController::EstimateBufferFit's comment. Hidden while the
+	// degradation notice shows (RefreshPipelineHealth()), which then says
+	// what the buffer really holds.
 	configLayout->addSpacing(4);
+	fitRow_ = new QWidget(configCard);
 	{
-		auto *fitRow = new QHBoxLayout();
-		fitRow->setSpacing(6);
-		fitIcon_ = MakeIconLabel(configCard, kInlineIconSize);
-		fitLabel_ = new QLabel(this);
+		auto *fitLayout = new QHBoxLayout(fitRow_);
+		fitLayout->setContentsMargins(0, 0, 0, 0);
+		fitLayout->setSpacing(6);
+		fitIcon_ = MakeIconLabel(fitRow_, kInlineIconSize);
+		fitLabel_ = new QLabel(fitRow_);
 		fitLabel_->setWordWrap(true);
 		SetRole(fitLabel_, "hint", ui::FontRole::Hint);
-		fitRow->addWidget(fitIcon_, 0, Qt::AlignTop);
-		fitRow->addWidget(fitLabel_, 1);
-		configLayout->addLayout(fitRow);
+		fitLayout->addWidget(fitIcon_, 0, Qt::AlignTop);
+		fitLayout->addWidget(fitLabel_, 1);
 	}
+	configLayout->addWidget(fitRow_);
 
 	// Informational only, computed once from real hardware where possible
 	// (VideoDelayFilter::GetBufferBudgetBytes, see src/hardware-info.hpp) --
@@ -941,7 +945,8 @@ void TrigglowDelayDock::RefreshFitEstimate()
 	const QString width = QString::number(estimate.width);
 	const QString height = QString::number(estimate.height);
 	if (estimate.fitsFullDuration) {
-		// "All <b>30 s</b> fit at 1920x1080.": the figure in the body color, 600.
+		// "RAM fits the full <b>30 s</b> at 1920x1080.": the figure in the
+		// body color, 600.
 		const QString figure =
 			QStringLiteral("<span style=\"color:%1; font-weight:600;\">%2</span>")
 				.arg(ui::ToQColor(theme_.tokens.text).name(),
@@ -951,10 +956,19 @@ void TrigglowDelayDock::RefreshFitEstimate()
 		fitLabel_->setText(T("Dock.Fit.FullyFits").toHtmlEscaped().arg(figure, width, height));
 		ui::SetStyleProperty(fitLabel_, "tgTone", QStringLiteral("muted"));
 	} else {
+		// The whole seconds the delay really uses (bufferfit's effective
+		// delay), so the line agrees with the status chip's "41 / 60 s"; the
+		// ring's fractional span only when not even one second fits. While the
+		// delay runs both fields are locked: no advice to change them then.
+		const QLocale locale = UiLocale();
+		const QString fitted = estimate.effectiveSeconds > 0 ? locale.toString(estimate.effectiveSeconds)
+								     : locale.toString(estimate.actualSeconds, 'f', 1);
+		const BufferModeState state = bufferController_.GetStatus().state;
+		const bool locked = state == BufferModeState::Filling || state == BufferModeState::Active;
 		SetIcon(fitIcon_, ui::IconId::AlertTriangle, QStringLiteral("warning"), kInlineIconSize);
 		fitLabel_->setTextFormat(Qt::PlainText);
-		fitLabel_->setText(T("Dock.Fit.Trimmed")
-					   .arg(UiLocale().toString(estimate.actualSeconds, 'f', 1))
+		fitLabel_->setText(T(locked ? "Dock.Fit.TrimmedLocked" : "Dock.Fit.Trimmed")
+					   .arg(fitted)
 					   .arg(secondsSpin_->value())
 					   .arg(width, height));
 		ui::SetStyleProperty(fitLabel_, "tgTone", QStringLiteral("warning"));
@@ -1207,6 +1221,9 @@ void TrigglowDelayDock::RefreshPipelineHealth(const BufferModeStatus &status)
 	if (show != healthShown_) {
 		healthShown_ = show;
 		healthNotice_->setVisible(show);
+		// The notice says what the buffer holds now; the RAM estimate in the
+		// settings card (full size) would contradict it.
+		fitRow_->setVisible(!show);
 		UpdateStatusAccessibleName();
 		// Screen readers hear it appear and go, not every once-a-second poll.
 		if (QAccessible::isActive()) {

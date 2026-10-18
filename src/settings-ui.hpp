@@ -169,7 +169,9 @@ private:
 	// whatever's currently in secondsSpin_/minResolutionCombo_ -- called
 	// whenever either changes, so the user sees the tradeoff of their
 	// choice immediately, before pressing Enable. "Aconsejar segun el
-	// hardware, pero a su eleccion": never blocks anything, just warns.
+	// hardware, pero a su eleccion": never blocks anything, just warns. It's
+	// the RAM estimate (rung 0 of the buffer): what the buffer runs at right
+	// now under load is the degradation notice's job.
 	void RefreshFitEstimate();
 
 	// Wired to reportBugButton_: opens ReportBugDialog (report-bug-dialog.hpp),
@@ -252,7 +254,9 @@ private:
 	QBoxLayout *buttonRow_ = nullptr;
 	QBoxLayout *footerRow_ = nullptr;
 	// Shows what secondsSpin_/minResolutionCombo_'s current combo would
-	// actually achieve -- see RefreshFitEstimate().
+	// actually achieve in RAM -- see RefreshFitEstimate(). fitRow_ holds both;
+	// hidden while the degradation notice shows.
+	QWidget *fitRow_ = nullptr;
 	QLabel *fitIcon_ = nullptr;
 	QLabel *fitLabel_ = nullptr;
 	QLabel *budgetValue_ = nullptr;
