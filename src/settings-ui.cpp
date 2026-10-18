@@ -360,10 +360,16 @@ void TrigglowDelayDock::BuildUi()
 		RefreshSceneCombo(loadingSceneCombo_, bufferController_.GetStatus().loadingSceneName, true);
 	});
 	{
+		// "LOADING SCENE   Optional": the marker in the hint style, not a
+		// second mono uppercase eyebrow, so the two never read as one label
+		// when a narrow dock (240 px) leaves no room between them.
 		auto *row = new QHBoxLayout();
-		row->addWidget(makeEyebrow(T("Dock.Scene.Loading"), loadingSceneCombo_));
+		row->setSpacing(8);
+		row->addWidget(makeEyebrow(T("Dock.Scene.Loading"), loadingSceneCombo_), 0, Qt::AlignBottom);
 		row->addStretch(1);
-		row->addWidget(makeEyebrow(T("Dock.Optional"), nullptr));
+		auto *optional = new QLabel(T("Dock.Optional"), this);
+		SetRole(optional, "hint", ui::FontRole::Hint);
+		row->addWidget(optional, 0, Qt::AlignBottom);
 		configLayout->addLayout(row);
 	}
 	configLayout->addWidget(loadingSceneCombo_);
@@ -1068,7 +1074,8 @@ void TrigglowDelayDock::RefreshAccountUi()
 	signInButton_->setText(primaryText);
 	copyLinkButton_->setVisible(showCopy);
 	copyLinkButton_->setText(linkCopied_ ? T("Dock.Account.LinkCopied") : T("Dock.Account.CopyLink"));
-	SetButtonIcon(copyLinkButton_, linkCopied_ ? ui::IconId::Check : ui::IconId::ExternalLink,
+	// Copies to the clipboard, opens nothing: a copy icon, not external-link.
+	SetButtonIcon(copyLinkButton_, linkCopied_ ? ui::IconId::Check : ui::IconId::Copy,
 		      ui::ToQColor(theme_.tokens.text));
 
 	// Re-derives the Enable button's visual enabled state too (real

@@ -3,7 +3,9 @@
   Compiled into the plugin (AUTORCC) and read through ":/trigglow/...":
   - icons/: stroke icons from the web's Icons.tsx, Lucide paths (ISC, see
     data/licenses/LICENSE-lucide.txt). "currentColor" is replaced at runtime by
-    ui-theme.cpp; check-ink/check-light are the check box's fixed-color checks.
+    ui-theme.cpp; check-ink/check-light are the check box's fixed-color checks
+    and chevron-{up,down}-{ink,light,muted} the spin box's arrows (QSS url()
+    can't tint, so each color is a file).
   - overlay/: the Dynamic Delay mark painted into the live overlay badge
     (overlay-badge.cpp), the web's trigglow-dynamic-delay-icon.png without its
     background.
@@ -16,8 +18,15 @@
     <file>icons/check.svg</file>
     <file>icons/check-ink.svg</file>
     <file>icons/check-light.svg</file>
+    <file>icons/chevron-down-ink.svg</file>
+    <file>icons/chevron-down-light.svg</file>
+    <file>icons/chevron-down-muted.svg</file>
+    <file>icons/chevron-up-ink.svg</file>
+    <file>icons/chevron-up-light.svg</file>
+    <file>icons/chevron-up-muted.svg</file>
     <file>icons/circle.svg</file>
     <file>icons/clock.svg</file>
+    <file>icons/copy.svg</file>
     <file>icons/download.svg</file>
     <file>icons/external-link.svg</file>
     <file>icons/flag.svg</file>

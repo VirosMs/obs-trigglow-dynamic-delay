@@ -177,6 +177,8 @@ const char *IconFile(IconId id)
 		return ":/trigglow/icons/circle.svg";
 	case IconId::Clock:
 		return ":/trigglow/icons/clock.svg";
+	case IconId::Copy:
+		return ":/trigglow/icons/copy.svg";
 	case IconId::Download:
 		return ":/trigglow/icons/download.svg";
 	case IconId::ExternalLink:
@@ -384,7 +386,8 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 			   "color: %1; background-color: %2; border-color: %1; }")
 		    .arg(warningText, warningTint));
 
-	// Fields. The drop-down and spin sub-controls keep the OBS theme's arrows.
+	// Fields. The combo box keeps the OBS theme's drop-down arrow; the spin
+	// box draws its own buttons (below).
 	add(QStringLiteral("QComboBox, QSpinBox, QLineEdit, QPlainTextEdit { background-color: %1; color: %2; "
 			   "border: 1px solid %3; border-radius: 0px; selection-background-color: %4; "
 			   "selection-color: %5; }")
@@ -414,6 +417,33 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 		    "QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled { color: "
 		    "%1; border-color: %2; }")
 		    .arg(disabled, line));
+	// Spin box buttons: ours, so a theme without spin box rules (OBS's System
+	// theme) never leaves Qt's fallback of two dots side by side. Two 14 px
+	// halves at the right of the padding box, a hairline apart; chevrons in the
+	// text's polarity (fixed-color files: QSS url() can't tint), muted when
+	// disabled or at the end of the range.
+	const QString arrow = uitokens::RelativeLuminance(t.text) >= 0.5 ? QStringLiteral("light")
+									 : QStringLiteral("ink");
+	add(QStringLiteral("QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: padding; width: 20px; "
+			   "height: 14px; border: none; border-left: 1px solid %1; border-radius: 0px; background: "
+			   "transparent; }")
+		    .arg(line));
+	add(QStringLiteral("QSpinBox::up-button { subcontrol-position: top right; }"));
+	add(QStringLiteral("QSpinBox::down-button { subcontrol-position: bottom right; border-top: 1px solid %1; }")
+		    .arg(line));
+	add(QStringLiteral("QSpinBox::up-button:hover, QSpinBox::down-button:hover, QSpinBox::up-button:pressed, "
+			   "QSpinBox::down-button:pressed { background-color: %1; }")
+		    .arg(accentTint));
+	add(QStringLiteral("QSpinBox::up-arrow { image: url(:/trigglow/icons/chevron-up-%1.svg); width: 10px; height: "
+			   "10px; }")
+		    .arg(arrow));
+	add(QStringLiteral("QSpinBox::down-arrow { image: url(:/trigglow/icons/chevron-down-%1.svg); width: 10px; "
+			   "height: 10px; }")
+		    .arg(arrow));
+	add(QStringLiteral("QSpinBox::up-arrow:disabled, QSpinBox::up-arrow:off { image: "
+			   "url(:/trigglow/icons/chevron-up-muted.svg); }"));
+	add(QStringLiteral("QSpinBox::down-arrow:disabled, QSpinBox::down-arrow:off { image: "
+			   "url(:/trigglow/icons/chevron-down-muted.svg); }"));
 	add(QStringLiteral("QLineEdit[tgInvalid=\"true\"], QPlainTextEdit[tgInvalid=\"true\"] { border: 1px solid %1; "
 			   "border-bottom: 2px solid %1; }")
 		    .arg(dangerText));

@@ -104,6 +104,7 @@ enum class IconId {
 	Check,
 	Circle,
 	Clock,
+	Copy,
 	Download,
 	ExternalLink,
 	Flag,
