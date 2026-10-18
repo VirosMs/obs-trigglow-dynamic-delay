@@ -131,11 +131,13 @@ public:
 	// What EnsureRingSized() would actually do for a given
 	// (requestedDelaySeconds, minResolutionHeight) at the live scene's real
 	// (sourceWidth, sourceHeight) and OBS's current video settings (canvas
-	// base*, output*, exact fpsNum/fpsDen) -- the same bufferfit::Compute()
-	// call, exposed as a pure query so the dock can warn the user BEFORE they
-	// press Enable, not just after. Never restricts their choice: this is
-	// purely informational, "aconsejar segun el hardware, pero a su eleccion"
-	// per the 2026-08-25 live feedback that asked for exactly this.
+	// base*, output*, exact fpsNum/fpsDen), with the output-resolution cap on
+	// or off (capToOutput, the hidden buffer_output_cap setting) -- the same
+	// bufferfit::Compute() call, exposed as a pure query so the dock can warn
+	// the user BEFORE they press Enable, not just after. Never restricts their
+	// choice: this is purely informational, "aconsejar segun el hardware, pero
+	// a su eleccion" per the 2026-08-25 live feedback that asked for exactly
+	// this.
 	struct BufferFitEstimate {
 		uint32_t width = 0;
 		uint32_t height = 0;
@@ -148,7 +150,7 @@ public:
 	static BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight,
 						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t baseWidth,
 						   uint32_t baseHeight, uint32_t outputWidth, uint32_t outputHeight,
-						   uint32_t fpsNum, uint32_t fpsDen);
+						   uint32_t fpsNum, uint32_t fpsDen, bool capToOutput);
 
 private:
 	// One buffered historical frame, plain RAM -- NOT a GPU object. See this
@@ -367,6 +369,10 @@ private:
 	// delay doesn't fit the RAM budget at this floor. Defaults to 720
 	// (kDefaultMinResolutionHeight); user-configurable via the dock.
 	uint32_t configuredMinResolutionHeight_ = 720;
+	// Hidden "buffer_output_cap" setting (bufferfit::Input::capToOutput):
+	// false = v0.5.0 sizing, no cap at OBS's output resolution. Only ever set
+	// from the plugin settings file, through ObsFrontendBridge.
+	bool configuredOutputCap_ = true;
 
 	std::vector<Slot> ring_;
 	uint32_t bufferWidth_ = 0; // Resolution every ring_ slot and the fixed GPU pool are currently sized for.

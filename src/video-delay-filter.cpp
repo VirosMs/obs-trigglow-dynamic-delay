@@ -43,6 +43,11 @@ constexpr uint64_t kPendingTimestamp = UINT64_MAX;
 constexpr const char *kFilterId = "trigglow_video_delay_filter";
 constexpr const char *kSettingDelaySeconds = "delay_seconds";
 constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
+// Hidden (no property, no dock control): false drops the v0.5.1 cap at OBS's
+// output resolution, back to v0.5.0 sizing. Pushed from the plugin settings
+// file by ObsFrontendBridge::SetBufferFilterOutputCap() on every Enable(), so
+// a value edited by hand on the filter itself would just be overwritten.
+constexpr const char *kSettingBufferOutputCap = "buffer_output_cap";
 
 // RAM budget for the ring buffer. Even stored as NV12 (1.5 bytes/pixel --
 // see Slot's comment in video-delay-filter.hpp for why it's NV12 and not
@@ -308,7 +313,8 @@ uint64_t VideoDelayFilter::GetBufferBudgetBytes()
 VideoDelayFilter::BufferFitEstimate
 VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight, uint32_t sourceWidth,
 				    uint32_t sourceHeight, uint32_t baseWidth, uint32_t baseHeight,
-				    uint32_t outputWidth, uint32_t outputHeight, uint32_t fpsNum, uint32_t fpsDen)
+				    uint32_t outputWidth, uint32_t outputHeight, uint32_t fpsNum, uint32_t fpsDen,
+				    bool capToOutput)
 {
 	bufferfit::Input in;
 	in.sourceWidth = sourceWidth;
@@ -323,6 +329,7 @@ VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t min
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
 	in.compressionRatio = kAssumedCompressionRatio;
+	in.capToOutput = capToOutput;
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return {};
@@ -535,7 +542,12 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 	};
 
 	char geometry[160];
-	if (lastFit_.cappedByOutput) {
+	if (!lastFitInput_.capToOutput) {
+		std::snprintf(geometry, sizeof(geometry),
+			      "cap off (buffer_output_cap=false), source %ux%u, output %ux%u%s",
+			      lastFitInput_.sourceWidth, lastFitInput_.sourceHeight, lastFitInput_.outputWidth,
+			      lastFitInput_.outputHeight, lastFit_.reducedByRam ? ", reduced for RAM" : "");
+	} else if (lastFit_.cappedByOutput) {
 		std::snprintf(geometry, sizeof(geometry), "capped to OBS output %ux%u, canvas %ux%u%s",
 			      lastFitInput_.outputWidth, lastFitInput_.outputHeight, lastFitInput_.baseWidth,
 			      lastFitInput_.baseHeight, lastFit_.reducedByRam ? ", reduced for RAM" : "");
@@ -971,6 +983,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	in.minResolutionHeight = configuredMinResolutionHeight_;
 	in.budgetBytes = GetBufferBudget();
 	in.compressionRatio = kAssumedCompressionRatio;
+	in.capToOutput = configuredOutputCap_;
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return;
@@ -994,6 +1007,12 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	}
 	if (fit.cappedByOutput) {
 		TRIGGLOW_LOG_INFO(kComponent, "buffering at %ux%u (capped to OBS output %ux%u, canvas %ux%u)",
+				  fit.bufferWidth, fit.bufferHeight, in.outputWidth, in.outputHeight, in.baseWidth,
+				  in.baseHeight);
+	} else if (!in.capToOutput) {
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "buffering at %ux%u with the output-resolution cap off (buffer_output_cap=false; "
+				  "OBS output %ux%u, canvas %ux%u)",
 				  fit.bufferWidth, fit.bufferHeight, in.outputWidth, in.outputHeight, in.baseWidth,
 				  in.baseHeight);
 	}
@@ -1186,6 +1205,14 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 	if (minHeight != configuredMinResolutionHeight_) {
 		configuredMinResolutionHeight_ = minHeight;
 		TRIGGLOW_LOG_INFO(kComponent, "minimum resolution height set to %up", configuredMinResolutionHeight_);
+	}
+
+	// GetDefaults() makes this true unless the plugin pushed false.
+	const bool outputCap = obs_data_get_bool(settings, kSettingBufferOutputCap);
+	if (outputCap != configuredOutputCap_) {
+		configuredOutputCap_ = outputCap;
+		TRIGGLOW_LOG_INFO(kComponent, "output-resolution cap %s (buffer_output_cap=%s)",
+				  outputCap ? "on" : "off", outputCap ? "true" : "false");
 	}
 
 	// Always reset, even if seconds didn't change: Enable() calls this via
@@ -1732,6 +1759,7 @@ obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 			     "guardar menos segundos de los pedidos. Un valor mas alto guarda menos tiempo real "
 			     "con el mismo presupuesto de RAM.");
 
+	// buffer_output_cap is deliberately not listed (see kSettingBufferOutputCap).
 	return props;
 }
 
@@ -1739,6 +1767,7 @@ void VideoDelayFilter::GetDefaults(obs_data_t *settings)
 {
 	obs_data_set_default_int(settings, kSettingDelaySeconds, 0);
 	obs_data_set_default_int(settings, kSettingMinResolutionHeight, kDefaultMinResolutionHeight);
+	obs_data_set_default_bool(settings, kSettingBufferOutputCap, true);
 }
 
 } // namespace trigglow

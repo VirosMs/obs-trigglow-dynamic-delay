@@ -149,6 +149,9 @@ void BufferModeController::Enable()
 	}
 	bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, status_.delaySeconds);
 	bridge_.SetBufferFilterMinResolutionHeight(status_.liveSceneName, status_.minResolutionHeight);
+	// Every cycle, so the plugin settings file always wins over whatever the
+	// filter saved with the scene collection.
+	bridge_.SetBufferFilterOutputCap(status_.liveSceneName, bufferOutputCap_);
 
 	// Audio: unlike the video filter, these attach to individual leaf audio
 	// sources inside the live scene (Mic, Desktop, etc.), not the scene
@@ -182,8 +185,9 @@ void BufferModeController::Enable()
 		bridge_.SetCurrentSceneByName(status_.loadingSceneName);
 
 	SetState(BufferModeState::Filling, FormatOne(Str("Status.Filling"), std::to_string(status_.delaySeconds)));
-	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us", status_.liveSceneName.c_str(),
-			  status_.loadingSceneName.c_str(), status_.delaySeconds);
+	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s",
+			  status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
+			  bufferOutputCap_ ? "on" : "off");
 }
 
 void BufferModeController::OnFillTimerElapsed()
@@ -244,8 +248,10 @@ void BufferModeController::Toggle()
 }
 
 void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
-					std::string loadingSceneName, bool showOverlay, uint32_t overlayCorner)
+					std::string loadingSceneName, bool showOverlay, uint32_t overlayCorner,
+					bool bufferOutputCap)
 {
+	bufferOutputCap_ = bufferOutputCap;
 	status_.delaySeconds = delaySeconds;
 	status_.minResolutionHeight = minResolutionHeight;
 	status_.liveSceneName = std::move(liveSceneName);
@@ -259,8 +265,8 @@ void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResol
 
 BufferModeController::SettingsSnapshot BufferModeController::SaveSettings() const
 {
-	return {status_.delaySeconds,     status_.minResolutionHeight, status_.liveSceneName,
-		status_.loadingSceneName, status_.showOverlay,         status_.overlayCorner};
+	return {status_.delaySeconds, status_.minResolutionHeight, status_.liveSceneName, status_.loadingSceneName,
+		status_.showOverlay,  status_.overlayCorner,       bufferOutputCap_};
 }
 
 void BufferModeController::SetState(BufferModeState state, std::string message)

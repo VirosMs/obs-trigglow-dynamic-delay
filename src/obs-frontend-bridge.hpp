@@ -114,10 +114,12 @@ public:
 	// EnsureBufferWrapperScene has ever run (reads the live scene directly,
 	// not the filter), so the dock can warn the user as they adjust the
 	// seconds/quality controls, before they've pressed Enable at all.
-	// Returns a zeroed estimate if liveSceneName doesn't resolve.
+	// capToOutput must be what SetBufferFilterOutputCap() pushes (the hidden
+	// buffer_output_cap setting). Returns a zeroed estimate if liveSceneName
+	// doesn't resolve.
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(const std::string &liveSceneName,
 							      uint32_t requestedDelaySeconds,
-							      uint32_t minResolutionHeight) const;
+							      uint32_t minResolutionHeight, bool capToOutput) const;
 
 	// --- Scene switching (optional "reconnect placeholder" scene, see
 	// docs/product roadmap issue #173) ---
@@ -166,6 +168,13 @@ public:
 	// capture resolution floor (see VideoDelayFilter::EnsureRingSized).
 	// No-op (returns false) if EnsureBufferWrapperScene hasn't run yet.
 	bool SetBufferFilterMinResolutionHeight(const std::string &liveSceneName, uint32_t heightPixels) const;
+
+	// Pushes the hidden buffer_output_cap setting into the already-attached
+	// filter (false = no cap at OBS's output resolution, v0.5.0 sizing). The
+	// plugin settings file is the source of truth: BufferModeController pushes
+	// it on every Enable(), like the delay and the quality floor. No-op
+	// (returns false) if EnsureBufferWrapperScene hasn't run yet.
+	bool SetBufferFilterOutputCap(const std::string &liveSceneName, bool capToOutput) const;
 
 	// What the video filter is ACTUALLY delaying by right now, in seconds --
 	// can be less than its configured delay if the RAM budget didn't fit the

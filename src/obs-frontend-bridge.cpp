@@ -493,6 +493,22 @@ bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveScene
 	return true;
 }
 
+bool ObsFrontendBridge::SetBufferFilterOutputCap(const std::string &liveSceneName, bool capToOutput) const
+{
+	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterOutputCap(%s): FindBufferFilter returned null, no-op",
+				  capToOutput ? "true" : "false");
+		return false;
+	}
+	// Merged onto the filter's existing settings, like the two setters around.
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "buffer_output_cap", capToOutput);
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
 bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &liveSceneName,
 							   uint32_t heightPixels) const
 {
@@ -962,7 +978,8 @@ uint64_t ObsFrontendBridge::GetBufferBudgetBytes() const
 
 VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const std::string &liveSceneName,
 									 uint32_t requestedDelaySeconds,
-									 uint32_t minResolutionHeight) const
+									 uint32_t minResolutionHeight,
+									 bool capToOutput) const
 {
 	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
 	if (!liveSource)
@@ -992,7 +1009,7 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 	}
 
 	return VideoDelayFilter::EstimateBufferFit(requestedDelaySeconds, minResolutionHeight, width, height, baseWidth,
-						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen);
+						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen, capToOutput);
 }
 
 void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, void *privateData)

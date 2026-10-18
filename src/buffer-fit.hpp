@@ -39,6 +39,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //   - Duration last: if the full delay doesn't fit the budget even at the
 //     floor, the ring gets fewer frames instead.
 //   - Exact frame rate (fpsNum/fpsDen), so 59.94 doesn't truncate to 59.
+//   - Escape hatch: capToOutput = false (the hidden "buffer_output_cap"
+//     plugin setting) drops the output cap and sizes exactly like v0.5.0:
+//     source resolution, only reduced for RAM, never below minResolutionHeight.
 namespace trigglow::bufferfit {
 
 struct Input {
@@ -54,6 +57,9 @@ struct Input {
 	uint32_t minResolutionHeight = 0;
 	uint64_t budgetBytes = 0;
 	double compressionRatio = 1.0; // Assumed bytes(raw NV12) / bytes(stored) per frame.
+	// false = no output cap at all (OutputCapScale() returns 1.0). Support's
+	// escape hatch for a case the cap gets wrong, see the header comment.
+	bool capToOutput = true;
 };
 
 struct Result {

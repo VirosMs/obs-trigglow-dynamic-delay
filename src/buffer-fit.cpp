@@ -54,6 +54,9 @@ uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen)
 
 double OutputCapScale(const Input &in)
 {
+	// Escape hatch (buffer_output_cap = false): v0.5.0 sizing, no cap.
+	if (!in.capToOutput)
+		return 1.0;
 	// Unknown geometry: no cap (same as pre-0.5.1).
 	if (in.baseWidth == 0 || in.baseHeight == 0 || in.outputWidth == 0 || in.outputHeight == 0)
 		return 1.0;

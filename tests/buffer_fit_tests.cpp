@@ -311,6 +311,65 @@ void TestFractionalFps()
 	CHECK((r.actualFrames - 1) * FrameIntervalNs(60000, 1001) >= 30ULL * 1000000000ULL);
 }
 
+void TestCapDisabled()
+{
+	g_currentTest = "16 buffer_output_cap = false (v0.5.0 sizing)";
+	// The ticket case without the cap: canvas resolution again.
+	Input ticket = MakeInput(2560, 1440, 1920, 1080, 1080);
+	ticket.capToOutput = false;
+	CHECK_NEAR(OutputCapScale(ticket), 1.0, 1e-12);
+	Result r = Compute(ticket);
+	CHECK_EQ(r.bufferWidth, 2560u);
+	CHECK_EQ(r.bufferHeight, 1440u);
+	CHECK_NEAR(r.capScale, 1.0, 1e-12);
+	CHECK(!r.cappedByOutput);
+	CHECK(!r.reducedByRam);
+	CHECK(r.fitsFullDuration);
+
+	// The quality floor is no longer limited by the output: 1080p minimum
+	// with a 720p output buffers at 1080p (with the cap it is 720p, test 6).
+	Input floorAbove = MakeInput(1920, 1080, 1280, 720, 1080);
+	floorAbove.capToOutput = false;
+	Result f = Compute(floorAbove);
+	CHECK_EQ(f.bufferWidth, 1920u);
+	CHECK_EQ(f.bufferHeight, 1080u);
+	CHECK(!f.cappedByOutput);
+
+	// Floor active and duration trimmed, as in v0.5.0: 1440p canvas, 1080p
+	// floor, 720p output, small budget. With the cap the floor would drop to
+	// the 720p ceiling; without it the 1080p floor holds (1920x1080).
+	Input tight = MakeInput(2560, 1440, 1280, 720, 1080);
+	tight.capToOutput = false;
+	tight.budgetBytes = 100 * kMiB;
+	Result t = Compute(tight);
+	CHECK_EQ(t.bufferWidth, 1920u);
+	CHECK_EQ(t.bufferHeight, 1080u);
+	CHECK(t.reducedByRam);
+	CHECK(!t.fitsFullDuration);
+	CHECK(WithinBudget(tight, t));
+
+	// When RAM, not the output, sets the size below the cap, the escape hatch
+	// changes nothing (same ideal scale, clamped to a wider range).
+	Input ram = MakeInput(2560, 1440, 1920, 1080, 720);
+	ram.budgetBytes = 800 * kMiB;
+	Result capped = Compute(ram);
+	ram.capToOutput = false;
+	Result uncapped = Compute(ram);
+	CHECK_EQ(uncapped.bufferWidth, capped.bufferWidth);
+	CHECK_EQ(uncapped.bufferHeight, capped.bufferHeight);
+	CHECK_EQ(uncapped.actualFrames, capped.actualFrames);
+	CHECK(!uncapped.cappedByOutput);
+
+	// The output resolution plays no part at all without the cap.
+	for (const uint32_t out : {2160u, 1080u, 720u, 480u}) {
+		Input in = MakeInput(3840, 2160, out * 16 / 9, out, 720);
+		in.capToOutput = false;
+		Result o = Compute(in);
+		CHECK_EQ(o.bufferWidth, 3840u);
+		CHECK_EQ(o.bufferHeight, 2160u);
+	}
+}
+
 void TestProperties()
 {
 	g_currentTest = "15 property sweep";
@@ -404,6 +463,7 @@ int main()
 	TestZeroDelay();
 	TestFractionalFps();
 	TestProperties();
+	TestCapDisabled();
 
 	std::printf("buffer_fit_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

@@ -134,7 +134,8 @@ public:
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds,
 							      uint32_t minResolutionHeight) const
 	{
-		return bridge_.EstimateBufferFit(status_.liveSceneName, requestedDelaySeconds, minResolutionHeight);
+		return bridge_.EstimateBufferFit(status_.liveSceneName, requestedDelaySeconds, minResolutionHeight,
+						 bufferOutputCap_);
 	}
 
 	// Called once by the dock's fill timer after status_.delaySeconds has
@@ -146,8 +147,14 @@ public:
 	// Deliberately never auto-Enable()s on load, same reasoning as
 	// DelayController: this creates/modifies OBS scenes, which should never
 	// happen silently at obs_module_load() time.
+	//
+	// bufferOutputCap is the hidden "buffer_output_cap" key of
+	// buffer-mode-settings.json (no dock control, by design): false turns off
+	// the v0.5.1 cap at OBS's output resolution (VideoDelayFilter then sizes
+	// like v0.5.0). Only read at load, so changing it needs an OBS restart.
 	void LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
-			  std::string loadingSceneName, bool showOverlay = true, uint32_t overlayCorner = 0);
+			  std::string loadingSceneName, bool showOverlay = true, uint32_t overlayCorner = 0,
+			  bool bufferOutputCap = true);
 	struct SettingsSnapshot {
 		uint32_t delaySeconds;
 		uint32_t minResolutionHeight;
@@ -155,6 +162,7 @@ public:
 		std::string loadingSceneName;
 		bool showOverlay;
 		uint32_t overlayCorner;
+		bool bufferOutputCap;
 	};
 	SettingsSnapshot SaveSettings() const;
 
@@ -202,6 +210,7 @@ private:
 	void UpdateOverlay();
 
 	uint32_t effectiveDelaySeconds_ = 0; // Set by SyncAudioDelayToVideoEffective().
+	bool bufferOutputCap_ = true;        // Hidden buffer_output_cap setting, see LoadSettings().
 
 	ObsFrontendBridge &bridge_;
 	BufferModeStatus status_;

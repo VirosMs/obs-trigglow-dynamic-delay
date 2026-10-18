@@ -117,15 +117,22 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 
 	bool showOverlay = obs_data_has_user_value(data, "show_overlay") ? obs_data_get_bool(data, "show_overlay")
 									 : true;
+	// Hidden support switch, no UI anywhere (see
+	// BufferModeController::LoadSettings): "buffer_output_cap": false brings
+	// back v0.5.0's buffer sizing. Absent = true. Read only here, at load.
+	const bool bufferOutputCap = obs_data_has_user_value(data, "buffer_output_cap")
+					     ? obs_data_get_bool(data, "buffer_output_cap")
+					     : true;
 
 	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
 				loadingScene ? loadingScene : "", showOverlay,
-				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")));
-	obs_data_release(data);
+				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")), bufferOutputCap);
 
-	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\")",
+	TRIGGLOW_LOG_INFO(kComponent,
+			  "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\", output_cap=%s)",
 			  delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
-			  loadingScene ? loadingScene : "");
+			  loadingScene ? loadingScene : "", bufferOutputCap ? "on" : "off");
+	obs_data_release(data);
 }
 
 void SaveBufferSettings(const trigglow::BufferModeController &controller)
@@ -148,6 +155,11 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 	obs_data_set_string(data, "loading_scene", snapshot.loadingSceneName.c_str());
 	obs_data_set_bool(data, "show_overlay", snapshot.showOverlay);
 	obs_data_set_int(data, "overlay_corner", snapshot.overlayCorner);
+	// This file is rewritten from scratch here, so the hidden switch has to
+	// be written back or a support-set false would be lost on the next exit.
+	// Only when off: everyone else's file stays exactly as before.
+	if (!snapshot.bufferOutputCap)
+		obs_data_set_bool(data, "buffer_output_cap", false);
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 
