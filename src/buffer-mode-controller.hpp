@@ -58,9 +58,11 @@ enum class BufferModeState {
 struct BufferModeStatus {
 	BufferModeState state = BufferModeState::Inactive;
 	uint32_t delaySeconds = 5;
-	// Floor on the delayed video's resolution -- VideoDelayFilter never
-	// captures shorter than this, shortening the ACTUAL buffered duration
-	// instead if delaySeconds doesn't fit the VRAM budget at this height.
+	// Floor for the RAM reduction of the delayed video's resolution --
+	// VideoDelayFilter never reduces below this for RAM, shortening the ACTUAL
+	// buffered duration instead if delaySeconds doesn't fit the RAM budget at
+	// this height. It never raises the buffer above OBS's output resolution,
+	// though (v0.5.1): a 720p output buffers at 720p even with 1080p here.
 	// See VideoDelayFilter::EnsureRingSized. 720 matches
 	// kDefaultMinResolutionHeight.
 	uint32_t minResolutionHeight = 720;

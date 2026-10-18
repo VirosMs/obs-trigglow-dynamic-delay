@@ -178,11 +178,14 @@ uint64_t GetBufferBudget()
 // Quality now wins over duration, not the other way around (flipped
 // 2026-08-25 after live feedback: a 30s buffer downscaled to 727x409 "looks
 // terrible" — correct, that's what honoring the full 30s at this budget
-// actually costs). EnsureRingSized() never captures below
+// actually costs). The RAM reduction in EnsureRingSized() never goes below
 // configuredMinResolutionHeight_ pixels tall; if the full requested delay
 // doesn't fit the budget at that floor, it shortens the ACTUAL buffered
 // duration instead (same "last resort" trimming the old design used, just
-// now the normal case for long delays instead of a rare edge case).
+// now the normal case for long delays instead of a rare edge case). Since
+// v0.5.1 the buffer also never exceeds OBS's output resolution, and that
+// ceiling wins over this floor: a 720p output buffers at 720p even with a
+// 1080p minimum (bufferfit::Compute()).
 constexpr uint32_t kDefaultMinResolutionHeight = 720;
 
 // UI slider cap. The real enforcement is EnsureRingSized()'s budget math —
@@ -1699,10 +1702,15 @@ void VideoDelayFilter::GetEffectiveDelaySecondsTask(void *param)
 {
 	auto *query = static_cast<EffectiveDelayQuery *>(param);
 	VideoDelayFilter *filter = query->filter;
-	// The ring's span ((slots - 1) frames at the exact fps_num/fps_den, the
-	// same span Render() caps the video delay at), floored to whole seconds
-	// for the audio side. Rational math rather than slots * frameIntervalNs_:
-	// the truncated interval would floor e.g. 1800 slots at 60fps to 29s.
+	// The ring's span ((slots - 1) frames at the exact fps_num/fps_den),
+	// floored to whole seconds: BufferModeController gives audio this value
+	// when it is below the requested delay. Video doesn't use it: Render()
+	// caps the video delay at the unfloored span. So when the RAM budget
+	// trims the ring, video is delayed by the fractional span and audio by
+	// this whole number, up to ~1s apart (known, aligning them is v0.6.0
+	// work). With the full delay in the ring both are the requested delay.
+	// Rational math rather than frames * frameIntervalNs_: the truncated
+	// interval would floor e.g. a 1800-frame span at 60fps to 29s.
 	const uint64_t spanFrames = filter->ring_.empty() ? 0 : static_cast<uint64_t>(filter->ring_.size() - 1);
 	const auto seconds = static_cast<uint32_t>(spanFrames * std::max<uint32_t>(1, filter->fpsDen_) /
 						   std::max<uint32_t>(1, filter->fpsNum_));
@@ -1755,9 +1763,10 @@ obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 	obs_property_list_add_int(qualityProp, "720p", 720);
 	obs_property_list_add_int(qualityProp, "1080p", 1080);
 	obs_property_set_long_description(
-		qualityProp, "Nunca se baja de esta resolucion para el tramo delayed, aunque eso signifique "
-			     "guardar menos segundos de los pedidos. Un valor mas alto guarda menos tiempo real "
-			     "con el mismo presupuesto de RAM.");
+		qualityProp, "Suelo para la reduccion por RAM: antes que bajar de esta resolucion, el tramo delayed "
+			     "guarda menos segundos de los pedidos. Pero el buffer nunca supera la resolucion de "
+			     "salida de OBS: con una salida de 720p se guarda a 720p aunque el minimo sea 1080p. "
+			     "Un valor mas alto guarda menos tiempo real con el mismo presupuesto de RAM.");
 
 	// buffer_output_cap is deliberately not listed (see kSettingBufferOutputCap).
 	return props;

@@ -77,11 +77,13 @@ extern "C" {
 // Memory is still the hard constraint, not CPU: even at NV12's 1.5
 // bytes/pixel, 1920x1080@60fps is still ~178MB PER SECOND of buffered
 // history. EnsureRingSized() picks a buffer budget from the machine's total
-// system RAM (src/hardware-info.hpp) and never captures below a
-// configurable minimum resolution (quality floor, user-chosen) -- if the
-// full requested delay doesn't fit the budget at that floor, the ACTUAL
+// system RAM (src/hardware-info.hpp) and never reduces below a
+// configurable minimum resolution for RAM (quality floor, user-chosen) -- if
+// the full requested delay doesn't fit the budget at that floor, the ACTUAL
 // buffered duration shortens instead (flipped 2026-08-25 after live feedback
 // that always honoring the full duration made long delays look terrible).
+// Since v0.5.1 it also never buffers above OBS's output resolution, which
+// wins over that floor (src/buffer-fit.hpp).
 //
 // v0.3.0 (2026-08-27, TRIGGLOW_HAVE_FFMPEG platforms only -- Windows/Linux
 // for now, see CMakeLists.txt): each ring slot additionally gets MJPEG-
@@ -363,11 +365,14 @@ private:
 
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	uint32_t configuredDelaySeconds_ = 0;
-	// Floor on the ring's capture height, in pixels -- quality wins over
-	// duration: EnsureRingSized() never captures shorter than this, and
-	// shortens the ACTUAL buffered seconds instead if the full requested
-	// delay doesn't fit the RAM budget at this floor. Defaults to 720
-	// (kDefaultMinResolutionHeight); user-configurable via the dock.
+	// Floor for the RAM reduction of the ring's capture height, in pixels --
+	// quality wins over duration: EnsureRingSized() never reduces below this
+	// for RAM, and shortens the ACTUAL buffered seconds instead if the full
+	// requested delay doesn't fit the RAM budget at this floor. Not a floor
+	// above OBS's output resolution, though: since v0.5.1 the buffer never
+	// exceeds that (a 720p output buffers at 720p even with a 1080p minimum).
+	// Defaults to 720 (kDefaultMinResolutionHeight); user-configurable via
+	// the dock.
 	uint32_t configuredMinResolutionHeight_ = 720;
 	// Hidden "buffer_output_cap" setting (bufferfit::Input::capToOutput):
 	// false = v0.5.0 sizing, no cap at OBS's output resolution. Only ever set
