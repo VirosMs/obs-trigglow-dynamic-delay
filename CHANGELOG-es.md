@@ -12,26 +12,37 @@ Rediseño de la interfaz alineado con la marca Trigglow. Para fusionar con las n
   titulares en Archivo y etiquetas y cifras en Geist Mono (empaquetadas, ver abajo), iconos SVG en
   lugar de glifos de texto y el degradado cian→magenta solo en la acción principal, la casilla
   marcada y el estado Activo. Los colores se derivan de la paleta del tema en un único sitio
-  (`src/ui-tokens.*`, `src/ui-theme.*`): todo texto llega a WCAG AA (4,5:1) y todo borde de campo y
-  anillo de foco a 3:1 en las paletas de los temas de OBS 31, comprobado en
-  `tests/ui_tokens_tests.cpp`. El foco de teclado se ve en todos los controles.
+  (`src/ui-tokens.*`, `src/ui-theme.*`): todo texto, placeholders incluidos, llega a WCAG AA (4,5:1)
+  y todo borde de campo y anillo de foco a 3:1 en las paletas de los temas de OBS 31 (Yami y sus
+  variantes Grey, Light, Classic, Acri y Rachni), comprobado en `tests/ui_tokens_tests.cpp`. El foco
+  de teclado se ve en todos los controles, y el área de desplazamiento del dock ya no es una primera
+  parada del tabulador invisible.
 - **Tarjeta de estado**: icono, titular y chip con los segundos en cada estado, nunca solo color.
   Preparando delay muestra una barra de progreso con "12 / 30 s" y "Faltan 18 s"; Delay activo va
   en cian con un escudo (adiós al verde, la web no tiene verde); los errores llevan regla roja e
-  icono de alerta.
+  icono de alerta. Delay activo muestra los segundos que de verdad recibe tu audiencia, los mismos
+  que el overlay del directo: si la RAM recorta el delay (60 s elegidos, caben 35) el chip pone
+  "35 / 60 s" en ámbar y la línea de detalle explica por qué.
 - **Activar delay se explica**: mientras está deshabilitado, una lista indica si falta la cuenta
   gratuita o la escena en directo.
+- **Selector de escena en directo**: no hay nada preseleccionado ("Elige una escena…") hasta que
+  eliges una, así que también se puede elegir la primera y el campo nunca muestra una escena que la
+  lista da por pendiente; una escena guardada que ya no existe cuenta como no elegida. La escena
+  auxiliar del plugin ya no se ofrece como escena en directo ni de carga.
 - **Los fallos de inicio de sesión ya no son mudos**: la tarjeta de cuenta dice si no se pudo
   conectar con trigglow.com, si el enlace caducó, si el navegador no se abrió (con **Copiar
   enlace**) o si la sesión terminó, y la espera se puede cancelar.
 - La rueda del ratón sobre la escena, los segundos o la calidad ya no los cambia si no tienen el
-  foco; desplaza el dock.
+  foco; desplaza el dock. El campo de segundos dibuja sus propias flechas, así que los temas sin
+  estilo para ese control (el tema System de OBS) ya no muestran dos puntos.
 - Los números siguen el idioma de OBS (`15.910 MB`, `41,2 s` en español), las resoluciones usan
   `×` y las unidades espacio duro (`30 s`). En docks estrechos (menos de 300 px) el botón de cuenta
   y el pie se apilan.
 - **Reportar un problema**: cabecera, etiquetas encima de su campo, errores bajo el campo con el
   foco en él, errores de red en un banner y una fila de adjunto que dice si el log de OBS va con el
-  ticket. Los errores técnicos de red quedan en el log de OBS.
+  ticket. Los errores técnicos de red quedan en el log de OBS. Se abre con 460 px de ancho y se
+  puede estrechar hasta 340 px: Nombre y Email se apilan por debajo de 400 px y la nota del
+  navegador pasa encima de los botones; la ayuda del email va bajo el campo de email.
 - **Textos**: microcopy reescrito en inglés y español (tildes, sin `--`, sin glifos, los tooltips
   más cortos de la propuesta). Los atajos se llaman "Trigglow: Activar/desactivar Dynamic Delay",
   "Activar" y "Desactivar"; las asignaciones de teclas existentes se conservan.
@@ -41,25 +52,42 @@ Rediseño de la interfaz alineado con la marca Trigglow. Para fusionar con las n
   regla de marca, marca de Dynamic Delay, Archivo), guardada en la carpeta de configuración del
   plugin (`overlay/delay-badge-30s.png`) y mostrada por una sola fuente de imagen. Se ve igual en
   Windows, macOS y Linux (el texto anterior usaba Segoe UI, solo Windows) y se mueve de una pieza.
-  Queda a un 2,2 % del alto del lienzo de la esquina elegida y mantiene su tamaño relativo al lienzo
-  (el mismo que antes a 1080p).
+  Queda a un 2,2 % del lado corto del lienzo de la esquina elegida y mantiene su tamaño relativo a
+  ese lado: igual que antes en lienzos horizontales (200x58 a 1080p), y en un lienzo vertical
+  1080x1920 el tamaño de 1080p en vez de un tercio del ancho del encuadre.
+- **Si lo mueves o lo escalas en OBS, se queda así.** El plugin lo coloca en la esquina elegida la
+  primera vez y de nuevo solo cuando eliges otra esquina en el dock (o cuando cambia el tamaño del
+  lienzo, siempre que no lo hayas movido ni escalado). Si ya existe una fuente de imagen llamada
+  "Trigglow Delay Badge (auto)", se reutiliza en vez de añadir copias "... 2".
 - La fuente de texto antigua ("Trigglow Delay Overlay Text (auto, no tocar)") se elimina sola. Si
-  le habías cambiado la fuente o el color, ese ajuste se pierde; la imagen se puede seguir moviendo
-  o escalando.
+  le habías cambiado la fuente o el color, ese ajuste se pierde; la imagen se puede mover o escalar
+  y lo conserva.
 
 **Cambiado / Nombres de los objetos que gestiona el plugin:**
 - Adiós a "(no tocar)" en todos los idiomas: la escena pasa a ser **Trigglow Delay Buffer (auto)**,
   los filtros **Trigglow Buffer Mode Delay (auto)** y `Trigglow Audio Delay (auto) - <fuente>`,
   y el overlay **Trigglow Delay Badge (auto)**. Las colecciones existentes se renombran una vez, en
   su sitio, al cargarse (se conservan posición, filtros y ajustes); si un nombre nuevo ya está en uso
-  se queda el antiguo y sigue funcionando. Una acción de Stream Deck o websocket que cambie a mano a
-  la escena con el nombre antiguo hay que apuntarla al nuevo.
+  se queda el antiguo y sigue funcionando.
+- **Todo lo que se refiera a estos objetos por su nombre hay que actualizarlo**: una acción de
+  Stream Deck, obs-websocket u otro control remoto que cambie a la escena con el nombre antiguo, o
+  active los filtros o el overlay antiguos por su nombre, hay que apuntarla a los nombres "(auto)".
+- **Volver a la v0.5.1 o anterior después del cambio de nombre los duplica**: la versión antigua no
+  conoce los nombres "(auto)", así que vuelve a crear su escena auxiliar, sus filtros de delay y su
+  overlay "(no tocar)" junto a ellos (al cargar la colección desactiva los filtros "(auto)", que se
+  quedan inertes). Borra el juego que no uses; de vuelta en la 0.6.0 se usa el juego "(auto)" y el
+  "(no tocar)" sobrante no se renombra mientras su nombre nuevo esté ocupado.
+
+**Corregido:**
+- Cambiar a otra colección de escenas también desactiva ahora los filtros de delay que esa colección
+  guardó activos (una sesión cerrada con el delay activo); antes solo se limpiaba la colección
+  cargada al arrancar.
 
 **Empaquetado:**
 - Nuevo `data/fonts/` (subconjuntos de Archivo SemiBold/Bold y Geist Mono Medium, SIL OFL 1.1 con
-  sus `OFL-*.txt`) y `data/licenses/` (iconos de Lucide, ISC), ambos en el instalador. Sin las
-  fuentes, el plugin usa la fuente de la interfaz de OBS y lo indica una vez en el log. El plugin
-  enlaza ahora `Qt6::Svg`.
+  sus `OFL-*.txt`) y `data/licenses/` (iconos de Lucide, ISC), ambos en el instalador, que ahora no
+  se compila sin ellos. Si faltan en una instalación, el plugin usa la fuente de la interfaz de OBS
+  y lo indica una vez en el log. El plugin enlaza ahora `Qt6::Svg`.
 
 ## v0.5.1 — 2026-10-18 (Early Access)
 

@@ -12,24 +12,34 @@ UI redesign aligned with the Trigglow brand. To be merged with the 0.6.0 release
   hairlines, Archivo headlines and Geist Mono labels and figures (bundled, see below), SVG icons
   instead of text glyphs, and the cyan-to-magenta gradient only on the main action, the checked box
   and the Active state. Colors are derived from the theme's palette in one place
-  (`src/ui-tokens.*`, `src/ui-theme.*`): every text reaches WCAG AA (4.5:1) and every field border
-  and focus ring 3:1 on the palettes of OBS 31's themes, checked by `tests/ui_tokens_tests.cpp`.
-  Keyboard focus is now visible on every control.
+  (`src/ui-tokens.*`, `src/ui-theme.*`): every text, placeholders included, reaches WCAG AA (4.5:1)
+  and every field border and focus ring 3:1 on the palettes of OBS 31's themes (Yami and its Grey,
+  Light, Classic, Acri and Rachni variants), checked by `tests/ui_tokens_tests.cpp`. Keyboard focus
+  is visible on every control, and the dock's scroll area is no longer an invisible first tab stop.
 - **Status card**: icon, headline and a seconds chip per state, never color alone. Preparing delay
   shows a progress bar with "12 / 30 s" and "18 s left"; Delay on is cyan with a shield (the green
-  is gone, the web has no green); errors get a red rule and an alert icon.
+  is gone, the web has no green); errors get a red rule and an alert icon. Delay on shows the
+  seconds viewers really get, the same as the live overlay: when the RAM budget trims the delay
+  (60 s set, 35 s fit) the chip reads "35 / 60 s" in amber and the detail line says why.
 - **Enable delay explains itself**: while it's disabled, a checklist shows whether the free account
   and the live scene are missing.
+- **Live scene picker**: nothing is preselected ("Choose a scene…") until you pick a scene, so the
+  first one can be chosen too and the field never shows a scene the checklist says is missing; a
+  saved scene that no longer exists counts as not chosen. The plugin's helper scene is no longer
+  offered as a live or loading scene.
 - **Sign-in failures are no longer silent**: the account card says when trigglow.com can't be
   reached, the link expired, the browser didn't open (with **Copy link**) or the session ended, and
   the wait can be cancelled.
 - The mouse wheel over a scene, seconds or quality control no longer changes it unless it has focus;
-  it scrolls the dock instead.
+  it scrolls the dock instead. The seconds box draws its own arrows, so themes without spin box
+  styling (OBS's System theme) no longer show two dots.
 - Numbers follow OBS's language (`15.910 MB`, `41,2 s` in Spanish), resolutions use `×`, units a
   no-break space (`30 s`). The narrow dock (below 300 px) stacks the account button and the footer.
 - **Report a problem**: header, labels above their fields, errors under the field with focus moved
   to it, network errors in a banner, and an attachment row that says whether the OBS log goes with
-  the ticket. Raw transport errors stay in the OBS log.
+  the ticket. Raw transport errors stay in the OBS log. It opens 460 px wide and can be narrowed to
+  340 px: Name and Email stack below 400 px and the browser note moves above the buttons; the
+  email's help line sits under the email field.
 - **Texts**: English and Spanish microcopy rewritten (Spanish accents, no `--`, no glyphs, the
   shorter tooltips of the proposal). Hotkeys read "Trigglow: Toggle/Enable/Disable Dynamic Delay"
   in Spanish too ("Activar/desactivar Dynamic Delay"); existing hotkey bindings are kept.
@@ -38,23 +48,43 @@ UI redesign aligned with the Trigglow brand. To be merged with the 0.6.0 release
 - The "DELAY 30 s" overlay is now **one image the plugin renders itself** (ink plate, brand rule,
   Dynamic Delay mark, Archivo), written to the plugin's config folder (`overlay/delay-badge-30s.png`)
   and shown by a single image source. It looks the same on Windows, macOS and Linux (the old text
-  used Segoe UI, Windows only) and moves in one piece. It sits 2.2 % of the canvas height away from
-  the chosen corner and keeps its size relative to the canvas (same as before at 1080p).
+  used Segoe UI, Windows only) and moves in one piece. It sits 2.2 % of the canvas's short side away
+  from the chosen corner and keeps its size relative to that side: the same as before on landscape
+  canvases (200x58 at 1080p), and on a 1080x1920 vertical canvas the 1080p size instead of a third
+  of the frame's width.
+- **Move or resize it in OBS and it stays that way.** The plugin places it in the chosen corner the
+  first time and again only when you pick another corner in the dock (or when the canvas size
+  changes, as long as you haven't moved or resized it). An existing image source already called
+  "Trigglow Delay Badge (auto)" is reused instead of adding "... 2" copies.
 - The old text source ("Trigglow Delay Overlay Text (auto, no tocar)") is removed automatically.
-  A custom font or color applied to that text is lost; the image can still be moved or scaled.
+  A custom font or color applied to that text is lost; the image can be moved or scaled and keeps
+  it.
 
 **Changed / Names of the objects the plugin manages:**
 - "(no tocar)" is gone from every language: the scene is now **Trigglow Delay Buffer (auto)**, the
   filters **Trigglow Buffer Mode Delay (auto)** and `Trigglow Audio Delay (auto) - <source>`,
   the overlay **Trigglow Delay Badge (auto)**. Existing collections are renamed once, in place, when
   they load (position, filters and settings kept); if a new name is already taken the old one stays
-  and keeps working. A Stream Deck or websocket action that switches to the old scene name by hand
-  must be pointed at the new one.
+  and keeps working.
+- **Anything that refers to these objects by name has to be updated**: a Stream Deck,
+  obs-websocket or other remote-control action that switches to the old scene name, or toggles the
+  old filters or overlay by name, must be pointed at the "(auto)" names.
+- **Going back to v0.5.1 or earlier after the rename duplicates them**: the older version doesn't
+  know the "(auto)" names, so it creates its "(no tocar)" helper scene, delay filters and overlay
+  again next to them (it switches the "(auto)" filters off when the collection loads, so they stay
+  inert). Remove the set you don't use; back on 0.6.0, the "(auto)" set is used and the leftover
+  "(no tocar)" one isn't renamed while its new name is taken.
+
+**Fixed:**
+- Switching to another scene collection now also switches off delay filters that collection saved
+  enabled (a session closed with the delay on); before, only the collection loaded at startup was
+  cleaned up.
 
 **Packaging:**
 - New `data/fonts/` (Archivo SemiBold/Bold, Geist Mono Medium subsets, SIL OFL 1.1 with their
-  `OFL-*.txt`) and `data/licenses/` (Lucide icons, ISC), both in the installer. Without the fonts
-  the plugin falls back to OBS's UI font and logs it once. The plugin now links `Qt6::Svg`.
+  `OFL-*.txt`) and `data/licenses/` (Lucide icons, ISC), both in the installer, which now fails to
+  build without them. If they go missing from an install, the plugin falls back to OBS's UI font
+  and logs it once. The plugin now links `Qt6::Svg`.
 
 ## v0.5.1 — 2026-10-18 (Early Access)
 
