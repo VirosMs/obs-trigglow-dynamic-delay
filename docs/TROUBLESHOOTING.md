@@ -25,10 +25,12 @@
   buffer in the middle of a live stream.
 - Press `Disable delay`, change what you need and press `Enable delay` again. The buffer fills
   again for the new number of seconds (with the loading scene on Program, if you set one).
-- **Don't change the delay from the filter's own properties** (the "Trigglow Buffer Mode Delay
-  (auto)" filter in OBS) while it runs. The buffer restarts behind the loading scene, but audio and
-  the dock keep the dock's delay, so a higher value there leaves video and audio apart. Use the
-  dock.
+- **The dock is the only place to set the delay.** The plugin's own filters ("Trigglow Buffer Mode
+  Delay (auto)" and the "Trigglow Audio Delay (auto) - …" ones) have no delay or quality fields in
+  their properties any more, only a note that the dock manages them. A value written to them from
+  anywhere else (OBS's Defaults button, obs-websocket) is ignored, with a WARN in the log. While the
+  delay is on, switching one of them off from outside the dock (its eye icon in the Filters dialog,
+  obs-websocket) switches it straight back on, also with a WARN: turn the delay off from the dock.
 
 ## The dock shows an error
 - The status card turns red, with an alert icon, the headline "Couldn't enable" and a detail line
@@ -232,10 +234,12 @@ again.
 - If you **record** at a resolution above your output (e.g. recording rescaled to the canvas), the
   delayed part of that recording is upscaled from the output-sized buffer; the log warns about it.
   See `buffer_output_cap` above if you prefer the old behavior.
-- To see whether your requested combination of seconds + quality actually fits your hardware, watch
-  the dock's live fit estimate line *before* pressing Enable — it warns (non-blocking) when the full
-  requested duration won't fit at the chosen quality, and tells you what will actually be achieved.
-  See `docs/SPEC.md` §3.5 for the full sizing logic.
+- To see whether your requested combination of seconds + quality actually fits your RAM, watch the
+  RAM estimate line under the dock's delay and quality fields *before* pressing Enable — "RAM fits
+  the full 30 s at 1920×1080", or "RAM only fits 41 s of 60 s at …" (non-blocking). While the delay
+  runs it gives the same whole seconds as the status chip, and it hides while the amber "Buffer
+  quality lowered" notice is shown, which then says what the buffer really holds. See
+  `docs/SPEC.md` §3.5 for the full sizing logic.
 - If you want the full requested duration guaranteed, lower the quality floor, lower the requested
   seconds, or free up system RAM (close other RAM-heavy applications) before pressing Enable.
 
@@ -255,6 +259,26 @@ again.
 - Delete the set you don't use. If you come back to v0.6.0 later, the "(auto)" set is used, and a
   leftover "(no tocar)" set isn't renamed while its new name is taken: delete it.
 
+## The delay turned off when I switched scene collection
+- **That's on purpose.** The helper scene and the delay filters belong to the collection you were
+  in, so the new one would run without any delay while the dock still said "Delay on". Since v0.6.0
+  the plugin turns the delay off before OBS leaves the old collection (switching, creating or
+  removing a collection), saves it with its filters off and its scene back on Program, and the dock
+  says: "The delay turned off because you switched scene collection. Turn it on again when you're
+  ready."
+- Duplicating or renaming a collection works the same way, with one difference: OBS 31 doesn't
+  announce those in advance, so the plugin stops the delay right after the copy has loaded,
+  switching off the copy's filters and leaving the helper scene if the copy opened on it.
+- Press `Enable delay` again in the new collection when you're ready (pick its live scene first if
+  it's different).
+
+## I deleted one of the plugin's filters while the delay was on (known issue)
+- Deleting an "(auto)" delay filter by hand while the delay is on lets the live video out without
+  delay: the helper scene then shows your live scene with no filter. It stays that way until you
+  press `Disable delay` and `Enable delay` again in the dock, which recreates the filter (the buffer
+  fills again first).
+- Don't delete or rename the plugin's scene and filters; to stop the delay, use the dock.
+
 ## The buffer never seems to fill / `Preparing delay` never reaches `Delay on`
 - Check the OBS log for `[obs-trigglow-dynamic-delay]`-prefixed warnings around the time you pressed
   Enable. Two known causes that log a specific warning instead of silently doing nothing:
@@ -268,8 +292,8 @@ again.
   exactly as long as the delay you requested — a 60-second delay takes 60 real seconds to fill
   before switching to `Delay on`.
 - If the dock goes back to `Preparing delay` while the delay was on, the buffer had to restart (an
-  OBS video settings change, or the delay changed from the filter's properties). The log says
-  `the video buffer restarted empty`; Program shows the loading scene until it refills.
+  OBS video settings change). The log says `the video buffer restarted empty`; Program shows the
+  loading scene until it refills.
 
 ## The status stays stuck in `Preparing delay` far longer than the requested seconds
 - This is a symptom, not a documented mode — the plugin has no reconnection or "Applying" state to

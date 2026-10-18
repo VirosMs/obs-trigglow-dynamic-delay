@@ -183,8 +183,8 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   y 0 s dejaba pasar la escena en directo sin delay mientras el dock decía "Delay activo". Las
   propiedades de los filtros "(auto)" ahora solo tienen una nota de que los gestiona el dock. El dock
   envía su delay y su suelo de calidad con nuevos procs `set_managed_*`, y a partir de ahí un filtro
-  ignora cualquier otro valor que se escriba en sus ajustes (el botón Predeterminados de OBS, un
-  diálogo antiguo, obs-websocket), con un WARN por cada envío. Con el delay en marcha, un filtro de
+  ignora cualquier otro valor que se escriba en sus ajustes (el botón de valores por defecto de
+  OBS, un diálogo antiguo, obs-websocket), con un WARN por cada envío. Con el delay en marcha, un filtro de
   delay desactivado desde fuera del dock (su icono del ojo en el diálogo de Filtros, obs-websocket)
   se vuelve a activar al momento, con un WARN por activación.
 - **Un delay de 0 s** (ahora solo posible en un filtro que el dock todavía no gestiona, p. ej. uno

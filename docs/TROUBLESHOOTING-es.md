@@ -26,10 +26,13 @@
   delay activo y cada tecla redimensionaba el buffer en pleno directo.
 - Pulsa `Desactivar delay`, cambia lo que necesites y vuelve a pulsar `Activar delay`. El buffer se
   vuelve a llenar con los segundos nuevos (con la escena de carga en el Programa, si elegiste una).
-- **No cambies el delay desde las propiedades del propio filtro** (el filtro "Trigglow Buffer Mode
-  Delay (auto)" en OBS) mientras está en marcha. El buffer se reinicia detrás de la escena de carga,
-  pero el audio y el dock mantienen el delay del dock, así que un valor más alto ahí deja vídeo y
-  audio separados. Usa el dock.
+- **El dock es el único sitio donde se elige el delay.** Los filtros del propio plugin ("Trigglow
+  Buffer Mode Delay (auto)" y los "Trigglow Audio Delay (auto) - …") ya no tienen campos de delay ni
+  de calidad en sus propiedades, solo una nota de que los gestiona el dock. Un valor que se les
+  escriba desde cualquier otro sitio (el botón de valores por defecto de OBS, obs-websocket) se ignora, con
+  un WARN en el log. Con el delay en marcha, desactivar uno de ellos desde fuera del dock (su icono
+  del ojo en el diálogo de Filtros, obs-websocket) lo vuelve a activar al momento, también con un
+  WARN: desactiva el delay desde el dock.
 
 ## El dock muestra un error
 - La tarjeta de estado se pone en rojo, con un icono de alerta, el titular "No se pudo activar" y
@@ -239,10 +242,12 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
 - Si **grabas** a una resolución mayor que la salida (p. ej. grabación reescalada al lienzo), el
   tramo retrasado de esa grabación se reescala hacia arriba desde el buffer del tamaño de la salida;
   el log avisa de ello. Mira `buffer_output_cap` más arriba si prefieres el comportamiento anterior.
-- Para saber si tu combinación de segundos + calidad pedida realmente cabe en tu hardware, mira la
-  línea de estimación de ajuste en vivo del dock *antes* de pulsar Activar — avisa (sin bloquear)
-  cuando la duración completa pedida no cabrá a la calidad elegida, y te dice qué se logrará
-  realmente. Ver `docs/SPEC-es.md` §3.5 para la lógica completa de dimensionado.
+- Para saber si tu combinación de segundos + calidad pedida realmente cabe en tu RAM, mira la línea
+  de estimación de RAM bajo los campos de delay y calidad del dock *antes* de pulsar Activar — "En la
+  RAM caben los 30 s completos a 1920×1080", o "En la RAM solo caben 41 s de 60 s a …" (sin
+  bloquear). Con el delay en marcha da los mismos segundos enteros que el chip de estado, y se oculta
+  mientras se muestra el aviso ámbar "Calidad del buffer reducida", que entonces dice lo que de
+  verdad guarda el buffer. Ver `docs/SPEC-es.md` §3.5 para la lógica completa de dimensionado.
 - Si quieres garantizar la duración completa pedida, baja el suelo de calidad, baja los segundos
   pedidos, o libera RAM del sistema (cierra otras aplicaciones que consuman mucha RAM) antes de
   pulsar Activar.
@@ -264,6 +269,26 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
 - Borra el juego que no uses. Si más adelante vuelves a la v0.6.0, se usa el juego "(auto)", y un
   juego "(no tocar)" sobrante no se renombra mientras su nombre nuevo esté ocupado: bórralo.
 
+## El delay se desactivó al cambiar de colección de escenas
+- **Es a propósito.** La escena auxiliar y los filtros de delay pertenecen a la colección en la que
+  estabas, así que la nueva funcionaría sin ningún delay mientras el dock seguía diciendo "Delay
+  activo". Desde la v0.6.0 el plugin desactiva el delay antes de que OBS deje la colección antigua
+  (al cambiar, crear o eliminar una colección), la guarda con sus filtros apagados y su escena de
+  vuelta en el Programa, y el dock dice: "El delay se desactivó al cambiar de colección de escenas.
+  Vuelve a activarlo cuando quieras."
+- Duplicar o renombrar una colección funciona igual, con una diferencia: OBS 31 no avisa de eso por
+  adelantado, así que el plugin detiene el delay justo después de que se cargue la copia, apaga los
+  filtros de la copia y sale de la escena auxiliar si la copia se abrió en ella.
+- Pulsa `Activar delay` de nuevo en la colección nueva cuando quieras (elige antes su escena en
+  directo si es otra).
+
+## Borré uno de los filtros del plugin con el delay en marcha (problema conocido)
+- Borrar a mano un filtro de delay "(auto)" con el delay en marcha deja salir el vídeo en directo
+  sin delay: la escena auxiliar muestra entonces tu escena en directo sin filtro. Sigue así hasta que
+  pulses `Desactivar delay` y `Activar delay` otra vez en el dock, que vuelve a crear el filtro (antes
+  el buffer se vuelve a llenar).
+- No borres ni renombres la escena ni los filtros del plugin; para parar el delay, usa el dock.
+
 ## El buffer nunca parece llenarse / `Preparando delay` nunca llega a `Delay activo`
 - Revisa el log de OBS buscando avisos con el prefijo `[obs-trigglow-dynamic-delay]` alrededor del
   momento en que pulsaste Activar. Dos causas conocidas que registran un aviso específico en vez de
@@ -279,9 +304,8 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
   esperado: la ventana de llenado dura exactamente lo mismo que el delay pedido — un delay de 60
   segundos tarda 60 segundos reales en llenarse antes de pasar a `Delay activo`.
 - Si el dock vuelve a `Preparando delay` con el delay ya activo, el buffer tuvo que reiniciarse (un
-  cambio en los ajustes de vídeo de OBS, o el delay cambiado desde las propiedades del filtro). El log
-  dice `the video buffer restarted empty`; el Programa muestra la escena de carga hasta que se
-  rellena.
+  cambio en los ajustes de vídeo de OBS). El log dice `the video buffer restarted empty`; el Programa
+  muestra la escena de carga hasta que se rellena.
 
 ## El estado se queda en `Preparando delay` mucho más tiempo que los segundos pedidos
 - Esto es un síntoma, no un modo documentado — el plugin no tiene ningún estado de reconexión ni de

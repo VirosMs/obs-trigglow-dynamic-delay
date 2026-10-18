@@ -108,8 +108,9 @@ escena en directo elegida por el usuario. En cada llamada a `video_render` (desd
    (el resto de vistas de la escena solo lo vuelven a dibujar) y lo dibuja con la técnica inversa del
    mismo shader (`DrawI420`).
 
-Un delay de 0 s (solo posible desde las propiedades del propio filtro; el mínimo del dock es 1) se
-salta todo esto desde la v0.6.0: el vídeo pasa sin retraso, sin ring y sin códec.
+Un delay de 0 s se salta todo esto desde la v0.6.0: el vídeo pasa sin retraso, sin ring y sin códec.
+El mínimo del dock es 1 y un filtro que gestiona el dock ignora cualquier otro valor (§3.3), así que
+esto solo se alcanza en un filtro que el dock todavía no gestiona (uno añadido a mano).
 
 Solo existe un **número pequeño y fijo de objetos de GPU**, sin importar cuántos segundos se estén
 almacenando — un render target de captura, tres render targets de planos, 3 slots de staging de tres
@@ -229,6 +230,20 @@ con `obs_source_enum_filters` y solo entonces apaga los que coinciden, fuera de 
 se cambia puede traerlos igual que la que se carga al arrancar), en ambos casos solo con el
 controlador en `Inactive`, justo después de la migración de nombres del §3.7.
 
+**v0.6.0: cambiar de colección de escenas desactiva el delay.** La escena contenedora y los filtros
+pertenecen a la colección en la que se crearon, así que con el delay en marcha un cambio dejaba el
+dock diciendo "Delay activo" mientras la colección nueva funcionaba sin ningún delay. En
+`OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING` (`FrontendEvent::SceneCollectionChanging`: cambiar,
+nueva, eliminar), con la colección antigua todavía cargada,
+`BufferModeController::StopForSceneCollectionChange()` detiene el delay como `Disable()` — filtros
+apagados, el Programa de vuelta en la escena que había antes de Activar —, así que la colección
+antigua se guarda así, y pasa a `Inactive` con `Status.CollectionChanged` ("El delay se desactivó al
+cambiar de colección de escenas…") y un WARN. OBS 31 no envía `COLLECTION_CHANGING` al duplicar o
+renombrar, solo `COLLECTION_CHANGED` con la copia ya cargada: entonces se hace la misma parada (la
+primera, antes de la migración y la limpieza de arriba), que apaga los filtros de la copia, y solo
+cambia el Programa si la copia se abrió en la escena contenedora, que si no mostraría la escena en
+directo sin delay.
+
 **v0.6.0: un único delay en segundos enteros para vídeo y audio (diseño A.4).**
 `bufferfit::Compute()` devuelve `effectiveDelaySeconds`: el delay pedido cuando el ring lo guarda
 entero, y si no `floor((frames − 1 − holgura) / fps)`, segundos enteros que conservan el cuarto de
@@ -236,15 +251,16 @@ segundo de holgura contra el jitter de captura. `Render()` retrasa el vídeo exa
 (`effectiveDelaySeconds × 1e9`; solo si cabe menos de un segundo usa el tramo propio del ring), y el
 audio recibe el mismo valor. `get_effective_delay_seconds` ya no salta al hilo gráfico:
 `VideoDelayFilter::PlannedEffectiveDelaySeconds()` ejecuta el mismo `bufferfit::Compute()` en el hilo
-que llama, con los ajustes actuales del filtro (`obs_source_update()` incorpora los ajustes nuevos al
-momento y solo aplaza la llamada a `Update()`), la información de vídeo de OBS y el tamaño del
-objetivo — las mismas entradas que usa `EnsureRingSized()`. Así `SyncAudioDelayToVideoEffective()` da
-al audio el valor correcto desde `Enable()` y justo después de un ajuste que cambia el propio
-controlador, no un `Render()` más tarde; un cambio de 30 → 40 s ya no deja el audio en 30 s. El
-resultado se guarda en `BufferModeStatus::effectiveDelaySeconds`, la única copia, que muestran tanto
-la tarjeta de estado del dock ("35 / 60 s" en ámbar cuando la RAM lo recorta) como el overlay. El
-tramo en sí usa aritmética racional a los `fps_num/fps_den` exactos: multiplicar por un intervalo de
-frame truncado podía redondear a 29s un tramo de 1800 frames a 60fps.
+que llama, con el delay y el suelo de calidad que envió el dock (o, en un filtro que el dock todavía
+no gestiona, sus ajustes), la información de vídeo de OBS y el tamaño del objetivo — las mismas
+entradas que usa `EnsureRingSized()`. Así `SyncAudioDelayToVideoEffective()` da al audio el valor
+correcto desde `Enable()` y justo después de un ajuste que cambia el propio controlador, no un
+`Render()` más tarde; un cambio de 30 → 40 s ya no deja el audio en 30 s. El resultado se guarda en
+`BufferModeStatus::effectiveDelaySeconds`, la única copia, que el dock y el overlay muestran desde
+`Filling`: con 60 s pedidos y 41 s que caben, el chip pone "41 / 60 s" en ámbar, el mensaje es
+`Status.FillingTrimmed` y la ventana de llenado dura 41 s, todo lo que tiene que guardar el ring
+recortado. El tramo en sí usa aritmética racional a los `fps_num/fps_den` exactos: multiplicar por
+un intervalo de frame truncado podía redondear a 29s un tramo de 1800 frames a 60fps.
 
 **v0.6.0: rellenar detrás de la escena de carga cuando el buffer se reinicia.** Un redimensionado
 duro (§4.6) — el delay, la calidad mínima o los ajustes de vídeo de OBS cambiados mientras el ring
@@ -252,18 +268,41 @@ guarda frames, o el interruptor de emergencia cambiado — vacía el ring, así 
 contenedora no mostraría nada durante `delay` segundos. El filtro emite `buffer_restarted` en su
 fuente; `ObsFrontendBridge` se conecta a esa señal al activar el filtro y la pasa al hilo de UI como
 `FrontendEvent::BufferRestarted`; `BufferModeController` vuelve a poner la escena de carga en el
-Programa (manteniendo la escena en directo renderizando), resincroniza el audio y vuelve a `Filling`
-(el dock rearma su temporizador de llenado). Para un cambio que hace el propio controlador
-(`SetDelaySeconds()` / `SetMinResolutionHeight()` en `Active`), predice el reinicio con
-`EstimateBufferFit()` y cambia el Programa antes de enviar el ajuste. Sin escena de carga, el
-Programa se queda en la escena contenedora en blanco, nunca en la escena en directo sin delay. Desde
-la v0.6.0 el dock bloquea las escenas en directo y de carga, los segundos y la calidad mínima en
-`Filling`/`Active` (un control deshabilitado también sale del orden de tabulación), así que en la
-práctica los reinicios vienen de resets de vídeo de OBS o de las propiedades del propio filtro.
-Limitación conocida: `status_.delaySeconds` (el valor del dock) sigue siendo la referencia —
-`SyncAudioDelayToVideoEffective()` solo acorta el delay del audio por debajo de él, así que un delay
-subido desde las propiedades del filtro por encima del valor del dock no lo siguen ni el audio ni el
-temporizador de llenado.
+Programa (manteniendo la escena en directo renderizando), resincroniza el audio y vuelve a
+`Filling`. `Enable()` y ese rellenado incrementan `BufferModeStatus::fillGeneration`, y el dock solo
+rearma su temporizador de llenado cuando cambia, así que otras actualizaciones de estado durante el
+llenado (activar o desactivar el overlay, cambiar su esquina) ya no reinician la cuenta atrás ni el
+paso a la escena contenedora. Para un cambio que hace el propio controlador (`SetDelaySeconds()` /
+`SetMinResolutionHeight()` en `Active`), predice el reinicio con `EstimateBufferFit()` y cambia el
+Programa antes de enviar el ajuste. Sin escena de carga, el Programa se queda en la escena
+contenedora en blanco, nunca en la escena en directo sin delay. Desde la v0.6.0 el dock bloquea las
+escenas en directo y de carga, los segundos y la calidad mínima en `Filling`/`Active` (un control
+deshabilitado también sale del orden de tabulación), y los filtros solo aplican los valores del dock
+(abajo), así que en la práctica los reinicios vienen de resets de vídeo de OBS.
+
+**v0.6.0: el dock es el único sitio donde se elige el delay.** Las propiedades de los propios
+filtros "(auto)" permitían saltarse el plugin (90 s en el diálogo del filtro de vídeo dejaban el
+vídeo a 90 s y el audio a 60; 0 s dejaba pasar la escena en directo mientras el dock decía "Delay
+activo"). Ahora:
+- Sus propiedades no tienen campos de delay ni de calidad, solo una nota (`Filter.VideoDelay.Managed`,
+  `Filter.AudioDelay.Managed`) de que los gestiona el dock.
+- `ObsFrontendBridge` envía el delay y el suelo de calidad del dock con los procs
+  `set_managed_delay_seconds` y `set_managed_min_resolution_height` de cada filtro. A partir de ahí
+  el filtro queda *gestionado*: `Update()` ignora un valor distinto en sus ajustes (el botón de
+  valores por defecto de OBS, un diálogo antiguo, obs-websocket) con un WARN por cada envío, y
+  `PlannedEffectiveDelaySeconds()` lee los valores gestionados. Un filtro todavía no gestionado
+  (añadido a mano, o cargado con una colección antes del primer Activar) sigue aplicando sus ajustes.
+- Con el delay en marcha, el puente guarda referencias débiles a los filtros que activó y escucha su
+  señal `enable`: uno desactivado desde fuera del dock (su icono del ojo en el diálogo de Filtros,
+  obs-websocket) se vuelve a activar al momento (como mucho se lo salta el frame que se está
+  renderizando), con un WARN por activación. Las mismas referencias débiles sirven para la consulta
+  de salud del dock una vez por segundo (sin recorrer la escena, sin llenar el log de WARN al
+  renombrar la escena en directo), los ajustes, la consulta del delay efectivo y para apagar los
+  filtros, así que Desactivar sigue funcionando tras renombrar la escena en directo.
+
+Limitación conocida: borrar a mano un filtro de delay "(auto)" con el delay en marcha no se detecta
+— la escena contenedora muestra entonces la escena en directo sin filtro, sin delay, hasta que el
+usuario desactiva y vuelve a activar el delay desde el dock (`Enable()` vuelve a crear el filtro).
 
 ### 3.4. Liberar el ring de RAM al hacer Disable
 
@@ -877,11 +916,17 @@ peldaño máximo, tamaño actual y completo, fps de captura y de salida, context
 compresión, causa de la última bajada, frames descartados y repetidos por minuto en la última ventana
 de telemetría, un contador de cambios) bajo un pequeño mutex; su proc `get_pipeline_state` solo lo
 copia, sin saltar nunca al hilo gráfico, así que un render con retraso no puede bloquear la interfaz.
-El dock lo consulta una vez por segundo en `Filling`/`Active` y, mientras el peldaño está por encima
-de 0, muestra "Calidad del buffer reducida" en la tarjeta de estado: qué se redujo (la resolución
-frente al tamaño completo, los fps de captura o ambos), la causa (el hilo gráfico de OBS, comprimir o
-descomprimir los fotogramas) y que el delay sigue intacto, más los fotogramas repetidos o descartados
-por minuto cuando hay alguno.
+El dock lo consulta una vez por segundo en `Filling`/`Active` (con la referencia débil al filtro que
+guarda el puente, §3.3) y, mientras el peldaño está por encima de 0, muestra "Calidad del buffer
+reducida" en la tarjeta de estado: qué se redujo (la resolución frente al tamaño completo, los fps de
+captura o ambos), la causa (el hilo gráfico de OBS, comprimir o descomprimir los fotogramas) y que el
+delay sigue intacto, más los fotogramas repetidos o descartados por minuto cuando hay alguno. La
+línea de estimación de RAM bajo los campos (peldaño 0, "En la RAM solo caben 41 s de 60 s…") se
+oculta mientras tanto, porque el aviso ya dice lo que guarda el buffer. Los lectores de pantalla lo
+oyen una vez: el nombre accesible de la tarjeta solo cambia con el estado y cuando el aviso aparece o
+se va, lo que se redujo va en su descripción, y con Qt 6.8+ un `QAccessibleAnnouncementEvent` lee el
+aviso cuando aparece o cambia su causa, y `Dock.Health.Restored` cuando se va con el delay todavía en
+marcha (con Qt anterior cambia el nombre de la tarjeta).
 
 ## 5. Alcance de v0.2.0, tal y como se distribuye realmente
 

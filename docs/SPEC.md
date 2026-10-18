@@ -100,8 +100,9 @@ chosen live scene. Every `video_render` call (as of v0.6.0):
    worker, uploads it into 3 small playback textures **only when it changes** (every other view of
    the scene just redraws it), and draws it with the same shader's reverse technique (`DrawI420`).
 
-A 0 s delay (only possible from the filter's own properties; the dock's minimum is 1) skips all of
-this since v0.6.0: the video passes through undelayed, with no ring and no codec.
+A 0 s delay skips all of this since v0.6.0: the video passes through undelayed, with no ring and no
+codec. The dock's minimum is 1 and a filter the dock manages ignores any other value (§3.3), so this
+is only reachable for a filter the dock doesn't manage yet (one added by hand).
 
 Only a **small, fixed number of GPU objects** exist regardless of how many seconds are buffered — one
 capture render target, three plane render targets, 3 staging slots of three surfaces, 3 playback
@@ -208,6 +209,18 @@ whose handlers may take those locks themselves). It runs on `FrontendEvent::Fini
 loaded at startup), both only while the controller is `Inactive`, right after the name migration of
 §3.7.
 
+**v0.6.0: switching scene collection turns the delay off.** The wrapper scene and the filters belong
+to the collection they were created in, so with the delay on a switch left the dock saying "Delay
+on" while the new collection ran without any delay. On `OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING`
+(`FrontendEvent::SceneCollectionChanging`: switch, new, remove), while the old collection is still
+loaded, `BufferModeController::StopForSceneCollectionChange()` stops the delay like `Disable()` —
+filters off, Program back on the scene shown before Enable — so the old collection is saved that
+way, and goes `Inactive` with `Status.CollectionChanged` ("The delay turned off because you switched
+scene collection…") and a WARN. OBS 31 sends no `COLLECTION_CHANGING` for a duplicate or a rename,
+only `COLLECTION_CHANGED` with the copy already loaded: the same stop runs then (first, before the
+migration and clean-up above), switching off the copy's filters, and it changes Program only if the
+copy opened on the wrapper scene, which would otherwise show the live scene undelayed.
+
 **v0.6.0: one whole-second delay for video and audio (design A.4).** `bufferfit::Compute()`
 returns `effectiveDelaySeconds`: the requested delay when the ring holds it, otherwise
 `floor((frames − 1 − slack) / fps)`, whole seconds that keep the quarter second of slack against
@@ -215,13 +228,14 @@ capture jitter. `Render()` delays video by exactly that (`effectiveDelaySeconds 
 than a second fits does it fall back to the ring's own span), and audio gets the same value.
 `get_effective_delay_seconds` no longer hops to the graphics thread:
 `VideoDelayFilter::PlannedEffectiveDelaySeconds()` runs the same `bufferfit::Compute()` on the
-caller, from the filter's current settings (`obs_source_update()` merges new settings at once and
-only defers calling `Update()`), OBS's video info and the target's size — the inputs
-`EnsureRingSized()` uses. So `SyncAudioDelayToVideoEffective()` gives audio the right value from
-`Enable()` on and right after a setting the controller changes, not a `Render()` later; a
-30 → 40 s change no longer leaves audio at 30 s. The result is stored in
-`BufferModeStatus::effectiveDelaySeconds`, the only copy, which the dock's status card ("35 / 60 s"
-in amber when RAM trims it) and the overlay both show. The span itself uses rational arithmetic at
+caller, from the delay and quality floor the dock pushed (or, for a filter the dock doesn't manage
+yet, its settings), OBS's video info and the target's size — the inputs `EnsureRingSized()` uses.
+So `SyncAudioDelayToVideoEffective()` gives audio the right value from `Enable()` on and right after
+a setting the controller changes, not a `Render()` later; a 30 → 40 s change no longer leaves audio
+at 30 s. The result is stored in `BufferModeStatus::effectiveDelaySeconds`, the only copy, which the
+dock and the overlay show from `Filling` on: with 60 s requested and 41 s fitting, the chip reads
+"41 / 60 s" in amber, the message is `Status.FillingTrimmed` and the fill window lasts 41 s, all the
+trimmed ring has to hold. The span itself uses rational arithmetic at
 the exact `fps_num/fps_den`: multiplying by a truncated frame interval could floor a 1800-frame span
 at 60fps to 29s.
 
@@ -231,16 +245,37 @@ switch flipped — empties the ring, so the wrapper would show nothing for `dela
 emits `buffer_restarted` on its source; `ObsFrontendBridge` connects to it when it enables the filter
 and hops it to the UI thread as `FrontendEvent::BufferRestarted`; `BufferModeController` then puts
 the loading scene back on Program (keeping the live scene rendering), re-syncs audio and goes back
-to `Filling` (the dock re-arms its fill timer). For a change it makes itself (`SetDelaySeconds()` /
-`SetMinResolutionHeight()` while `Active`), the controller predicts the restart with
-`EstimateBufferFit()` and switches Program before pushing the setting. Without a loading scene,
-Program stays on the blank wrapper, never on the undelayed live scene. Since v0.6.0 the dock locks
-the live and loading scenes, the seconds and the minimum quality while `Filling`/`Active` (a
-disabled control is also out of the tab order), so in practice restarts come from OBS video resets
-or the filter's own properties. Known limitation: `status_.delaySeconds` (the dock's value) stays the
-reference — `SyncAudioDelayToVideoEffective()` only ever shortens audio's delay below it, so a delay
-raised from the filter's properties above the dock's value isn't followed by audio nor by the fill
-timer.
+to `Filling`. `Enable()` and that refill bump `BufferModeStatus::fillGeneration`, and the dock
+re-arms its fill timer only when it changes, so other status updates while filling (the overlay
+toggled, its corner changed) no longer restart the countdown and the switch to the wrapper. For a
+change it makes itself (`SetDelaySeconds()` / `SetMinResolutionHeight()` while `Active`), the
+controller predicts the restart with `EstimateBufferFit()` and switches Program before pushing the
+setting. Without a loading scene, Program stays on the blank wrapper, never on the undelayed live
+scene. Since v0.6.0 the dock locks the live and loading scenes, the seconds and the minimum quality
+while `Filling`/`Active` (a disabled control is also out of the tab order), and the filters only
+apply the dock's values (below), so in practice restarts come from OBS video resets.
+
+**v0.6.0: the dock is the only place to set the delay.** The "(auto)" filters' own properties used
+to let anyone bypass the plugin (90 s in the video filter's dialog put video at 90 s and audio at
+60; 0 s passed the live scene through while the dock said "Delay on"). Now:
+- Their properties hold no delay or quality field, only a note (`Filter.VideoDelay.Managed`,
+  `Filter.AudioDelay.Managed`) that the dock manages them.
+- `ObsFrontendBridge` pushes the dock's delay and quality floor through `set_managed_delay_seconds`
+  and `set_managed_min_resolution_height` procs on each filter. From then on the filter is
+  *managed*: `Update()` ignores a different value in its settings (OBS's Defaults button, an older
+  dialog, obs-websocket) with one WARN per push, and `PlannedEffectiveDelaySeconds()` reads the
+  managed values. A filter not managed yet (added by hand, or loaded with a collection before the
+  first Enable) still applies its settings.
+- While the delay is on, the bridge keeps weak references to the filters it switched on and listens
+  to their `enable` signal: one switched off from outside the dock (its eye icon in the Filters
+  dialog, obs-websocket) is switched straight back on (at most the frame being rendered skips it),
+  with one WARN per activation. The same weak references serve the dock's once-a-second health poll
+  (no scene walk, no WARN flood when the live scene is renamed), the setters, the effective-delay
+  query and switching the filters off, so Disable still works after a live scene rename.
+
+Known limitation: deleting an "(auto)" delay filter by hand while the delay is on is not caught —
+the wrapper then shows the live scene with no filter, undelayed, until the user disables and
+re-enables the delay from the dock (`Enable()` recreates the filter).
 
 ### 3.4. Freeing the RAM ring on Disable
 
@@ -805,11 +840,17 @@ are INFO. The filter keeps a `PipelineHealth` (`src/pipeline-health.hpp`: rung, 
 now and full, capture and output fps, encode contexts and slices, cause of the last step down,
 dropped and repeated frames per minute over the last telemetry window, a change counter) under a
 small mutex; its `get_pipeline_state` proc only copies it, never hopping to the graphics thread, so
-a lagging render can't block the UI. The dock polls it once a second while `Filling`/`Active` and,
-while the rung is above 0, shows "Buffer quality lowered" in the status card: what was lowered
-(resolution against the full size, capture fps, or both), the cause (OBS's graphics thread,
-compressing or decompressing the frames) and that the delay is unchanged, plus repeated/dropped
-frames per minute when above zero.
+a lagging render can't block the UI. The dock polls it once a second while `Filling`/`Active`
+(through the bridge's weak reference to the filter, §3.3) and, while the rung is above 0, shows
+"Buffer quality lowered" in the status card: what was lowered (resolution against the full size,
+capture fps, or both), the cause (OBS's graphics thread, compressing or decompressing the frames)
+and that the delay is unchanged, plus repeated/dropped frames per minute when above zero. The RAM
+estimate line under the fields (rung 0, "RAM only fits 41 s of 60 s…") hides meanwhile, since the
+notice then says what the buffer holds. Screen readers get it once: the card's accessible name
+changes only with the state and when the notice appears or goes, what was lowered goes in its
+description, and on Qt 6.8+ a `QAccessibleAnnouncementEvent` reads the notice when it appears or its
+cause changes, and `Dock.Health.Restored` when it goes with the delay still on (older Qt keeps the
+card's name change).
 
 ## 5. Scope of v0.2.0, as actually shipped
 
