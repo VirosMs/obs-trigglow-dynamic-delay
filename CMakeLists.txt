@@ -174,6 +174,12 @@ target_sources(
     src/auth-manager.hpp
     src/win-http.cpp
     src/win-http.hpp
+    src/json.cpp
+    src/json.hpp
+    src/log-redact.cpp
+    src/log-redact.hpp
+    src/chat-text.cpp
+    src/chat-text.hpp
     src/bug-report.cpp
     src/bug-report.hpp
     src/report-bug-dialog.cpp

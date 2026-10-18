@@ -125,3 +125,20 @@ target_include_directories(pipeline_stress_tests PRIVATE "${_src}")
 target_link_libraries(pipeline_stress_tests PRIVATE Threads::Threads)
 set_target_properties(pipeline_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME pipeline_stress_tests COMMAND pipeline_stress_tests)
+
+# v0.6.0 account, Trigi and ticket client.
+function(trigglow_add_client_test name)
+  add_executable(${name} ${ARGN} check.hpp test-support.hpp)
+  target_include_directories(${name} PRIVATE "${_src}")
+  set_target_properties(${name} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+  if(WIN32)
+    target_link_libraries(${name} PRIVATE winhttp crypt32)
+  endif()
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+trigglow_add_client_test(json_tests json_tests.cpp "${_src}/json.cpp" "${_src}/json.hpp")
+# Redaction of OBS's log before it is attached to a ticket (src/log-redact.hpp).
+trigglow_add_client_test(log_redact_tests log_redact_tests.cpp "${_src}/log-redact.cpp" "${_src}/log-redact.hpp")
+# Safe rendering of Trigi's replies (src/chat-text.hpp).
+trigglow_add_client_test(chat_text_tests chat_text_tests.cpp "${_src}/chat-text.cpp" "${_src}/chat-text.hpp")
