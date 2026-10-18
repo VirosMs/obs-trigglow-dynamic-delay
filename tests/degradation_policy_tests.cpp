@@ -330,6 +330,85 @@ void TestNoOscillation()
 	CHECK_EQ(p.RungIndex(), 1u);
 }
 
+// The same, as the pipeline really behaves: the decoder works `delay`
+// seconds behind the capture, so after a rung change it keeps decoding the
+// previous rung's frames (and reporting their load) for `delay` seconds. QA's
+// simulation (decode at 84% of a frame at 1440p60, delay 30/60 s) cascaded
+// to 720p at half rate within 10 s, then climbed back on stale numbers. With
+// the metrics labelled by the rung they were measured on (Sample::decodeRung)
+// it takes one step down and stays there.
+void TestNoOscillationDelayedDecode(uint64_t delaySeconds)
+{
+	testcheck::g_currentTest = delaySeconds == 30 ? "no oscillation, decoder 30 s behind"
+						      : "no oscillation, decoder 60 s behind";
+	const std::vector<Rung> ladder = BuildLadder(2560, 1440, 720, true);
+	Policy p(ladder, BuildParallelismSteps(true), 0, true);
+	struct Change {
+		uint64_t t;
+		size_t rung;
+	};
+	std::vector<Change> history{{0, 0}};
+	auto rungAt = [&](uint64_t t) {
+		size_t rung = 0;
+		for (const Change &c : history) {
+			if (c.t <= t)
+				rung = c.rung;
+		}
+		return rung;
+	};
+	auto pixels = [&](size_t rung) {
+		return static_cast<double>(ladder[rung].width) * ladder[rung].height / (2560.0 * 1440.0);
+	};
+	const uint64_t delayNs = delaySeconds * kSecond;
+	const uint64_t start = delayNs + kSecond; // Active: the decoder is already busy.
+	std::vector<Decision> changes;
+	for (uint64_t t = start; t <= start + 400 * kSecond; t += kSecond / 4) {
+		const size_t decoded = rungAt(t - delayNs); // The rung of the frames due now.
+		Sample s = Healthy(t);
+		s.encodeP95Ms = 9.0 * pixels(p.RungIndex());
+		s.decodeRung = decoded;
+		s.decodeSamples = 120 / ladder[decoded].captureDivisor;
+		s.decodeP95Ms = 14.0 * pixels(decoded); // 84% of a frame at 2560x1440.
+		s.dueFrames = s.decodeSamples;
+		const Decision d = p.Evaluate(s);
+		if (d.action == Action::LowerQuality || d.action == Action::RaiseQuality) {
+			changes.push_back(d);
+			history.push_back({t, p.RungIndex()});
+		} else {
+			CHECK(d.action == Action::None);
+		}
+	}
+	// 2128x1194 decodes in 9.6 ms (58% of a frame): enough. Back up would
+	// predict 9.6 * 1.45 * 1.1 = 15.3 ms (92%) > 50%: never.
+	CHECK_EQ(changes.size(), 1u);
+	CHECK(!changes.empty() && changes[0].action == Action::LowerQuality && changes[0].cause == Cause::Decode);
+	CHECK_EQ(p.RungIndex(), 1u);
+
+	// Decode metrics of another rung than the current one are ignored outright,
+	// however bad (and however good: no going up on them either).
+	Policy q(ladder, BuildParallelismSteps(true), 0, true);
+	Run(q, kSecond, 3 * kSecond, [](uint64_t t) {
+		Sample s = Healthy(t);
+		s.decodeP95Ms = 0.9 * kIntervalMs;
+		return s;
+	});
+	CHECK_EQ(q.RungIndex(), 1u);
+	CHECK(Run(q, 4 * kSecond, 100 * kSecond, [](uint64_t t) {
+		      Sample s = Healthy(t);
+		      s.decodeRung = 0; // Still the full-size frames.
+		      s.decodeP95Ms = 2.0 * kIntervalMs;
+		      s.decodeMisses = s.dueFrames;
+		      return s;
+	      }).empty());
+	CHECK(Run(q, 101 * kSecond, 200 * kSecond, [](uint64_t t) {
+		      Sample s = Healthy(t);
+		      s.decodeRung = 0;
+		      s.decodeP95Ms = 0.1;
+		      return s;
+	      }).empty());
+	CHECK_EQ(q.RungIndex(), 1u);
+}
+
 void TestRecoveryOrder()
 {
 	testcheck::g_currentTest = "recovery order";
@@ -404,6 +483,8 @@ int main()
 	TestSyncMode();
 	TestHysteresisUp();
 	TestNoOscillation();
+	TestNoOscillationDelayedDecode(30);
+	TestNoOscillationDelayedDecode(60);
 	TestRecoveryOrder();
 	TestNotEnoughSamples();
 	return testcheck::Finish("degradation_policy_tests");

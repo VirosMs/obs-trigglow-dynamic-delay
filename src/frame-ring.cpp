@@ -53,7 +53,7 @@ FrameRing::FrameRing(size_t slotCount, const FrameArena::Config &arena)
 {
 }
 
-bool FrameRing::Reserve(uint64_t captureNs, Reservation &out)
+bool FrameRing::Reserve(uint64_t captureNs, Reservation &out, uint32_t tag)
 {
 	FrameArena::Allocation previous;
 	{
@@ -71,10 +71,12 @@ bool FrameRing::Reserve(uint64_t captureNs, Reservation &out)
 		header.captureNs = captureNs;
 		header.generation = g_nextGeneration.fetch_add(1, std::memory_order_relaxed);
 		header.state = SlotState::Reserved;
+		header.tag = tag;
 
 		out.index = writeIndex_;
 		out.generation = header.generation;
 		out.captureNs = captureNs;
+		out.tag = tag;
 
 		writeIndex_ = (writeIndex_ + 1) % headers_.size();
 		if (buffered_ < headers_.size())
@@ -137,6 +139,7 @@ void FrameRing::FillViewLocked(size_t index, ReadView &out)
 	out.width = header.payload.width;
 	out.height = header.payload.height;
 	out.compressed = header.payload.compressed;
+	out.tag = header.tag;
 }
 
 bool FrameRing::PinNextForDecode(uint64_t afterNs, uint64_t targetNs, uint64_t windowEndNs, uint64_t lateNs,
@@ -249,6 +252,7 @@ FrameRing::DueSlot FrameRing::Due(uint64_t targetNs) const
 	due.exists = true;
 	due.captureNs = header.captureNs;
 	due.state = header.state;
+	due.tag = header.tag;
 	return due;
 }
 

@@ -380,8 +380,8 @@ private:
 	RollingWindow renderRecent_;                // Render() wall time per call.
 	RollingWindow captureEvents_;               // One per capture attempt.
 	RollingWindow dropEvents_;                  // One per capture lost (busy slot, backpressure, staging).
-	RollingWindow dueEvents_;                   // One per new frame due in playback.
-	RollingWindow missEvents_;                  // One per due frame encoded but not decoded in time.
+	RollingWindow dueEvents_;                   // One per new frame due in playback (tag: its capture rung).
+	RollingWindow missEvents_;                  // One per due frame encoded but not decoded in time (same tag).
 	RollingWindow laggedEvents_;                // OBS lagged-frame increments (value = frames).
 	uint64_t lastObsLaggedFrames_ = UINT64_MAX; // UINT64_MAX = not read yet.
 	uint64_t healthChanges_ = 0;

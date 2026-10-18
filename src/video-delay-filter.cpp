@@ -1041,15 +1041,27 @@ void VideoDelayFilter::MaybeEvaluateDegradation(uint64_t nowNs)
 	sample.graphicsP95Ms = render.p95Ms;
 	sample.graphicsShortSamples = renderShort.samples;
 	sample.graphicsShortP50Ms = renderShort.p50Ms;
-	const CodecPipeline::RecentLoad load = pipeline_->GetRecentLoad(nowNs, kPolicyWindowNs);
+	// Every frame is tagged with the rung it was captured at (CaptureFrame()).
+	// Encode metrics: this rung's frames only. Decode metrics: the frames the
+	// decoder works on now, captured `delay` seconds ago -- right after a rung
+	// change still the previous rung's; the policy only acts on them once
+	// they're this rung's (degradation::Sample::decodeRung).
+	const auto rung = static_cast<uint32_t>(policy_.RungIndex());
+	const CodecPipeline::RecentLoad load = pipeline_->GetRecentLoad(nowNs, kPolicyWindowNs, rung);
+	uint32_t decodeTag = load.decodeTag;
+	if (decodeTag == RollingWindow::kAnyTag)
+		decodeTag = dueEvents_.NewestTag(nowNs);
+	if (decodeTag == RollingWindow::kAnyTag)
+		decodeTag = rung;
 	sample.encodeSamples = load.encode.samples;
 	sample.encodeP95Ms = load.encode.p95Ms;
 	sample.decodeSamples = load.decode.samples;
 	sample.decodeP95Ms = load.decode.p95Ms;
+	sample.decodeRung = decodeTag;
 	sample.captures = captureEvents_.Count(nowNs, kPolicyWindowNs);
 	sample.encodeDrops = dropEvents_.Count(nowNs, kPolicyWindowNs);
-	sample.dueFrames = dueEvents_.Count(nowNs, kPolicyWindowNs);
-	sample.decodeMisses = missEvents_.Count(nowNs, kPolicyWindowNs);
+	sample.dueFrames = dueEvents_.Count(nowNs, kPolicyWindowNs, decodeTag);
+	sample.decodeMisses = missEvents_.Count(nowNs, kPolicyWindowNs, decodeTag);
 	sample.obsLaggedFrames = static_cast<uint32_t>(
 		std::min<uint64_t>(laggedEvents_.Summarize(nowNs, kPolicyWindowNs).sumNs, UINT32_MAX));
 
@@ -1382,11 +1394,12 @@ void VideoDelayFilter::CaptureFrame(obs_source_t *target, uint32_t sourceWidth, 
 		HarvestStagingSlot(kick, nowNs);
 	stagingNext_ = (stagingNext_ + 1) % kStagingSlotCount;
 
-	// 2. This capture's ring slot, stamped now. Busy slot (an encoder or the
-	// decoder a whole ring behind): the capture is lost, the delayed view
-	// repeats a frame, the timestamps stay monotonic.
+	// 2. This capture's ring slot, stamped now and tagged with the current
+	// rung (the policy tells the decoder's load per rung by it). Busy slot (an
+	// encoder or the decoder a whole ring behind): the capture is lost, the
+	// delayed view repeats a frame, the timestamps stay monotonic.
 	FrameRing::Reservation reservation;
-	if (!ring_->Reserve(nowNs, reservation)) {
+	if (!ring_->Reserve(nowNs, reservation, static_cast<uint32_t>(policy_.RungIndex()))) {
 		++perf_.reserveFailures;
 		dropEvents_.Push(nowNs, 0);
 		return;
@@ -1604,12 +1617,12 @@ void VideoDelayFilter::DrawDelayed(uint32_t sourceWidth, uint32_t sourceHeight, 
 	const FrameRing::DueSlot due = ring_->Due(targetNs);
 	if (due.exists && due.captureNs > lastDueCaptureNs_) {
 		lastDueCaptureNs_ = due.captureNs;
-		dueEvents_.Push(nowNs, 0);
+		dueEvents_.Push(nowNs, 0, due.tag); // Tagged with the rung that frame was captured at.
 		if (havePlaybackFrame_ && lastShownCaptureNs_ < due.captureNs) {
 			++perf_.holds;
 			if (due.state == SlotState::Ready) {
 				++perf_.holdsLateDecode; // Encoded, but the decoder didn't get to it in time.
-				missEvents_.Push(nowNs, 0);
+				missEvents_.Push(nowNs, 0, due.tag);
 			} else if (due.state == SlotState::Dropped) {
 				++perf_.holdsDropped;
 			} else {

@@ -202,17 +202,23 @@ Decision Policy::Evaluate(const Sample &s)
 		graphicsTrigger = graphicsShort;
 	}
 
+	// Decode metrics come from frames captured `delay` seconds ago: only those
+	// captured at the current rung say anything about it.
+	const bool decodeCurrent = s.decodeRung == Sample::kSameRung || s.decodeRung == rung_;
+	const uint32_t decodeSamples = decodeCurrent ? s.decodeSamples : 0;
+	const uint32_t dueFrames = decodeCurrent ? s.dueFrames : 0;
+
 	bool encodeDown = false, decodeDown = false;
 	double encodeLoad = 0.0, decodeLoad = 0.0;
 	if (threaded_) {
 		encodeLoad = s.encodeP95Ms / (captureMs * par.contexts);
 		decodeLoad = s.decodeP95Ms / captureMs;
 		const double dropRate = s.captures > 0 ? static_cast<double>(s.encodeDrops) / s.captures : 0.0;
-		const double missRate = s.dueFrames > 0 ? static_cast<double>(s.decodeMisses) / s.dueFrames : 0.0;
+		const double missRate = dueFrames > 0 ? static_cast<double>(s.decodeMisses) / dueFrames : 0.0;
 		encodeDown = settled && ((s.encodeSamples >= t.minSamples && encodeLoad > t.workerDown) ||
 					 (s.captures >= t.minSamples && dropRate > t.dropRateDown));
-		decodeDown = settled && ((s.decodeSamples >= t.minSamples && decodeLoad > t.workerDown) ||
-					 (s.dueFrames >= t.minSamples && missRate > t.missRateDown));
+		decodeDown = settled && ((decodeSamples >= t.minSamples && decodeLoad > t.workerDown) ||
+					 (dueFrames >= t.minSamples && missRate > t.missRateDown));
 		if (encodeDown && encodeLoad <= t.workerDown)
 			encodeLoad = dropRate; // Report what actually triggered it.
 		if (decodeDown && decodeLoad <= t.workerDown)
@@ -241,7 +247,7 @@ Decision Policy::Evaluate(const Sample &s)
 
 	// --- Up (one step, predicted) ---
 	if (!settled || s.graphicsSamples < t.minSamples ||
-	    (threaded_ && (s.encodeSamples < t.minSamples || s.decodeSamples < t.minSamples))) {
+	    (threaded_ && (s.encodeSamples < t.minSamples || decodeSamples < t.minSamples))) {
 		upSinceNs_ = 0;
 		return {};
 	}

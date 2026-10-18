@@ -180,10 +180,15 @@ public:
 		uint64_t aheadSamples = 0;
 		uint32_t aheadMin = UINT32_MAX;
 	};
-	// Trailing-window load for the degradation policy.
+	// Trailing-window load for the degradation policy. Every sample carries
+	// its frame's FrameRing::Reservation::tag (the rung it was captured at).
 	struct RecentLoad {
-		RollingWindow::Summary encode; // All encode contexts.
+		RollingWindow::Summary encode; // All encode contexts, frames tagged encodeTag only.
+		// Frames tagged decodeTag only: the tag of the newest frame decoded.
+		// The decoder works `delay` seconds behind the encoders, so right after
+		// a rung change it still decodes the previous rung's frames.
 		RollingWindow::Summary decode;
+		uint32_t decodeTag = RollingWindow::kAnyTag; // kAnyTag: nothing decoded in the window.
 	};
 
 	explicit CodecPipeline(Options options);
@@ -244,7 +249,7 @@ public:
 
 	// --- Telemetry (any thread) ---
 	void TakeWindowStats(WindowStats &out);
-	RecentLoad GetRecentLoad(uint64_t nowNs, uint64_t windowNs) const;
+	RecentLoad GetRecentLoad(uint64_t nowNs, uint64_t windowNs, uint32_t encodeTag = RollingWindow::kAnyTag) const;
 	void ResetRecentLoad();
 	uint32_t ActiveEncodeContexts() const;
 	uint32_t SlicesPerContext() const;

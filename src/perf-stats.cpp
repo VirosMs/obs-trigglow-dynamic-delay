@@ -70,10 +70,11 @@ void PerfSeries::Summarize(double &p50Ms, double &p95Ms, double &maxMs)
 	maxMs = static_cast<double>(maxNs) / 1e6;
 }
 
-void RollingWindow::Push(uint64_t tNs, uint64_t valueNs)
+void RollingWindow::Push(uint64_t tNs, uint64_t valueNs, uint32_t tag)
 {
 	t_[next_] = tNs;
 	v_[next_] = Clamp32(valueNs);
+	tag_[next_] = tag;
 	next_ = (next_ + 1) % kCapacity;
 	size_ = std::min(size_ + 1, kCapacity);
 }
@@ -84,7 +85,7 @@ void RollingWindow::Clear()
 	size_ = 0;
 }
 
-RollingWindow::Summary RollingWindow::Summarize(uint64_t nowNs, uint64_t windowNs) const
+RollingWindow::Summary RollingWindow::Summarize(uint64_t nowNs, uint64_t windowNs, uint32_t tag) const
 {
 	Summary summary;
 	const uint64_t fromNs = nowNs > windowNs ? nowNs - windowNs : 0;
@@ -97,7 +98,7 @@ RollingWindow::Summary RollingWindow::Summarize(uint64_t nowNs, uint64_t windowN
 		const size_t i = (next_ + kCapacity - 1 - k) % kCapacity;
 		if (t_[i] < fromNs)
 			break;
-		if (t_[i] > nowNs)
+		if (t_[i] > nowNs || (tag != kAnyTag && tag_[i] != tag))
 			continue;
 		scratch[n++] = v_[i];
 		summary.sumNs += v_[i];
@@ -111,7 +112,7 @@ RollingWindow::Summary RollingWindow::Summarize(uint64_t nowNs, uint64_t windowN
 	return summary;
 }
 
-uint32_t RollingWindow::Count(uint64_t nowNs, uint64_t windowNs) const
+uint32_t RollingWindow::Count(uint64_t nowNs, uint64_t windowNs, uint32_t tag) const
 {
 	const uint64_t fromNs = nowNs > windowNs ? nowNs - windowNs : 0;
 	uint32_t n = 0;
@@ -119,10 +120,20 @@ uint32_t RollingWindow::Count(uint64_t nowNs, uint64_t windowNs) const
 		const size_t i = (next_ + kCapacity - 1 - k) % kCapacity;
 		if (t_[i] < fromNs)
 			break;
-		if (t_[i] <= nowNs)
+		if (t_[i] <= nowNs && (tag == kAnyTag || tag_[i] == tag))
 			++n;
 	}
 	return n;
+}
+
+uint32_t RollingWindow::NewestTag(uint64_t nowNs) const
+{
+	for (size_t k = 0; k < size_; ++k) {
+		const size_t i = (next_ + kCapacity - 1 - k) % kCapacity;
+		if (t_[i] <= nowNs)
+			return tag_[i];
+	}
+	return kAnyTag;
 }
 
 uint64_t RollingWindow::OldestNs() const

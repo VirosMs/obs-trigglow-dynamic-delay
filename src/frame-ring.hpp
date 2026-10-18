@@ -111,6 +111,7 @@ public:
 		size_t index = 0;
 		uint64_t generation = 0; // 0 = none.
 		uint64_t captureNs = 0;
+		uint32_t tag = 0; // The caller's label for the capture (the degradation rung it was taken at).
 	};
 
 	// A Ready slot pinned by a reader: `data` stays valid until Unpin().
@@ -123,6 +124,7 @@ public:
 		uint32_t width = 0;
 		uint32_t height = 0;
 		bool compressed = false;
+		uint32_t tag = 0; // Reservation::tag.
 	};
 
 	// The newest slot (any state) with captureNs <= target, for telling a
@@ -131,6 +133,7 @@ public:
 		bool exists = false;
 		uint64_t captureNs = 0;
 		SlotState state = SlotState::Free;
+		uint32_t tag = 0; // Reservation::tag.
 	};
 
 	struct Counts {
@@ -153,11 +156,12 @@ public:
 	// --- Graphics thread (the only writer of the write position) ---
 
 	// Claims the next slot for a capture taken at captureNs (clamped to never
-	// go below the previous reservation). Frees the payload it held. False --
-	// nothing changes, the capture is lost -- when that slot is still
-	// Reserved/Encoding or pinned by a reader (an encoder or the decoder is a
-	// whole ring behind).
-	bool Reserve(uint64_t captureNs, Reservation &out);
+	// go below the previous reservation), labelled `tag` (handed back with the
+	// reservation, every view of the slot and Due()). Frees the payload it
+	// held. False -- nothing changes, the capture is lost -- when that slot is
+	// still Reserved/Encoding or pinned by a reader (an encoder or the decoder
+	// is a whole ring behind).
+	bool Reserve(uint64_t captureNs, Reservation &out, uint32_t tag = 0);
 
 	// --- Any thread ---
 
@@ -200,6 +204,7 @@ private:
 		uint64_t generation = 0;
 		SlotState state = SlotState::Free;
 		uint16_t pins = 0;
+		uint32_t tag = 0;
 		Payload payload;
 	};
 

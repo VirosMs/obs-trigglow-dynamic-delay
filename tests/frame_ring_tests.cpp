@@ -286,6 +286,32 @@ void TestPayloadsFreedOnReuse()
 	CHECK(ring.Arena().GetStats().committedBytes <= 2u * 4096u);
 }
 
+// The caller's tag (the degradation rung) follows the slot: reservation,
+// every view of it and Due(); a reuse retags it.
+void TestTags()
+{
+	testcheck::g_currentTest = "tags";
+	FrameRing ring(2, ArenaConfig());
+	FrameRing::Reservation a, b;
+	CHECK(ring.Reserve(100, a, 3));
+	CHECK(ring.Reserve(110, b));
+	CHECK_EQ(a.tag, 3u);
+	CHECK_EQ(b.tag, 0u);
+	CHECK(PublishTagged(ring, a, 1));
+	CHECK(ring.Due(105).tag == 3u && ring.Due(115).tag == 0u);
+	FrameRing::ReadView view;
+	CHECK(ring.PinForDisplay(105, 0, view));
+	CHECK_EQ(view.tag, 3u);
+	ring.Unpin(view);
+	CHECK(ring.PinNextForDecode(0, 105, UINT64_MAX, 1000, view));
+	CHECK_EQ(view.tag, 3u);
+	ring.Unpin(view);
+	FrameRing::Reservation c;
+	CHECK(ring.Reserve(120, c, 7)); // Reuses a's slot.
+	CHECK_EQ(c.index, a.index);
+	CHECK_EQ(ring.Due(125).tag, 7u);
+}
+
 } // namespace
 
 int main()
@@ -296,5 +322,6 @@ int main()
 	TestSelectionWithDrops();
 	TestDecodeAhead();
 	TestPayloadsFreedOnReuse();
+	TestTags();
 	return testcheck::Finish("frame_ring_tests");
 }

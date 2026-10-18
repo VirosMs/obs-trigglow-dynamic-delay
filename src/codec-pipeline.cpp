@@ -510,7 +510,7 @@ void CodecPipeline::EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t 
 		std::lock_guard<std::mutex> lock(statsMutex_);
 		const uint32_t index = stage < kMaxEncodeContexts ? stage : 0;
 		window_.encode[index].frameNs.Push(endNs - startNs);
-		encodeRecent_.Push(endNs, endNs - startNs);
+		encodeRecent_.Push(endNs, endNs - startNs, reservation.tag);
 		if (published && !storeRaw) {
 			window_.encodedBytes += bytes;
 			window_.encodedRawBytes += rawBytes;
@@ -682,7 +682,7 @@ bool CodecPipeline::AcquireInline(uint64_t targetNs, uint64_t lastShownNs, Decod
 	{
 		std::lock_guard<std::mutex> lock(statsMutex_);
 		window_.decode.frameNs.Push(endNs - startNs);
-		decodeRecent_.Push(endNs, endNs - startNs);
+		decodeRecent_.Push(endNs, endNs - startNs, view.tag);
 		if (!ok)
 			++window_.decodeFailures;
 	}
@@ -864,7 +864,7 @@ void CodecPipeline::DecodeLoop()
 			codecUsed = true;
 			std::lock_guard<std::mutex> statsLock(statsMutex_);
 			window_.decode.frameNs.Push(elapsedNs);
-			decodeRecent_.Push(endNs, elapsedNs);
+			decodeRecent_.Push(endNs, elapsedNs, view.tag);
 			if (!ok)
 				++window_.decodeFailures;
 			if (late)
@@ -956,12 +956,14 @@ void CodecPipeline::TakeWindowStats(WindowStats &out)
 	window_.aheadMin = UINT32_MAX;
 }
 
-CodecPipeline::RecentLoad CodecPipeline::GetRecentLoad(uint64_t nowNs, uint64_t windowNs) const
+CodecPipeline::RecentLoad CodecPipeline::GetRecentLoad(uint64_t nowNs, uint64_t windowNs, uint32_t encodeTag) const
 {
 	std::lock_guard<std::mutex> lock(statsMutex_);
 	RecentLoad load;
-	load.encode = encodeRecent_.Summarize(nowNs, windowNs);
-	load.decode = decodeRecent_.Summarize(nowNs, windowNs);
+	load.encode = encodeRecent_.Summarize(nowNs, windowNs, encodeTag);
+	load.decodeTag = decodeRecent_.NewestTag(nowNs);
+	if (load.decodeTag != RollingWindow::kAnyTag)
+		load.decode = decodeRecent_.Summarize(nowNs, windowNs, load.decodeTag);
 	return load;
 }
 

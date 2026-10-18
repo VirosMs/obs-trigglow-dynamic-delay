@@ -47,7 +47,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     parallelism first, a lower rung once it's maxed out.
 //   - Decode (threaded): p95 above 80% of the capture interval, or > 5% of
 //     due frames missed by the decode-ahead -> a lower rung (the MJPEG decoder
-//     has no threading).
+//     has no threading). The decoder works `delay` seconds behind the capture,
+//     so it only meets a new rung's frames that long after the change: decode
+//     metrics only count when they were measured on frames captured at the
+//     current rung (Sample::decodeRung). Before that they're ignored, both
+//     going down (no second step for a load the first one hasn't reached the
+//     decoder yet) and going up (no prediction from the old rung's numbers).
 // Going up: only when the PREDICTED load one step up stays under the targets
 // (G p95 <= 25% of the interval; workers <= 50%) for 30 s straight. Quality
 // is restored before parallelism is given back. The prediction scales the
@@ -122,6 +127,11 @@ struct Sample {
 	uint32_t dueFrames = 0;    // Playback frames that had a new frame due.
 	uint32_t decodeMisses = 0; // Of those, Ready in the ring but not decoded in time.
 	uint32_t obsLaggedFrames = 0;
+	// The rung the frames behind decodeSamples/decodeP95Ms, dueFrames and
+	// decodeMisses were captured at. Any other than the policy's current rung:
+	// those metrics are ignored. kSameRung: assume the current one.
+	static constexpr size_t kSameRung = SIZE_MAX;
+	size_t decodeRung = kSameRung;
 };
 
 enum class Action : uint8_t { None, MoreParallelism, LessParallelism, LowerQuality, RaiseQuality };

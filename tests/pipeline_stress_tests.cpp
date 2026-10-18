@@ -408,6 +408,29 @@ RunStats RunScenario(const Scenario &s)
 	return stats;
 }
 
+// RollingWindow's tags (src/perf-stats.hpp, linked here): the degradation
+// policy reads the encode and decode load per capture rung.
+void TestRollingWindowTags()
+{
+	testcheck::g_currentTest = "rolling window tags";
+	RollingWindow w;
+	CHECK_EQ(w.NewestTag(1000), RollingWindow::kAnyTag);
+	for (uint64_t t = 1; t <= 10; ++t)
+		w.Push(t * 100, t * 1000000, t <= 6 ? 0u : 1u); // 6 samples of rung 0, then 4 of rung 1.
+	CHECK_EQ(w.Count(1000, 1000), 10u);
+	CHECK_EQ(w.Count(1000, 1000, 0), 6u);
+	CHECK_EQ(w.Count(1000, 1000, 1), 4u);
+	CHECK_EQ(w.Count(1000, 1000, 2), 0u);
+	const RollingWindow::Summary rung1 = w.Summarize(1000, 1000, 1);
+	CHECK_EQ(rung1.samples, 4u);
+	CHECK(rung1.maxMs > 9.9 && rung1.maxMs < 10.1);
+	const RollingWindow::Summary rung0 = w.Summarize(1000, 1000, 0);
+	CHECK(rung0.maxMs > 5.9 && rung0.maxMs < 6.1);
+	CHECK_EQ(w.NewestTag(1000), 1u);
+	CHECK_EQ(w.NewestTag(650), 0u); // Newest at or before t = 650: the 6th sample.
+	CHECK_EQ(w.NewestTag(50), RollingWindow::kAnyTag);
+}
+
 // Rendering stops for 300 ms (OBS stalled, the scene hidden): the decoder had
 // decoded a few frames ahead of the old target, and those are now far older
 // than the frame due. The first frame shown afterwards must be (about) the due
@@ -530,6 +553,7 @@ int main(int argc, char **argv)
 	RunScenario(sync);
 
 	RunPauseScenario();
+	TestRollingWindowTags();
 
 	CHECK_EQ(g_tornFrames.load(), 0u);
 	CHECK_EQ(g_badPackets.load(), 0u);

@@ -50,10 +50,13 @@ struct PerfSeries {
 // (the degradation policy's "p95 over the last 2 s"). A ring of the most
 // recent kCapacity samples: at 60 samples/s that's 17 s of history, far more
 // than any window asked for. Timestamps must be pushed in non-decreasing
-// order (they come from one thread's clock reads).
+// order (they come from one thread's clock reads). Each sample can carry a
+// tag (the degradation rung its frame was captured at), and the queries can
+// keep only the samples with one tag.
 class RollingWindow {
 public:
 	static constexpr size_t kCapacity = 1024;
+	static constexpr uint32_t kAnyTag = UINT32_MAX; // As a query filter: every sample.
 
 	struct Summary {
 		uint32_t samples = 0; // Samples inside the window.
@@ -63,18 +66,22 @@ public:
 		uint64_t sumNs = 0;
 	};
 
-	void Push(uint64_t tNs, uint64_t valueNs);
+	void Push(uint64_t tNs, uint64_t valueNs, uint32_t tag = 0);
 	void Clear();
-	// Samples with nowNs - windowNs <= t <= nowNs. Cost O(samples in window).
-	Summary Summarize(uint64_t nowNs, uint64_t windowNs) const;
+	// Samples with nowNs - windowNs <= t <= nowNs (and that tag, unless
+	// kAnyTag). Cost O(samples in window).
+	Summary Summarize(uint64_t nowNs, uint64_t windowNs, uint32_t tag = kAnyTag) const;
 	// Just the count over the same window (events: drops, misses...).
-	uint32_t Count(uint64_t nowNs, uint64_t windowNs) const;
+	uint32_t Count(uint64_t nowNs, uint64_t windowNs, uint32_t tag = kAnyTag) const;
 	// Timestamp of the oldest sample still stored (0 if empty).
 	uint64_t OldestNs() const;
+	// Tag of the newest sample at or before nowNs (kAnyTag if there's none).
+	uint32_t NewestTag(uint64_t nowNs) const;
 
 private:
 	std::array<uint64_t, kCapacity> t_{};
 	std::array<uint32_t, kCapacity> v_{};
+	std::array<uint32_t, kCapacity> tag_{};
 	size_t next_ = 0; // Where the next sample goes.
 	size_t size_ = 0;
 };
