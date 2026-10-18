@@ -71,6 +71,31 @@ jobs:
             echo "pluginName=${plugin_name}" >> $GITHUB_OUTPUT
           fi
 
+  unit-tests:
+    name: Unit Tests 🧪 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and Run Unit Tests 🧪
+        run: |
+          : Build and Run Unit Tests 🧪
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          # tests/CMakeLists.txt configures on its own (no libobs, Qt or
+          # FFmpeg), so this job downloads no OBS dependencies. Being part of
+          # this reusable workflow, it also gates push.yaml's create-release.
+          cmake -S tests -B build_tests
+          cmake --build build_tests --config RelWithDebInfo --parallel
+          ctest --test-dir build_tests --build-config RelWithDebInfo --output-on-failure
+
   macos-build:
     name: Build for macOS 🍏
     runs-on: macos-15

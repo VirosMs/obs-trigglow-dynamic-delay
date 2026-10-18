@@ -170,10 +170,9 @@ set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_nam
 #   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
 #   cmake --build <dir> --target buffer_fit_tests --config RelWithDebInfo
 #   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
+# The target itself lives in tests/CMakeLists.txt, which also configures on
+# its own (no OBS deps) for CI's unit-tests job.
 if(TRIGGLOW_BUILD_TESTS)
   enable_testing()
-  add_executable(buffer_fit_tests tests/buffer_fit_tests.cpp src/buffer-fit.cpp src/buffer-fit.hpp)
-  target_include_directories(buffer_fit_tests PRIVATE src)
-  set_target_properties(buffer_fit_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
-  add_test(NAME buffer_fit_tests COMMAND buffer_fit_tests)
+  add_subdirectory(tests)
 endif()
