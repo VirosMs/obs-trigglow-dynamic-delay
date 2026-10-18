@@ -29,6 +29,16 @@ uint64_t Nv12FrameBytes(uint32_t width, uint32_t height)
 	return (static_cast<uint64_t>(width) * height * 3) / 2;
 }
 
+uint64_t SlackFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen)
+{
+	if (fpsNum == 0 || fpsDen == 0 || delaySeconds == 0)
+		return 0;
+	// A quarter second of slack (ceil(fps / 4)): playback is by capture time,
+	// and capture jitter must never leave the oldest slot younger than the
+	// requested delay.
+	return (static_cast<uint64_t>(fpsNum) + 4ULL * fpsDen - 1) / (4ULL * fpsDen);
+}
+
 uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen)
 {
 	if (fpsNum == 0 || fpsDen == 0)
@@ -36,13 +46,8 @@ uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen)
 	// ceil(delay * fps) in integer math, so 60/1 stays exactly 1800 for 30s
 	// and 60000/1001 gives 1799 (not a float-rounded 1798 or 1800).
 	const uint64_t delayFrames = (static_cast<uint64_t>(delaySeconds) * fpsNum + fpsDen - 1) / fpsDen;
-	// A quarter second of slack (ceil(fps / 4)): playback is by capture time,
-	// and capture jitter must never leave the oldest slot younger than the
-	// requested delay.
-	const uint64_t slack = delaySeconds > 0 ? (static_cast<uint64_t>(fpsNum) + 4ULL * fpsDen - 1) / (4ULL * fpsDen)
-						: 0;
 	// +1 so a full N-second delay has a slot old enough to read from.
-	return delayFrames + slack + 1;
+	return delayFrames + SlackFrames(delaySeconds, fpsNum, fpsDen) + 1;
 }
 
 uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen)
@@ -149,6 +154,19 @@ Result Compute(const Input &in)
 	r.cappedByOutput = capScale < 1.0;
 	r.reducedByRam = scale < capScale;
 	r.fitsFullDuration = r.actualFrames >= desired;
+	if (r.fitsFullDuration) {
+		r.effectiveDelaySeconds = in.delaySeconds;
+	} else {
+		// Whole seconds, in integer math (frames * den / num), keeping the
+		// slack in front of the delay when there's room for it.
+		const uint64_t span = r.actualFrames - 1;
+		const uint64_t slack = SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen);
+		const uint64_t withMargin = span > slack ? span - slack : 0;
+		uint64_t seconds = withMargin * in.fpsDen / in.fpsNum;
+		if (seconds == 0)
+			seconds = span * in.fpsDen / in.fpsNum;
+		r.effectiveDelaySeconds = static_cast<uint32_t>(std::min<uint64_t>(seconds, in.delaySeconds));
+	}
 	return r;
 }
 

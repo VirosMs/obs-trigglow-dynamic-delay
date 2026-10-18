@@ -75,6 +75,12 @@ struct Result {
 	bool cappedByOutput = false;  // capScale < 1
 	bool reducedByRam = false;    // scale < capScale
 	bool fitsFullDuration = true; // actualFrames >= desiredFrames
+	// v0.6.0 (design A.4): the delay video AND audio use, in whole seconds.
+	// delaySeconds when the ring fits; otherwise the ring's span minus the
+	// quarter second of slack, floored to whole seconds (without the slack if
+	// that would leave 0). Before, video used the fractional span and audio
+	// its floor: up to ~1 s apart when RAM trimmed the ring.
+	uint32_t effectiveDelaySeconds = 0;
 };
 
 Result Compute(const Input &in);
@@ -85,6 +91,8 @@ double OutputCapScale(const Input &in);
 // chroma sample) wins over the orig ceiling: orig 0 or 1 gives 2, never 0.
 uint32_t EvenDim(uint32_t orig, double scale);
 uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen);
+// The quarter second of slack DesiredFrames() includes: ceil(fps / 4), 0 for a 0s delay.
+uint64_t SlackFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen);
 uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen); // 1e9 * den / num; 0 if num == 0.
 uint64_t Nv12FrameBytes(uint32_t width, uint32_t height);   // width * height * 3 / 2.
 

@@ -36,6 +36,7 @@ using trigglow::bufferfit::Input;
 using trigglow::bufferfit::Nv12FrameBytes;
 using trigglow::bufferfit::OutputCapScale;
 using trigglow::bufferfit::Result;
+using trigglow::bufferfit::SlackFrames;
 
 namespace {
 
@@ -463,6 +464,74 @@ void TestProperties()
 	CHECK_EQ(violations, 0);
 }
 
+// Design test 16 (A.4, v0.6.0): video and audio share one whole-second delay.
+void TestEffectiveDelay()
+{
+	g_currentTest = "16 effective delay (A.4)";
+	// Fits: exactly the requested delay.
+	Result full = Compute(MakeInput(2560, 1440, 1920, 1080, 1080));
+	CHECK(full.fitsFullDuration);
+	CHECK_EQ(full.effectiveDelaySeconds, 30u);
+
+	// Trimmed by RAM at the 720p floor: 379 frames -> span 378, minus 15 of
+	// slack = 363 frames = 6.05 s -> 6 s (v0.5.1 video used all 6.3 s).
+	Input in = MakeInput(2560, 1440, 1920, 1080, 720);
+	in.budgetBytes = 100 * kMiB;
+	Result r = Compute(in);
+	CHECK(!r.fitsFullDuration);
+	CHECK_EQ(r.actualFrames, 379u);
+	CHECK_EQ(r.effectiveDelaySeconds, 6u);
+	CHECK_EQ(SlackFrames(30, 60, 1), 15u);
+	CHECK_EQ(SlackFrames(0, 60, 1), 0u);
+	CHECK_EQ(SlackFrames(30, 60000, 1001), 15u);
+
+	// So short the slack would leave 0 s: the slack is given up instead.
+	in.budgetBytes = 70ULL * (1280 * 720 * 3 / 2 / 5); // 70 frames: span 69 < 60 + 15.
+	r = Compute(in);
+	CHECK_EQ(r.actualFrames, 70u);
+	CHECK_EQ(r.effectiveDelaySeconds, 1u);
+
+	// Fractional fps: never more than the span allows.
+	in.fpsNum = 60000;
+	in.fpsDen = 1001;
+	in.budgetBytes = 100 * kMiB;
+	r = Compute(in);
+	CHECK(!r.fitsFullDuration);
+	CHECK(static_cast<uint64_t>(r.effectiveDelaySeconds) * in.fpsNum <= (r.actualFrames - 1) * in.fpsDen);
+
+	// Zero delay stays zero.
+	in = MakeInput(1920, 1080, 1920, 1080);
+	in.delaySeconds = 0;
+	CHECK_EQ(Compute(in).effectiveDelaySeconds, 0u);
+
+	// Sweep: always <= the request; when trimmed, the ring spans it (with slack when possible).
+	int violations = 0;
+	for (uint64_t budgetMiB : {40, 64, 100, 250, 500, 1000, 4000}) {
+		for (uint32_t delay : {1u, 5u, 10u, 30u, 60u}) {
+			for (uint32_t fps : {30u, 60u}) {
+				Input sweep = MakeInput(2560, 1440, 1920, 1080, 720);
+				sweep.delaySeconds = delay;
+				sweep.fpsNum = fps;
+				sweep.budgetBytes = budgetMiB * kMiB;
+				const Result s = Compute(sweep);
+				bool ok = s.effectiveDelaySeconds <= delay;
+				if (s.fitsFullDuration)
+					ok = ok && s.effectiveDelaySeconds == delay;
+				else
+					ok = ok &&
+					     static_cast<uint64_t>(s.effectiveDelaySeconds) * fps <= s.actualFrames - 1;
+				if (!ok && violations++ < 5)
+					std::printf("  effective delay violation: budget %lluMiB delay %u fps %u -> %u "
+						    "(%llu frames)\n",
+						    static_cast<unsigned long long>(budgetMiB), delay, fps,
+						    s.effectiveDelaySeconds,
+						    static_cast<unsigned long long>(s.actualFrames));
+			}
+		}
+	}
+	CHECK_EQ(violations, 0);
+}
+
 } // namespace
 
 int main()
@@ -484,6 +553,7 @@ int main()
 	TestProperties();
 	TestCapDisabled();
 	TestTinySource();
+	TestEffectiveDelay();
 
 	std::printf("buffer_fit_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
