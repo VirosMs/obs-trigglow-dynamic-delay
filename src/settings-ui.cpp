@@ -1496,10 +1496,10 @@ void TrigglowDelayDock::OnReportBugClicked()
 {
 	TRIGGLOW_LOG_INFO(kComponent, "Report a problem pressed in dock");
 
-	// ReportBugDialog does everything itself: collects a short description,
-	// submits a real support ticket (category "dynamic_delay", from the
-	// account when signed in) with OBS's redacted log attached if the user
-	// leaves it ticked, and opens the ticket in the browser -- see its own
+	// ReportBugDialog does everything itself: Trigi (the AI support
+	// assistant) first when it is available, then a real support ticket
+	// (category "dynamic_delay", from the account when signed in) with OBS's
+	// redacted log attached if the user leaves it ticked -- see its own
 	// header comment. The diagnostics provider is for the support dialog's
 	// Trigi page (opt-in technical data, support-diagnostics.hpp). exec()
 	// (modal) is fine here: this is a deliberate, occasional action, not

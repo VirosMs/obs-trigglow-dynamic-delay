@@ -209,6 +209,12 @@ target_sources(
     src/bug-report.hpp
     src/report-bug-dialog.cpp
     src/report-bug-dialog.hpp
+    src/trigi-page.cpp
+    src/trigi-page.hpp
+    src/trigi-states.cpp
+    src/trigi-states.hpp
+    src/trigi-widgets.cpp
+    src/trigi-widgets.hpp
     src/update-checker.cpp
     src/update-checker.hpp
     src/i18n.hpp
