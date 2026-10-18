@@ -96,6 +96,77 @@ jobs:
           cmake --build build_tests --config RelWithDebInfo --parallel
           ctest --test-dir build_tests --build-config RelWithDebInfo --output-on-failure
 
+  unit-tests-tsan:
+    name: Unit Tests 🧪 (ThreadSanitizer)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Threaded Unit Tests with ThreadSanitizer 🧪
+        run: |
+          : Build Threaded Unit Tests with ThreadSanitizer 🧪
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          # The suites around the codec worker threads (src/frame-arena.*,
+          # src/frame-ring.*, src/codec-pipeline.*), built with GCC like the
+          # Ubuntu plugin build. A build failure here is a real error, so this
+          # step is allowed to fail the job.
+          cmake -S tests -B build_tsan \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
+          cmake --build build_tsan --parallel \
+            --target frame_arena_tests frame_ring_tests pipeline_stress_tests
+
+      - name: Run Threaded Unit Tests under ThreadSanitizer 🧪
+        # Deliberately non-blocking. This job is part of this reusable
+        # workflow, so a failure here would also block push.yaml's
+        # create-release, and TSAN can fail for reasons that are not races in
+        # this code: false positives on what it can't see into (libstdc++.so is
+        # not built with -fsanitize=thread, standalone std::atomic_thread_fence
+        # is not modeled) and its 5-15x slowdown tripping the stress test's
+        # timing checks. The unit-tests job above is the gate; this step only
+        # reports: a warning annotation on the run and a summary on the job
+        # page, which the release checklist reviews before a draft release is
+        # published. Once it has run clean for a few releases, drop
+        # continue-on-error so it gates too.
+        continue-on-error: true
+        env:
+          TSAN_OPTIONS: halt_on_error=0 second_deadlock_stack=1 exitcode=66
+        run: |
+          : Run Threaded Unit Tests under ThreadSanitizer 🧪
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          # TSAN's shadow memory layout breaks under the high-entropy ASLR of
+          # recent kernels ("FATAL: ThreadSanitizer: unexpected memory
+          # mapping"). The runner images set 28 bits; make sure of it.
+          sudo sysctl -w vm.mmap_rnd_bits=28
+
+          set +e
+          ctest --test-dir build_tsan --output-on-failure --timeout 600 \
+            --tests-regex '^(frame_arena|frame_ring|pipeline_stress)_tests$' 2>&1 | tee tsan.log
+          status=${PIPESTATUS[0]}
+          set -e
+
+          reports=$(grep -c '^WARNING: ThreadSanitizer' tsan.log || true)
+          {
+            echo '### ThreadSanitizer: frame_arena, frame_ring, pipeline_stress'
+            echo
+            echo "- ctest exit code: ${status}"
+            echo "- ThreadSanitizer reports: ${reports}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if (( reports > 0 )); then
+            echo "::warning title=ThreadSanitizer::${reports} report(s) in the threaded unit tests. Review this job's log before publishing a release."
+          elif (( status != 0 )); then
+            echo "::warning title=ThreadSanitizer::A threaded unit test failed under ThreadSanitizer without a TSAN report (likely a timing check under its slowdown). See this job's log."
+          fi
+          exit "${status}"
+
   macos-build:
     name: Build for macOS 🍏
     runs-on: macos-15
