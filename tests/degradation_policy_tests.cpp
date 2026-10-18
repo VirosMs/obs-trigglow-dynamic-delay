@@ -75,12 +75,14 @@ void TestLadder()
 	std::vector<Rung> l = BuildLadder(1920, 1080, 720, true);
 	CHECK_EQ(l.size(), 5u);
 	CHECK(l[0].width == 1920 && l[0].height == 1080 && l[0].captureDivisor == 1);
-	CHECK(l[1].width == 1594 && l[1].height == 896);
-	CHECK(l[2].width == 1322 && l[2].height == 744);
+	// Widths: the nearest multiple of 8 (1593.6 -> 1592, 1322.7 -> 1320), so
+	// every plane row is whole 4-byte units on OpenGL.
+	CHECK(l[1].width == 1592 && l[1].height == 896);
+	CHECK(l[2].width == 1320 && l[2].height == 744);
 	CHECK(l[3].width == 1280 && l[3].height == 720 && l[3].captureDivisor == 1);
 	CHECK(l[4].width == 1280 && l[4].height == 720 && l[4].captureDivisor == 2);
 	for (size_t i = 0; i < l.size(); ++i)
-		CHECK(l[i].width % 2 == 0 && l[i].height % 2 == 0 && l[i].height >= 720);
+		CHECK(l[i].width % 8 == 0 && l[i].height % 2 == 0 && l[i].height >= 720);
 
 	l = BuildLadder(2560, 1440, 720, true);
 	CHECK_EQ(l.size(), 6u);
@@ -94,6 +96,20 @@ void TestLadder()
 	l = BuildLadder(1280, 720, 1080, false);
 	CHECK_EQ(l.size(), 1u);
 	CHECK(BuildLadder(0, 0, 720, true).empty());
+
+	// Every rung of every ladder bufferfit can start from: Y rows a multiple of
+	// 8 bytes, U/V rows of 4 (QA: 1594x896, 2124x1194 with 1062-byte chroma
+	// rows and 852x480 sheared the picture on OpenGL).
+	const uint32_t starts[][3] = {{1920, 1080, 720}, {2560, 1440, 720}, {1280, 720, 480}, {3840, 2160, 1080},
+				      {1360, 768, 480},  {1600, 900, 720},  {856, 480, 480},  {2560, 1440, 480},
+				      {3440, 1440, 720}, {2560, 1080, 480}};
+	for (const auto &start : starts) {
+		for (const Rung &rung : BuildLadder(start[0], start[1], start[2], true)) {
+			CHECK(rung.width % 8 == 0 && (rung.width / 2) % 4 == 0);
+			CHECK(rung.height % 2 == 0 && rung.height >= 2);
+			CHECK(rung.width <= start[0] && rung.height <= start[1]);
+		}
+	}
 }
 
 void TestInitialParallelism()

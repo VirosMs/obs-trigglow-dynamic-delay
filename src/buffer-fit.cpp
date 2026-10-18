@@ -95,6 +95,22 @@ uint32_t EvenDim(uint32_t orig, double scale)
 	return static_cast<uint32_t>(v) & ~1u;
 }
 
+uint32_t AlignedWidth(uint32_t orig, double scale)
+{
+	constexpr long long kAlign = kWidthAlignment;
+	long long v = std::llround(static_cast<double>(orig) * scale);
+	if (v > static_cast<long long>(orig))
+		v = static_cast<long long>(orig);
+	// Nearest multiple (keeps the aspect ratio closest), but never above the
+	// source: OpenGL needs whole 4-byte rows in every plane (header comment).
+	long long aligned = (v + kAlign / 2) / kAlign * kAlign;
+	if (aligned > static_cast<long long>(orig))
+		aligned = static_cast<long long>(orig) / kAlign * kAlign;
+	if (aligned < kAlign)
+		aligned = kAlign;
+	return static_cast<uint32_t>(aligned);
+}
+
 Result Compute(const Input &in)
 {
 	if (in.sourceWidth == 0 || in.sourceHeight == 0 || in.fpsNum == 0 || in.fpsDen == 0)
@@ -110,7 +126,8 @@ Result Compute(const Input &in)
 	const double floorScale = std::min(capScale, std::min(1.0, static_cast<double>(in.minResolutionHeight) / srcH));
 
 	auto bytesAt = [&](double s) {
-		return static_cast<double>(Nv12FrameBytes(EvenDim(in.sourceWidth, s), EvenDim(in.sourceHeight, s))) /
+		return static_cast<double>(
+			       Nv12FrameBytes(AlignedWidth(in.sourceWidth, s), EvenDim(in.sourceHeight, s))) /
 		       ratio;
 	};
 	auto fits = [&](double s) {
@@ -141,11 +158,11 @@ Result Compute(const Input &in)
 	}
 
 	Result r;
-	r.bufferWidth = EvenDim(in.sourceWidth, scale);
+	r.bufferWidth = AlignedWidth(in.sourceWidth, scale);
 	r.bufferHeight = EvenDim(in.sourceHeight, scale);
 	r.desiredFrames = desired;
 	const double perFrame = static_cast<double>(Nv12FrameBytes(r.bufferWidth, r.bufferHeight)) / ratio;
-	const double framesThatFit = budget / perFrame; // perFrame > 0: both dimensions are >= 2.
+	const double framesThatFit = budget / perFrame; // perFrame > 0: width >= 8, height >= 2.
 	r.actualFrames = framesThatFit >= static_cast<double>(desired)
 				 ? desired
 				 : std::max<uint64_t>(1, static_cast<uint64_t>(framesThatFit));

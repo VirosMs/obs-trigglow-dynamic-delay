@@ -66,8 +66,10 @@ struct Parallelism {
 };
 
 // fullWidth x fullHeight (rung 0) down to floorHeight rows in `step` scale
-// steps (dimensions even, via bufferfit::EvenDim), then the floor again at half
-// rate when allowHalfRate. floorHeight >= fullHeight gives no resolution rungs.
+// steps, then the floor again at half rate when allowHalfRate. floorHeight >=
+// fullHeight gives no resolution rungs. Widths are multiples of 8
+// (bufferfit::AlignedWidth, whole 4-byte rows in every plane for OpenGL), heights
+// even (bufferfit::EvenDim); pass a fullWidth that already is one (bufferfit's).
 std::vector<Rung> BuildLadder(uint32_t fullWidth, uint32_t fullHeight, uint32_t floorHeight, bool allowHalfRate,
 			      double step = 0.83);
 

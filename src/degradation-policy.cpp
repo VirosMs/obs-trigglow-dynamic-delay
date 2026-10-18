@@ -39,13 +39,14 @@ std::vector<Rung> BuildLadder(uint32_t fullWidth, uint32_t fullHeight, uint32_t 
 			if (scale <= floorScale + 1e-9) {
 				// The floor itself is the last resolution rung (unless the
 				// previous step already landed on it after rounding).
-				const Rung floorRung{bufferfit::EvenDim(fullWidth, floorScale),
+				const Rung floorRung{bufferfit::AlignedWidth(fullWidth, floorScale),
 						     bufferfit::EvenDim(fullHeight, floorScale), 1};
 				if (floorRung.height < ladder.back().height)
 					ladder.push_back(floorRung);
 				break;
 			}
-			const Rung rung{bufferfit::EvenDim(fullWidth, scale), bufferfit::EvenDim(fullHeight, scale), 1};
+			const Rung rung{bufferfit::AlignedWidth(fullWidth, scale),
+					bufferfit::EvenDim(fullHeight, scale), 1};
 			if (rung.height < ladder.back().height)
 				ladder.push_back(rung);
 		}

@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstdio>
 #include <initializer_list>
 
+using trigglow::bufferfit::AlignedWidth;
 using trigglow::bufferfit::Compute;
 using trigglow::bufferfit::DesiredFrames;
 using trigglow::bufferfit::EvenDim;
@@ -91,6 +92,13 @@ Input MakeInput(uint32_t srcW, uint32_t srcH, uint32_t outW, uint32_t outH, uint
 bool IsEvenInRange(uint32_t dim, uint32_t src)
 {
 	return dim >= 2 && dim <= src && (dim % 2) == 0;
+}
+
+// Widths: a multiple of 8 (whole 4-byte rows in Y, U and V for OpenGL), never
+// above the source unless the source is narrower than 8.
+bool IsAlignedWidthInRange(uint32_t width, uint32_t src)
+{
+	return width >= 8 && width % 8 == 0 && (width <= src || src < 8);
 }
 
 // What the ring would really occupy, against the same assumed ratio.
@@ -187,7 +195,7 @@ void TestRamReductionInRange()
 	CHECK(r.scale >= 0.5 - 1e-12 && r.scale <= 0.75 + 1e-12);
 	CHECK(r.reducedByRam);
 	CHECK(r.cappedByOutput);
-	CHECK(IsEvenInRange(r.bufferWidth, 2560));
+	CHECK(IsAlignedWidthInRange(r.bufferWidth, 2560));
 	CHECK(IsEvenInRange(r.bufferHeight, 1440));
 	CHECK(r.bufferHeight > 720u && r.bufferHeight < 1080u);
 	CHECK(WithinBudget(in, r));
@@ -224,21 +232,28 @@ void TestFloorRounding()
 	CHECK_EQ(EvenDim(2160, 720.0 / 2160.0), 720u);
 	// 596 * (480 / 596) is 479.99999999999994 in doubles: truncating gave 478.
 	CHECK_EQ(EvenDim(596, 480.0 / 596.0), 480u);
-	// Nearest, not floor: 1366 * (480 / 768) = 853.75 -> 854, not 852.
+	// Nearest, not floor: 1366 * (480 / 768) = 853.75 -> 854, not 852; then
+	// the nearest multiple of 8 for the width: 856 (v0.6.0, OpenGL rows).
 	Input wxga = MakeInput(1366, 768, 1366, 768, 480);
 	wxga.budgetBytes = 16 * kMiB;
 	Result w = Compute(wxga);
-	CHECK_EQ(w.bufferWidth, 854u);
+	CHECK_EQ(w.bufferWidth, 856u);
 	CHECK_EQ(w.bufferHeight, 480u);
+	CHECK_EQ(AlignedWidth(3840, 720.0 / 2160.0), 1280u);
+	CHECK_EQ(AlignedWidth(1366, 480.0 / 768.0), 856u);
+	CHECK_EQ(AlignedWidth(1920, 0.83), 1592u);  // 1593.6 -> 1594 -> 1592.
+	CHECK_EQ(AlignedWidth(1920, 0.835), 1600u); // 1603.2 -> 1603 -> 1600.
+	CHECK_EQ(AlignedWidth(1924, 1.0), 1920u);   // 1928 is nearer, but wider than the source.
 }
 
 void TestOddDimensions()
 {
 	g_currentTest = "10 odd source dimensions";
 	Result r = Compute(MakeInput(1365, 767, 1365, 767));
-	CHECK(IsEvenInRange(r.bufferWidth, 1365));
+	CHECK(IsAlignedWidthInRange(r.bufferWidth, 1365));
 	CHECK(IsEvenInRange(r.bufferHeight, 767));
-	CHECK_EQ(r.bufferWidth, 1364u);
+	// 1368 would be nearer but is wider than the source: 1360.
+	CHECK_EQ(r.bufferWidth, 1360u);
 	CHECK_EQ(r.bufferHeight, 766u);
 	CHECK_EQ(EvenDim(1, 1.0), 2u);
 	CHECK_EQ(EvenDim(1365, 0.0), 2u);
@@ -373,7 +388,7 @@ void TestCapDisabled()
 
 void TestTinySource()
 {
-	g_currentTest = "17 EvenDim floor of 2 wins over the source size";
+	g_currentTest = "17 EvenDim and AlignedWidth floors win over the source size";
 	// NV12 needs at least one chroma sample: 2, even when that is larger than
 	// the source (never 0, which Compute() would report as invalid input).
 	CHECK_EQ(EvenDim(1, 1.0), 2u);
@@ -381,12 +396,18 @@ void TestTinySource()
 	CHECK_EQ(EvenDim(0, 1.0), 2u);
 	CHECK_EQ(EvenDim(2, 0.1), 2u);
 	CHECK_EQ(EvenDim(3, 1.0), 2u);
+	// Widths: 8 at least (one 4-byte U/V row).
+	CHECK_EQ(AlignedWidth(1, 1.0), 8u);
+	CHECK_EQ(AlignedWidth(0, 1.0), 8u);
+	CHECK_EQ(AlignedWidth(7, 1.0), 8u);
+	CHECK_EQ(AlignedWidth(15, 1.0), 8u);
+	CHECK_EQ(AlignedWidth(1365, 0.0), 8u);
 	Result r = Compute(MakeInput(1, 1, 1, 1));
-	CHECK_EQ(r.bufferWidth, 2u);
+	CHECK_EQ(r.bufferWidth, 8u);
 	CHECK_EQ(r.bufferHeight, 2u);
 	CHECK_EQ(r.actualFrames, r.desiredFrames);
 	Result thin = Compute(MakeInput(1, 1080, 1, 1080));
-	CHECK_EQ(thin.bufferWidth, 2u);
+	CHECK_EQ(thin.bufferWidth, 8u);
 	CHECK_EQ(thin.bufferHeight, 1080u);
 }
 
@@ -411,7 +432,7 @@ void TestProperties()
 					in.delaySeconds = delay;
 					in.budgetBytes = budget;
 					Result r = Compute(in);
-					bool ok = IsEvenInRange(r.bufferWidth, src[0]) &&
+					bool ok = IsAlignedWidthInRange(r.bufferWidth, src[0]) &&
 						  IsEvenInRange(r.bufferHeight, src[1]) && r.actualFrames >= 1 &&
 						  r.actualFrames <= r.desiredFrames &&
 						  (r.actualFrames == 1 || WithinBudget(in, r));
@@ -442,7 +463,7 @@ void TestProperties()
 						in.delaySeconds = delay;
 						in.budgetBytes = budget;
 						Result r = Compute(in);
-						bool ok = IsEvenInRange(r.bufferWidth, src[0]) &&
+						bool ok = IsAlignedWidthInRange(r.bufferWidth, src[0]) &&
 							  IsEvenInRange(r.bufferHeight, src[1]);
 						if (havePrevOut)
 							ok = ok && r.bufferWidth <= prevOut.bufferWidth &&
@@ -532,6 +553,47 @@ void TestEffectiveDelay()
 	CHECK_EQ(violations, 0);
 }
 
+// v0.6.0: on OpenGL every I420 plane row must be a whole number of 4-byte
+// units (libobs-opengl maps rows of exactly `width` bytes, glReadPixels pads
+// them to 4). Whatever the source, output, floor or budget: width % 8 == 0.
+void TestWidthAlignment()
+{
+	g_currentTest = "18 widths are multiples of 8 (OpenGL rows)";
+	const uint32_t sources[][2] = {{1920, 1080}, {2560, 1440}, {1366, 768},  {1365, 767},
+				       {1600, 900},  {854, 480},   {3440, 1440}, {2560, 1080}};
+	const uint32_t outputs[][2] = {{1920, 1080}, {1366, 768}, {1280, 720}, {852, 480}, {1600, 900}};
+	int violations = 0;
+	for (const auto &src : sources) {
+		for (const auto &out : outputs) {
+			for (uint32_t minRes : {480u, 720u, 1080u}) {
+				for (uint64_t budget : {16 * kMiB, 100 * kMiB, 300 * kMiB, 800 * kMiB, 16 * kGiB}) {
+					for (bool cap : {true, false}) {
+						Input in = MakeInput(src[0], src[1], out[0], out[1], minRes);
+						in.budgetBytes = budget;
+						in.capToOutput = cap;
+						const Result r = Compute(in);
+						const bool ok = IsAlignedWidthInRange(r.bufferWidth, src[0]) &&
+								((r.bufferWidth / 2) % 4) == 0 &&
+								IsEvenInRange(r.bufferHeight, src[1]) &&
+								(r.actualFrames == 1 || WithinBudget(in, r));
+						if (!ok && violations++ < 5)
+							std::printf(
+								"  alignment violation: src %ux%u out %ux%u min %u budget "
+								"%lluMiB cap %d -> %ux%u\n",
+								src[0], src[1], out[0], out[1], minRes,
+								static_cast<unsigned long long>(budget / kMiB),
+								cap ? 1 : 0, r.bufferWidth, r.bufferHeight);
+					}
+				}
+			}
+		}
+	}
+	CHECK_EQ(violations, 0);
+	// The cases QA found sheared on OpenGL: 852x480 output and the old rungs.
+	CHECK_EQ(Compute(MakeInput(1920, 1080, 852, 480, 480)).bufferWidth, 856u);
+	CHECK_EQ(Compute(MakeInput(852, 480, 852, 480, 480)).bufferWidth, 848u);
+}
+
 } // namespace
 
 int main()
@@ -554,6 +616,7 @@ int main()
 	TestCapDisabled();
 	TestTinySource();
 	TestEffectiveDelay();
+	TestWidthAlignment();
 
 	std::printf("buffer_fit_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

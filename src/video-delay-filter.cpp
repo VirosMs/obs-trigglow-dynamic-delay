@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #endif
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -1501,9 +1502,31 @@ void VideoDelayFilter::HarvestStagingSlot(StagingSlot &slot, uint64_t nowNs)
 		}
 		const uint32_t rowBytes = PlaneWidth(p, slot.width);
 		const uint32_t rows = PlaneHeight(p, slot.height);
+		// bufferfit keeps every plane row a multiple of 4 bytes. libobs-opengl
+		// reports linesize = width while glReadPixels() pads each row to
+		// GL_PACK_ALIGNMENT (4): with any other width the rows would come out
+		// sheared. Never trust less than that padding on OpenGL, and never
+		// copy past a row D3D11 says is shorter than the plane.
+		assert(rowBytes % 4 == 0);
+		uint32_t srcStride = linesize;
+		if (gs_get_device_type() == GS_DEVICE_OPENGL)
+			srcStride = std::max(srcStride, (rowBytes + 3u) & ~3u);
+		if (srcStride < rowBytes) {
+			if (!loggedShortLinesize_) {
+				TRIGGLOW_LOG_WARN(
+					kComponent,
+					"readback: plane %d of a %ux%u capture maps with %u-byte rows, fewer than "
+					"its %u bytes of width -- dropping such captures",
+					p, slot.width, slot.height, linesize, rowBytes);
+				loggedShortLinesize_ = true;
+			}
+			gs_stagesurface_unmap(slot.surfaces[p]);
+			ok = false;
+			break;
+		}
 		for (uint32_t row = 0; row < rows; ++row) {
 			std::memcpy(frame->plane[p] + static_cast<size_t>(row) * frame->stride[p],
-				    mapped + static_cast<size_t>(row) * linesize, rowBytes);
+				    mapped + static_cast<size_t>(row) * srcStride, rowBytes);
 		}
 		gs_stagesurface_unmap(slot.surfaces[p]);
 	}

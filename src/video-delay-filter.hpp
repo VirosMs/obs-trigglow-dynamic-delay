@@ -450,6 +450,7 @@ private:
 	bool loggedFirstRender_ = false;
 	bool loggedPassthrough_ = false; // Delay 0: passing the video through.
 	bool loggedEffectError_ = false;
+	bool loggedShortLinesize_ = false; // A staging map with rows shorter than the plane (never expected).
 };
 
 } // namespace trigglow
