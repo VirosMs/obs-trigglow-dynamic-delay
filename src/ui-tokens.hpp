@@ -100,9 +100,11 @@ struct Tokens {
 	Rgb line;        // Decorative hairlines (card borders, dividers, progress track).
 	Rgb lineStrong;  // Field and secondary-button borders (WCAG 1.4.11: 3:1).
 
-	Rgb accent;     // Cyan fill.
-	Rgb accentText; // Cyan text and icons (darkened on light themes).
-	Rgb accentTint; // Chip and secondary-hover background.
+	Rgb accent;       // Cyan fill.
+	Rgb accentText;   // Cyan text and icons (darkened on light themes).
+	Rgb accentTint;   // Chip and secondary-hover background; the user's messages to Trigi.
+	Rgb accentBorder; // Border of the user's messages and of Trigi's avatar (decorative).
+	Rgb codeTint;     // `code` in Trigi's replies, on the reply bubble (the field color).
 
 	Rgb warning; // Amber fill (rules, progress chunk on dark themes).
 	Rgb warningText;

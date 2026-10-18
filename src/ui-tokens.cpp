@@ -156,6 +156,8 @@ Tokens Compute(const PaletteInput &palette)
 		t.accent = highlight;
 		t.accentText = EnsureContrast(palette.highlight, {palette.base, palette.window}, kTextContrast);
 		t.accentTint = palette.base;
+		t.accentBorder = palette.text;
+		t.codeTint = palette.base;
 		t.warning = palette.text;
 		t.warningText = palette.text;
 		t.warningTint = palette.window;
@@ -191,6 +193,12 @@ Tokens Compute(const PaletteInput &palette)
 	t.accentTint = dark ? Mix(brand::kCyan, card, 0.12) : Mix(brand::kCyan, card, 0.10);
 	t.accentText = EnsureContrast(dark ? brand::kCyan : FromHex("#006a8e"), {card, window, t.field, t.accentTint},
 				      kTextContrast);
+	// The web's "cyan / .40" border of the user's messages.
+	t.accentBorder = Mix(t.accentText, t.accentTint, 0.45);
+	// Trigi's replies sit on the field color; `code` gets a step lighter
+	// (dark) or darker (light) than that, and the text is pushed to AA on it
+	// below.
+	t.codeTint = dark ? Mix(brand::kMist, t.field, 0.10) : Mix(brand::kInk, t.field, 0.07);
 
 	t.warning = brand::kAmber;
 	t.warningTint = dark ? Mix(brand::kAmber, window, 0.12) : Mix(brand::kAmber, card, 0.12);
@@ -211,7 +219,8 @@ Tokens Compute(const PaletteInput &palette)
 	// amber banner (its version line).
 	t.textMuted = EnsureContrast(Mix(palette.text, card, dark ? 0.65 : 0.70),
 				     {card, window, t.field, t.warningTint}, kTextContrast);
-	t.text = EnsureContrast(palette.text, {card, window, t.field, t.warningTint, t.accentTint}, kTextContrast);
+	t.text = EnsureContrast(palette.text, {card, window, t.field, t.warningTint, t.accentTint, t.codeTint},
+				kTextContrast);
 	// Without a color of its own, Qt draws placeholders in the text color at
 	// half alpha: 3.3:1 on Yami Light's fields. The muted text reaches AA on
 	// the field and still reads as "nothing typed yet" next to real text.

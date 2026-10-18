@@ -240,6 +240,14 @@ void TestAccessibilityContract()
 		CheckRatio(t.dangerButtonText, t.dangerTint, 4.5, "Disable button text", n);
 		CheckRatio(t.dangerText, t.dangerTint, 4.5, "dangerText on dangerTint (error banner)", n);
 
+		// Trigi's conversation (report dialog): the user's messages and the
+		// info banner sit on accentTint, Trigi's replies on the field color
+		// (checked above) with `code` on codeTint, the warning banner's text on
+		// warningTint (checked above), Trigi's avatar icon in accentText on
+		// accentTint (checked above).
+		CheckRatio(t.text, t.accentTint, 4.5, "text on accentTint (user's messages, info banner)", n);
+		CheckRatio(t.text, t.codeTint, 4.5, "text on codeTint (code in Trigi's replies)", n);
+
 		// Primary button text on every gradient stop, in every state.
 		for (Rgb stop : {t.gradientStart, t.gradientEnd, t.gradientHoverStart, t.gradientHoverEnd,
 				 t.gradientPressedStart, t.gradientPressedEnd})

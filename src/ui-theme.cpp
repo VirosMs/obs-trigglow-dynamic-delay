@@ -171,6 +171,10 @@ const char *IconFile(IconId id)
 	switch (id) {
 	case IconId::AlertTriangle:
 		return ":/trigglow/icons/alert-triangle.svg";
+	case IconId::ArrowLeft:
+		return ":/trigglow/icons/arrow-left.svg";
+	case IconId::Bolt:
+		return ":/trigglow/icons/bolt.svg";
 	case IconId::Check:
 		return ":/trigglow/icons/check.svg";
 	case IconId::Circle:
@@ -183,20 +187,40 @@ const char *IconFile(IconId id)
 		return ":/trigglow/icons/download.svg";
 	case IconId::ExternalLink:
 		return ":/trigglow/icons/external-link.svg";
+	case IconId::Eye:
+		return ":/trigglow/icons/eye.svg";
 	case IconId::Flag:
 		return ":/trigglow/icons/flag.svg";
 	case IconId::Info:
 		return ":/trigglow/icons/info.svg";
+	case IconId::Loader:
+		return ":/trigglow/icons/loader.svg";
 	case IconId::Lock:
 		return ":/trigglow/icons/lock.svg";
+	case IconId::LogIn:
+		return ":/trigglow/icons/log-in.svg";
+	case IconId::MessageCircle:
+		return ":/trigglow/icons/message-circle.svg";
 	case IconId::Paperclip:
 		return ":/trigglow/icons/paperclip.svg";
+	case IconId::Refresh:
+		return ":/trigglow/icons/refresh.svg";
+	case IconId::Send:
+		return ":/trigglow/icons/send.svg";
 	case IconId::Shield:
 		return ":/trigglow/icons/shield.svg";
 	case IconId::Sliders:
 		return ":/trigglow/icons/sliders.svg";
+	case IconId::ThumbsDown:
+		return ":/trigglow/icons/thumbs-down.svg";
+	case IconId::ThumbsUp:
+		return ":/trigglow/icons/thumbs-up.svg";
+	case IconId::Ticket:
+		return ":/trigglow/icons/ticket.svg";
 	case IconId::User:
 		return ":/trigglow/icons/user.svg";
+	case IconId::WifiOff:
+		return ":/trigglow/icons/wifi-off.svg";
 	case IconId::X:
 		break;
 	}
@@ -283,6 +307,7 @@ private:
 };
 
 int g_highContrastOverride = -1;
+int g_reducedMotionOverride = -1;
 
 QString C(uitokens::Rgb color)
 {
@@ -356,6 +381,44 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 	add(QStringLiteral("QFrame[tgBanner=\"danger\"] { background-color: %1; border: 1px solid %2; border-left: 3px "
 			   "solid %3; border-radius: 0px; }")
 		    .arg(dangerTint, line, hc ? text : danger));
+	add(QStringLiteral(
+		    "QFrame[tgBanner=\"warning\"] { background-color: %1; border: 1px solid %2; border-left: 3px "
+		    "solid %3; border-radius: 0px; }")
+		    .arg(warningTint, line, hc ? text : warning));
+	add(QStringLiteral("QFrame[tgBanner=\"info\"] { background-color: %1; border: 1px solid %2; border-left: 3px "
+			   "solid %3; border-radius: 0px; }")
+		    .arg(accentTint, line, hc ? text : accentText));
+
+	// Trigi's conversation (report dialog). The transcript is a tab stop (it
+	// scrolls from the keyboard), with the fields' focus style. Trigi's
+	// replies sit on the field color with a hairline, the user's messages on
+	// the accent tint with the web's cyan border, and Trigi's avatar matches
+	// them; "thinking" is a dashed outline. Square, like everything else.
+	const QString accentBorder = C(t.accentBorder);
+	add(QStringLiteral("QScrollArea[tgTranscript=\"true\"] { background: transparent; border: 1px solid %1; "
+			   "border-radius: 0px; }")
+		    .arg(line));
+	add(QStringLiteral(
+		    "QScrollArea[tgTranscript=\"true\"]:focus { border: 1px solid %1; border-bottom: 2px solid %1; }")
+		    .arg(focus));
+	add(QStringLiteral("QWidget#tgTranscriptContent, QWidget#tgScrollContent { background: transparent; }"));
+	add(QStringLiteral("QScrollArea[tgPlain=\"true\"] { background: transparent; border: none; }"));
+	add(QStringLiteral(
+		    "QFrame[tgBubble=\"trigi\"] { background-color: %1; border: 1px solid %2; border-radius: 0px; }")
+		    .arg(field, line));
+	add(QStringLiteral(
+		    "QFrame[tgBubble=\"user\"] { background-color: %1; border: 1px solid %2; border-radius: 0px; }")
+		    .arg(accentTint, accentBorder));
+	add(QStringLiteral(
+		    "QFrame[tgBubble=\"status\"] { background: transparent; border: 1px dashed %1; border-radius: "
+		    "0px; }")
+		    .arg(lineStrong));
+	add(QStringLiteral(
+		    "QLabel[tgAvatar=\"true\"] { background-color: %1; border: 1px solid %2; border-radius: 0px; "
+		    "padding: 0px; }")
+		    .arg(accentTint, accentBorder));
+	// Square bullets of the first-use notice.
+	add(QStringLiteral("QFrame[tgMarker=\"true\"] { background-color: %1; border: none; }").arg(accentText));
 
 	// Text roles; tones come after so they win (same specificity).
 	add(QStringLiteral("QLabel { background: transparent; color: %1; }").arg(text));
@@ -473,6 +536,9 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 	// placeholder alone, so the empty field switches font).
 	add(QStringLiteral("QLineEdit[tgEmpty=\"true\"], QPlainTextEdit[tgEmpty=\"true\"] { %1 }")
 		    .arg(FontRule(FontRole::DataHint, basePt)));
+	// Read-only previews of what is sent (the redacted log, the technical
+	// data): Geist Mono.
+	add(QStringLiteral("QPlainTextEdit[tgMono=\"true\"] { %1 }").arg(FontRule(FontRole::DataHint, basePt)));
 
 	// Check box: square, hairline; checked = brand gradient + ink check.
 	add(QStringLiteral("QCheckBox { color: %1; spacing: 8px; background: transparent; }").arg(text));
@@ -694,6 +760,23 @@ bool SystemHighContrast()
 void SetHighContrastOverride(int value)
 {
 	g_highContrastOverride = value;
+}
+
+bool PrefersReducedMotion()
+{
+	if (g_reducedMotionOverride >= 0)
+		return g_reducedMotionOverride == 1;
+#ifdef _WIN32
+	BOOL animations = TRUE;
+	if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &animations, 0))
+		return animations == FALSE;
+#endif
+	return false;
+}
+
+void SetReducedMotionOverride(int value)
+{
+	g_reducedMotionOverride = value;
 }
 
 uitokens::PaletteInput PaletteInputFrom(const QPalette &palette)

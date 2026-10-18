@@ -97,23 +97,36 @@ void ApplyFont(QWidget *widget, FontRole role, double basePt);
 
 // ---- Icons -----------------------------------------------------------------
 
-// Stroke icons from the Trigglow web app's icon set (Lucide paths, ISC), bundled in
-// src/resources/trigglow-ui.qrc and recolored at runtime.
+// Stroke icons from the Trigglow web app's icon set, plus a few more in its style
+// (all Lucide paths, ISC), bundled in src/resources/trigglow-ui.qrc and
+// recolored at runtime.
 enum class IconId {
 	AlertTriangle,
+	ArrowLeft, // "Back to Trigi".
+	Bolt,      // Trigi's avatar (the web's assistant mark).
 	Check,
 	Circle,
 	Clock,
 	Copy,
 	Download,
 	ExternalLink,
+	Eye, // "See what is sent".
 	Flag,
 	Info,
+	Loader, // Trigi is thinking (turns unless the system asks for less motion).
 	Lock,
+	LogIn,
+	MessageCircle, // "Write to the team".
 	Paperclip,
+	Refresh, // "Try again".
+	Send,
 	Shield,
 	Sliders, // Something was adjusted for the user: the degradation notice.
+	ThumbsDown,
+	ThumbsUp,
+	Ticket,
 	User,
+	WifiOff, // No connection to trigglow.com.
 	X,
 };
 
@@ -131,6 +144,12 @@ QPixmap IconPixmap(IconId id, const QColor &color, int logicalSize, qreal device
 // from the palette). The harness can force it with SetHighContrastOverride().
 bool SystemHighContrast();
 void SetHighContrastOverride(int value); // -1: none, 0: off, 1: on.
+
+// The system asks for less motion (Windows: "Animation effects" off,
+// SPI_GETCLIENTAREAANIMATION). Elsewhere false. The only motion in the
+// plugin's UI is Trigi's "thinking" spinner, which then stays still.
+bool PrefersReducedMotion();
+void SetReducedMotionOverride(int value); // -1: none, 0: off, 1: on.
 
 uitokens::PaletteInput PaletteInputFrom(const QPalette &palette);
 QColor ToQColor(uitokens::Rgb color);
