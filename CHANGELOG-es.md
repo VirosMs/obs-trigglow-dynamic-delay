@@ -352,6 +352,11 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   sin descargar OBS, Qt ni FFmpeg (`cmake -S tests -B build_tests`) y también sirve para la ruta
   `-DTRIGGLOW_BUILD_TESTS=ON` del proyecto principal. Se ejecuta en PRs y pushes, y bloquea el job de
   release.
+- **Job de ThreadSanitizer** (`unit-tests-tsan`, Ubuntu, GCC): compila `frame_arena_tests`,
+  `frame_ring_tests` y `pipeline_stress_tests` con `-fsanitize=thread` y los ejecuta. Por ahora solo
+  informa (anotación de aviso y resumen del job) en vez de bloquear la release, porque TSAN puede
+  fallar sin que haya una carrera en este código (libstdc++ sin instrumentar, su lentitud dispara las
+  comprobaciones de tiempo del test de estrés); el paso de compilación sí bloquea.
 - Versión 0.6.0 en `buildspec.json` y en el script del instalador de Windows.
 
 **Tests** (9 suites, sin OBS; `ctest`):

@@ -320,6 +320,11 @@ was prepared but never published: everything in it ships here.
   `.github/workflows/build-project.yaml`, using `tests/CMakeLists.txt`, which configures on its own
   without downloading OBS, Qt or FFmpeg (`cmake -S tests -B build_tests`) and also backs the
   top-level `-DTRIGGLOW_BUILD_TESTS=ON` path. It runs on PRs and pushes, and gates the release job.
+- **ThreadSanitizer job** (`unit-tests-tsan`, Ubuntu, GCC): builds `frame_arena_tests`,
+  `frame_ring_tests` and `pipeline_stress_tests` with `-fsanitize=thread` and runs them. For now it
+  only reports (warning annotation and job summary) instead of blocking the release, since TSAN can
+  fail without a race in this code (uninstrumented libstdc++, its slowdown tripping the stress
+  test's timing checks); the build step does block.
 - Version 0.6.0 in `buildspec.json` and the Windows installer script.
 
 **Tests** (9 suites, no OBS needed; `ctest`):
