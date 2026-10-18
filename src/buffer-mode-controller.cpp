@@ -295,12 +295,15 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 {
 	const bool collectionLoaded = event == FrontendEvent::FinishedLoading ||
 				      event == FrontendEvent::SceneCollectionChanged;
-	// Collections saved by v0.5.1 and earlier: "(no tocar)" names -> "(auto)".
-	// Only while Inactive, so nothing is renamed under a running delay.
-	if (collectionLoaded && status_.state == BufferModeState::Inactive)
+	// On startup AND on every switch to another collection, while Inactive (so
+	// nothing changes under a running delay): rename collections saved by
+	// v0.5.1 and earlier ("(no tocar)" -> "(auto)"), and switch off delay
+	// filters a session closed while Active saved enabled -- the collection
+	// switched to can carry them as much as the one loaded at startup.
+	if (collectionLoaded && status_.state == BufferModeState::Inactive) {
 		bridge_.MigrateLegacyAutoNames();
-	if (event == FrontendEvent::FinishedLoading && status_.state == BufferModeState::Inactive)
 		bridge_.DisableAllDelayFilters();
+	}
 	if (collectionLoaded && onSceneListRefresh_)
 		onSceneListRefresh_();
 	if (event == FrontendEvent::ThemeChanged && onThemeChanged_)

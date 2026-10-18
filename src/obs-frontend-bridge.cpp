@@ -666,7 +666,8 @@ void ObsFrontendBridge::DisableAllDelayFilters() const
 	// The filters are persisted with the scene collection, so closing OBS
 	// while the delay was Active leaves them enabled in the saved collection:
 	// the next start would delay the scene permanently with the plugin
-	// showing Inactive. Called once the collection has finished loading.
+	// showing Inactive. Called whenever a collection has finished loading: at
+	// startup and after switching to another collection.
 	//
 	// Filters are never returned by obs_enum_sources() (inputs and groups
 	// only), so they are reached through every source that can carry one
