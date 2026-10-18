@@ -2,9 +2,10 @@
 
 # Technical specification — Trigglow Dynamic Delay for OBS
 
-Status: **MVP / v0.5.1 — Early Access**
-Last updated: 2026-10-18 (v0.5.1: §3.3, §3.5, §4.2–§4.5, §8; rewritten from scratch on 2026-08-26 —
-see §0)
+Status: **MVP / v0.6.0 — Early Access**
+Last updated: 2026-10-18 (v0.6.0: §3.1–§3.7, §4–§4.7, §8; rewritten from scratch on 2026-08-26 —
+see §0). A v0.5.1 hotfix was prepared but never published; everything in it shipped in v0.6.0, so
+this document dates those changes v0.6.0.
 Plugin machine name: `obs-trigglow-dynamic-delay`
 Website: https://www.trigglow.com/dynamic-delay
 
@@ -76,23 +77,34 @@ delays what OBS is *showing on Program*, using two OBS filters plus a small stat
 ### 3.1. `VideoDelayFilter` — video
 
 A `OBS_SOURCE_VIDEO`-only OBS filter, attached to a hidden **wrapper scene** that contains the user's
-chosen live scene. Every `video_render` call:
+chosen live scene. Every `video_render` call (as of v0.6.0):
 
-1. Renders the live scene into one reusable RGBA capture render target.
-2. Converts that RGBA frame to **NV12** (Y + half-resolution, box-averaged UV planes, BT.601) via a
-   small custom shader compiled once with `gs_effect_create()` — libobs has no public compute/dispatch
-   API at all (checked directly against `graphics.h`), so an ordinary two-pass pixel shader is the only
-   public mechanism for this conversion.
-3. Kicks off an **async GPU→CPU readback** into one of 2 rotating staging-surface pairs
-   (`gs_stage_texture` + a *deferred* `gs_stagesurface_map` one frame later, so the CPU thread never
-   stalls waiting on a copy that just started).
-4. Copies the finished Y/UV bytes into the current write slot of a plain **system-RAM ring buffer**
-   (`std::vector<Slot>`, `Slot::pixels` — NV12, 1.5 bytes/pixel, not RGBA's 4).
-5. Uploads whichever slot is `delaySeconds` old into 2 small reusable playback textures and draws it
-   via the same shader's reverse (NV12→RGBA) technique.
+1. At most once per capture cell (a wall-clock interval of `1e9 × fps_den / fps_num` ns, two of
+   them on the half-rate degradation rung, §4.7), renders the live scene into one reusable RGBA
+   capture render target at the buffer's current size — its ortho projection still spans the
+   scene's real size, so the GPU rasterizes the scene down to fit.
+2. Converts that RGBA frame to **I420** — Y, plus U and V at half width and height (box-averaged,
+   BT.601, studio range) — in three small full-screen passes into three R8 render targets, with a
+   custom shader compiled once with `gs_effect_create()`. libobs has no public compute/dispatch API
+   at all (checked directly against `graphics.h`), so ordinary pixel-shader passes are the only public
+   mechanism for this conversion. (Up to v0.5.0 it was NV12, two planes, de-interleaved on the CPU
+   before every encode and re-interleaved after every decode.)
+3. Kicks off an **async GPU→CPU readback** into one of 3 rotating staging slots (three R8 surfaces
+   each): `gs_stage_texture` now, `gs_stagesurface_map` two captures later, so the graphics thread
+   never stalls on a copy that just started. The mapped planes are copied into a raw frame from a
+   small pool and handed to the encode workers (§4.6).
+4. Reserves the next slot of a **system-RAM ring** (`FrameRing`, §4.6) for that capture, stamped
+   with its capture time; an encode worker compresses the frame (§4) and stores the packet in the
+   ring's arena.
+5. Picks the newest frame captured at least `delay` seconds ago, already decoded ahead by the decode
+   worker, uploads it into 3 small playback textures **only when it changes** (every other view of
+   the scene just redraws it), and draws it with the same shader's reverse technique (`DrawI420`).
+
+A 0 s delay (only possible from the filter's own properties; the dock's minimum is 1) skips all of
+this since v0.6.0: the video passes through undelayed, with no ring and no codec.
 
 Only a **small, fixed number of GPU objects** exist regardless of how many seconds are buffered — one
-capture render target, the two conversion render targets, 2 staging-surface pairs, 2 playback
+capture render target, three plane render targets, 3 staging slots of three surfaces, 3 playback
 textures. This replaced an earlier design (one persistent GPU texture per buffered frame) after live
 feedback questioned whether that much VRAM was really required, and after a real "Device Remove/Reset"
 game crash on Disable raised the cost of holding dozens of large GPU textures alive at once — not
@@ -111,7 +123,8 @@ keep-alive tricks — it's a hard `libobs` constraint.
 So `AudioDelayFilter` (an `OBS_SOURCE_AUDIO`-only filter) is instead attached to **each individual
 audio-capable leaf source** inside the live scene (mic, desktop audio, etc.), one instance per source,
 each running the same delay-window ring-buffer logic as video, in sample space (`ring_[channel][frame]`).
-Video and audio use the same `delaySeconds`, so both land in sync.
+Video and audio use the same `delaySeconds`, so both land in sync; when the RAM budget trims the
+video ring, both use the same whole-second effective delay instead (§3.3).
 
 ### 3.3. `BufferModeController` — the state machine
 
@@ -175,14 +188,12 @@ definitely been sized), and any live delay/quality change while `Active`. One ac
 actually changes, so a correction at `OnFillTimerElapsed()` causes a brief (well under a second)
 silence right as Program switches to the delayed wrapper scene, while audio's ring re-fills to the
 now-matching duration — judged a clearly better trade than staying out of sync for the rest of the
-session. (Known limit, still open in v0.5.1: the query reports the ring's span floored to whole
-seconds, while `Render()` caps the video delay at the unfloored span, so when the RAM budget trims
-the ring video and audio can be up to ~1s apart. With the full delay in the ring both are exactly
-the requested delay. Aligning them is v0.6.0 work. Since v0.5.1 the span is computed with rational
-arithmetic at the exact `fps_num/fps_den` — multiplying by a truncated frame interval could floor a
-1800-frame span at 60fps to 29s.)
+session. (Known limit until v0.6.0: the query reported the ring's span floored to whole seconds,
+while `Render()` capped the video delay at the unfloored span, so when the RAM budget trimmed the
+ring video and audio could be up to ~1s apart. v0.6.0 closes it, see below. The query also no
+longer hops to the graphics thread.)
 
-**v0.5.1: switching off delay filters left on by a previous session.** The filters are saved
+**v0.6.0: switching off delay filters left on by a previous session.** The filters are saved
 enabled in the scene collection when OBS closes while the delay is Active, so the next start would
 delay the live scene for good while the dock showed `Inactive`. v0.5.0 added
 `ObsFrontendBridge::DisableAllDelayFilters()` on `FrontendEvent::FinishedLoading` (only while the
@@ -192,8 +203,44 @@ source that can carry one of our filters — inputs and groups (`obs_enum_source
 scenes (`obs_enum_scenes`), and the global audio sources on the output channels
 (`obs_get_output_source`) — walks their filters with `obs_source_enum_filters`, and only then
 disables the matching ones, outside every libobs lock (`obs_source_set_enabled()` emits a signal
-whose handlers may take those locks themselves). Known limitation: it runs on `FinishedLoading`
-only, not when the user switches scene collection without restarting OBS.
+whose handlers may take those locks themselves). It runs on `FrontendEvent::FinishedLoading` and on
+`FrontendEvent::SceneCollectionChanged` (a collection switched to can carry them as much as the one
+loaded at startup), both only while the controller is `Inactive`, right after the name migration of
+§3.7.
+
+**v0.6.0: one whole-second delay for video and audio (design A.4).** `bufferfit::Compute()`
+returns `effectiveDelaySeconds`: the requested delay when the ring holds it, otherwise
+`floor((frames − 1 − slack) / fps)`, whole seconds that keep the quarter second of slack against
+capture jitter. `Render()` delays video by exactly that (`effectiveDelaySeconds × 1e9`; only when less
+than a second fits does it fall back to the ring's own span), and audio gets the same value.
+`get_effective_delay_seconds` no longer hops to the graphics thread:
+`VideoDelayFilter::PlannedEffectiveDelaySeconds()` runs the same `bufferfit::Compute()` on the
+caller, from the filter's current settings (`obs_source_update()` merges new settings at once and
+only defers calling `Update()`), OBS's video info and the target's size — the inputs
+`EnsureRingSized()` uses. So `SyncAudioDelayToVideoEffective()` gives audio the right value from
+`Enable()` on and right after a setting the controller changes, not a `Render()` later; a
+30 → 40 s change no longer leaves audio at 30 s. The result is stored in
+`BufferModeStatus::effectiveDelaySeconds`, the only copy, which the dock's status card ("35 / 60 s"
+in amber when RAM trims it) and the overlay both show. The span itself uses rational arithmetic at
+the exact `fps_num/fps_den`: multiplying by a truncated frame interval could floor a 1800-frame span
+at 60fps to 29s.
+
+**v0.6.0: refilling behind the loading scene when the buffer restarts.** A hard resize (§4.6) — the
+delay, the minimum quality or OBS's video settings changed while the ring holds frames, or the kill
+switch flipped — empties the ring, so the wrapper would show nothing for `delay` seconds. The filter
+emits `buffer_restarted` on its source; `ObsFrontendBridge` connects to it when it enables the filter
+and hops it to the UI thread as `FrontendEvent::BufferRestarted`; `BufferModeController` then puts
+the loading scene back on Program (keeping the live scene rendering), re-syncs audio and goes back
+to `Filling` (the dock re-arms its fill timer). For a change it makes itself (`SetDelaySeconds()` /
+`SetMinResolutionHeight()` while `Active`), the controller predicts the restart with
+`EstimateBufferFit()` and switches Program before pushing the setting. Without a loading scene,
+Program stays on the blank wrapper, never on the undelayed live scene. Since v0.6.0 the dock locks
+the live and loading scenes, the seconds and the minimum quality while `Filling`/`Active` (a
+disabled control is also out of the tab order), so in practice restarts come from OBS video resets
+or the filter's own properties. Known limitation: `status_.delaySeconds` (the dock's value) stays the
+reference — `SyncAudioDelayToVideoEffective()` only ever shortens audio's delay below it, so a delay
+raised from the filter's properties above the dock's value isn't followed by audio nor by the fill
+timer.
 
 ### 3.4. Freeing the RAM ring on Disable
 
@@ -202,9 +249,19 @@ runs again once disabled, so nothing would ever shrink/free its RAM ring on its 
 registers a `"release_buffers"` proc handler on its own `obs_source_t` (`obs_source_get_proc_handler`);
 `ObsFrontendBridge::SetBufferFilterEnabled(false)` calls it. Since that call can happen from any thread
 (in practice, the Qt dock's button-click thread) while the ring is only ever touched from the
-graphics/video thread, the actual `ring_.clear()` is queued onto `OBS_TASK_GRAPHICS` via
+graphics/video thread, the release is queued onto `OBS_TASK_GRAPHICS` via
 `obs_queue_task(..., wait=true)` rather than done in place — it runs strictly after any Render() call
 still in flight, with no lock needed.
+
+Since v0.6.0 that task (`ReleaseBuffersTask`) logs the cycle's last telemetry window (§4.5), then
+`StopCycle(true)`: the ring, every queued job's reference to it and the raw frame pool's storage are
+handed to the codec pipeline's reaper thread (§4.6), every codec worker closes its own codec
+contexts, and `ReleaseSizedGpuObjects()` frees the capture and plane render targets, the staging
+surfaces and the playback textures — ~100 MB of RAM (measured) and ~37 MB of VRAM (estimated) at
+1440p that used to stay allocated while the delay was off. Reopening them on the next Enable costs
+about a millisecond. Contract change: `wait=true` now guarantees that the ring is detached from the
+filter, not that its memory is already back with the OS — the reaper frees it milliseconds later.
+The graphics thread never frees the arena (hundreds of MB, tens of ms) nor waits for a worker.
 
 ### 3.5. Buffer sizing: output ceiling, then quality floor, then duration
 
@@ -213,15 +270,16 @@ The user picks two things, both fully free choices, never restricted:
 - **Delay (seconds)** — 1 to 60 in the dock's spinner (a UI sanity cap; the real limit is the RAM
   math below).
 - **Minimum quality** — 480p / 720p / 1080p. The floor for the RAM reduction below: rather than store
-  the delayed video below this height, the plugin stores fewer seconds. Since v0.5.1 it never raises
+  the delayed video below this height, the plugin stores fewer seconds. Since v0.6.0 it never raises
   the buffer above OBS's output resolution, though (rule 1 below): with a 720p output the buffer is
-  720p even with a 1080p minimum, since storing more rows than OBS emits buys nothing.
+  720p even with a 1080p minimum, since storing more rows than OBS emits buys nothing. It is also the
+  floor of the adaptive degradation (§4.7).
 
 `EnsureRingSized()` computes a **RAM budget** from the machine's total system RAM (`GlobalMemoryStatusEx`
 on Windows; unimplemented on other platforms, in which case a conservative fallback is used) — 50% of
 total RAM, clamped between a 1GB floor and a 24GB ceiling.
 
-Since v0.5.1 the sizing itself is a pure function, `bufferfit::Compute()` (`src/buffer-fit.hpp`/`.cpp`,
+Since v0.6.0 the sizing itself is a pure function, `bufferfit::Compute()` (`src/buffer-fit.hpp`/`.cpp`,
 free of libobs and FFmpeg so it can be unit-tested), called with the same input by `EnsureRingSized()`
 (which actually resizes the ring) and by `VideoDelayFilter::EstimateBufferFit()` (the dock's
 estimate), so what the dock predicts is what happens. Its input is the target's size, the canvas
@@ -229,11 +287,12 @@ estimate), so what the dock predicts is what happens. Its input is the target's 
 the minimum quality, the RAM budget and the assumed compression ratio (§4.3). It applies three rules,
 in order:
 
-1. **Output ceiling (v0.5.1).** The buffer never holds more pixels than OBS's main mix outputs
+1. **Output ceiling (v0.6.0).** The buffer never holds more pixels than OBS's main mix outputs
    (Settings → Video → Output (Scaled) Resolution). Anything above it is discarded by OBS's own output
    rescale, but it cost the plugin CPU: MJPEG encode/decode (§4.2) scale roughly linearly with pixels
-   and run on OBS's graphics thread. A user with a 2560x1440 canvas and a 1920x1080 output at 60fps
-   got "Encoding overloaded" from OBS with v0.5.0, which buffered at the canvas size; benchmarked
+   and ran on OBS's graphics thread until v0.6.0. A user with a 2560x1440 canvas and a 1920x1080
+   output at 60fps got "Encoding overloaded" from OBS with v0.5.0, which buffered at the canvas
+   size; benchmarked
    offline with the same FFmpeg build and pipeline, a 2560x1440 buffer costs 14.3/17.4ms p50/p95 of
    encode + decode per frame (single-threaded encoder). The ceiling is a uniform scale,
    `capScale = min(1, max(outW/baseW, outH/baseH))`: it keeps the canvas aspect ratio and never goes
@@ -244,15 +303,18 @@ in order:
    but never below `minResolutionHeight` rows — and that floor never exceeds the ceiling. The
    reduction is computed against the continuous cost, then walked down whole source rows until the
    rounded frame really fits, so a RAM-reduced ring still holds the full delay and the result is
-   monotonic in budget and output size. Dimensions are rounded with `llround` and forced even (NV12
-   chroma subsampling), with a floor of 2.
+   monotonic in budget and output size. Heights are rounded with `llround` and forced even (4:2:0
+   chroma), with a floor of 2. Widths are the nearest multiple of 8 not above the source
+   (`AlignedWidth()`, floor 8), for every rule and every degradation rung, so each I420 plane row is
+   a whole number of 4-byte words: libobs-opengl maps a staging surface with `linesize = width`
+   while `glReadPixels()` pads every row to 4 bytes, which sheared any other width on Linux and macOS.
 3. **Duration last.** If even the floor doesn't fit, the ring gets fewer frames: the plugin shortens
    the **actual buffered duration** instead of dropping below the floor.
 
 The frame count uses the exact rate: `ceil(delay × fps_num / fps_den)` plus a quarter second of slack
 (capture jitter must never leave the oldest slot younger than the delay) plus one slot, so 30s at
 60000/1001 needs 1815 slots rather than a truncated 59fps count. The capture cell is
-`1e9 × fps_den / fps_num` ns (16,683,333ns at 59.94fps); before v0.5.1 it was `1e9 / 59` there, which
+`1e9 × fps_den / fps_num` ns (16,683,333ns at 59.94fps); before v0.6.0 it was `1e9 / 59` there, which
 missed almost one real frame per second.
 
 The dock shows a live, non-blocking estimate of what a given (seconds, quality) combination will
@@ -263,7 +325,7 @@ logs `buffering at WxH (capped to OBS output WxH, canvas WxH)` whenever the ceil
 WARN if the ring has to be rebuilt while it holds frames (OBS video settings, delay or quality
 changed while the delay is on — the ring then refills from empty).
 
-**Escape hatch: `buffer_output_cap` (v0.5.1).** A hidden plugin setting: `"buffer_output_cap":
+**Escape hatch: `buffer_output_cap` (v0.6.0).** A hidden plugin setting: `"buffer_output_cap":
 false` in `buffer-mode-settings.json` (the plugin's config folder from `obs_module_get_config_path()`;
 on Windows `%APPDATA%\obs-studio\plugin_config\obs-trigglow-dynamic-delay\`) drops rule 1 and sizes
 like v0.5.0: source resolution, only reduced for RAM, never below the minimum quality. Not
@@ -283,9 +345,10 @@ filter saved with the scene collection, and the dock estimate uses it too. `Save
 rewrites the file from scratch at OBS exit and writes the key back only when it is `false` (everyone
 else's file stays as it was), which is also why it must be edited with OBS closed. The
 `settings loaded` and `enabled` log lines report `output_cap=on|off`, and the sizing log and the
-`perf check` line (§4.5) say when the cap is off. User-facing steps: `docs/TROUBLESHOOTING.md`.
+`perf check` line (§4.5) say when the cap is off. The `codec_workers` kill switch (§4.6) is read and
+pushed the same way. User-facing steps: `docs/TROUBLESHOOTING.md`.
 
-**Encoders above the buffer (v0.5.1).** With the ceiling on, an output whose video encoder runs above
+**Encoders above the buffer (v0.6.0).** With the ceiling on, an output whose video encoder runs above
 the buffer — a recording rescaled to the canvas, or an Enhanced Broadcasting track above the output —
 gets upscaled delayed video. `BufferModeController::WarnAboutEncodersAboveBuffer()` logs one WARN per
 encoder, size and delay cycle (an encoder restarted at another size is warned about again), naming
@@ -316,21 +379,25 @@ with the main canvas's aspect ratio (a second 16:9 canvas) is taken for the main
 that doesn't apply — and a main-canvas encoder rescaled to another aspect ratio (stretched) is missed.
 A vertical canvas (9:16) on a 16:9 main canvas is always told apart.
 
-**Tests (v0.5.1).** `tests/buffer_fit_tests.cpp` exercises `bufferfit::Compute()` without OBS:
+**Tests (v0.6.0).** `tests/buffer_fit_tests.cpp` exercises `bufferfit::Compute()` without OBS:
 canvas = output, 1440p → 1080p, 4K → 1080p, output above canvas, mismatched aspect ratios, a floor
-above the output, RAM reduction in range, an active floor, rounding, odd dimensions, degenerate
-input, a non-canvas target, zero delay, 59.94fps, the cap switched off, and budget/output sweeps.
+above the output, RAM reduction in range, an active floor, rounding, widths multiple of 8, odd
+dimensions, degenerate input, a non-canvas target, zero delay, 59.94fps, the whole-second effective
+delay, the cap switched off, and budget/output sweeps.
 `tests/encoder_check_tests.cpp` exercises the encoder WARN's decision (`encodercheck`), with the
 buffers sized by `bufferfit::Compute()` cap on and off: aspect-ratio matching, a canvas encoder not
 scaled and CPU-scaled, GPU-rescaled encoders above/equal/below the buffer, Enhanced Broadcasting
 tracks, vertical canvases (720x1280, 1080x1920) and a vertical main canvas, and a buffer the cap
-doesn't limit (cap off, output = canvas, RAM-limited). Off by default, so plugin packaging is
-unchanged. Two ways to build them (`tests/CMakeLists.txt`):
+doesn't limit (cap off, output = canvas, RAM-limited). Seven more suites cover the rest of the
+OBS-free code: `ui_tokens_tests` (WCAG contrast on OBS 31's palettes), `auto_names_tests` (§3.7),
+`overlay_layout_tests` (§3.6), `frame_arena_tests`, `frame_ring_tests` and
+`degradation_policy_tests` (§4.6, §4.7), and `pipeline_stress_tests` (§4.6). Off by default, so
+plugin packaging is unchanged. Two ways to build them (`tests/CMakeLists.txt`):
 
 ```
 # From the plugin's own build (same compiler flags as the plugin):
 cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
-cmake --build <dir> --target buffer_fit_tests encoder_check_tests --config RelWithDebInfo
+cmake --build <dir> --config RelWithDebInfo
 ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
 
 # Standalone, without downloading any OBS/Qt/FFmpeg dependency:
@@ -342,20 +409,59 @@ ctest --test-dir build_tests -C RelWithDebInfo --output-on-failure
 CI's `unit-tests` job (`.github/workflows/build-project.yaml`) runs the standalone path on Ubuntu,
 Windows and macOS, and gates the release job.
 
+### 3.6. The live overlay (v0.6.0)
+
+While the delay is `Active` and "Show delay overlay on stream" is checked, the wrapper scene shows a
+"DELAY 30 s" badge with the delay really in effect (`BufferModeStatus::effectiveDelaySeconds`). Since
+v0.6.0 it is **one image the plugin paints itself** (`src/overlay-badge.*`, QPainter on the UI
+thread only: ink plate, brand rule, Dynamic Delay mark, the bundled Archivo, or the system UI font when
+it isn't bundled), written as one PNG per seconds value to the plugin's config folder
+(`overlay/delay-badge-<N>s.png`, 500x145, 2.5x the 200x58 design so it stays sharp) and shown by a
+single image source, **Trigglow Delay Badge (auto)**. It replaces v0.5.x's badge PNG plus a separate
+text source in Segoe UI (Windows only, magic offsets to line the two up); its text can no longer be
+edited, and the old text source is removed on sight.
+
+Placement (`src/overlay-layout.*`, pure, `tests/overlay_layout_tests.cpp`): 2.2% of the canvas's
+short side away from the chosen corner (24 px at 1080p), keeping the share of the short side it has
+at 1080p, so it reads the same at 720p, 1440p and 4K and doesn't spread across a 1080x1920 vertical
+canvas. What the plugin last applied (corner, canvas size, position, scale) is kept in the scene
+item's private settings: the plugin places it again only when the corner changes in the dock, or
+when the canvas size changes and the item still sits where the plugin put it. A position or size
+the user set in OBS is kept. An existing image source with that name is reused instead of adding
+"... 2" copies.
+
+### 3.7. Names of the objects the plugin manages (v0.6.0)
+
+OBS looks these up by name, so they are fixed English ASCII constants, never translated
+(`src/auto-names.*`): the wrapper scene **Trigglow Delay Buffer (auto)**, the video filter
+**Trigglow Buffer Mode Delay (auto)**, one audio filter per source
+`Trigglow Audio Delay (auto) - <source>`, and the overlay **Trigglow Delay Badge (auto)**. Up to
+v0.5.x they ended in "(no tocar)" / "(auto, no tocar)" in every language.
+
+`ObsFrontendBridge::MigrateLegacyAutoNames()` renames old collections once, in place (position,
+filters and settings kept), on `FinishedLoading` and `SceneCollectionChanged` while `Inactive`.
+Every lookup also accepts the old names (`LookupNames()`), so a collection whose new name was
+already taken keeps working under the old one. The wrapper scene, under either name, is never
+offered as a live or loading scene. Consequences documented for users (`CHANGELOG.md`,
+`docs/TROUBLESHOOTING.md`): actions that refer to these objects by name (Stream Deck,
+obs-websocket) must be updated, and going back to v0.5.0 or earlier after the rename creates a
+"(no tocar)" set next to the "(auto)" one (the older version switches the "(auto)" filters off on
+load, so they stay inert).
+
 ## 4. v0.3.0: real MJPEG compression of the RAM ring
 
-§3.5's RAM budget math above still assumes an uncompressed NV12 ring for §3's core mechanism —
-that was accurate for v0.2.0, but as of v0.3.0 each ring slot (`VideoDelayFilter::Slot`,
-`src/video-delay-filter.hpp`) is additionally MJPEG-compressed on capture and decompressed on
-playback, on the platforms where that's available. This section describes that pipeline; §3's
-description of the capture/playback loop and the fixed GPU object pool is otherwise unchanged.
+§3.5's RAM budget math above still assumes an uncompressed ring for §3's core mechanism — that was
+accurate for v0.2.0, but as of v0.3.0 each buffered frame is additionally MJPEG-compressed on
+capture and decompressed on playback, on the platforms where that's available. This section
+describes that pipeline; since v0.6.0 it runs on worker threads (§4.6) over a ring of slot headers
+and a block arena, instead of synchronously in `Render()` over one buffer per slot.
 
 **Platform scope:** only where `TRIGGLOW_HAVE_FFMPEG` is defined — Windows and Linux, via a vendored,
 pinned-release BtbN LGPL-shared FFmpeg build (`avcodec`/`avutil`/`swresample`; never "latest", to keep
 builds reproducible). No equivalent trusted static FFmpeg build exists for macOS yet, so macOS isn't
-part of this: it keeps working exactly as it did in v0.2.0, uncompressed. Everywhere the codec isn't
-available (macOS today, or a build without FFmpeg linked), every code path below falls back to the
-pre-v0.3.0 raw-NV12 behavior automatically — compression is an addition on top of the existing
+part of this: it stores frames uncompressed (raw I420 since v0.6.0, `MakeRawCodec()`). Everywhere
+the codec isn't available (macOS today, or a build without FFmpeg linked), every code path below
+falls back to uncompressed storage automatically — compression is an addition on top of the existing
 mechanism, never a new requirement for it to work.
 
 ### 4.1. Why MJPEG, all-intra
@@ -375,72 +481,63 @@ as the cost of fitting this specific architecture rather than a general-purpose 
 
 ### 4.2. Encode/decode flow
 
-The capture step in `VideoDelayFilter::Render()` is unchanged through the async GPU→CPU readback
-(§3.1, steps 1–3): the harvested Y/UV bytes for the current tick land in `scratchNv12_`, one frame's
-worth of tightly-packed raw NV12, reused every tick as scratch space. From there:
+The codec sits behind a small interface, `VideoCodec` (`src/codec-pipeline.hpp`): one instance per
+thread, opened, used and closed by that thread only. On `TRIGGLOW_HAVE_FFMPEG` platforms it is
+`MjpegCodec` (`src/mjpeg-codec.*`); elsewhere `MakeRawCodec()` stores frames uncompressed.
 
-- **Encode (capture):** `EncodeScratchNv12Into()` de-interleaves `scratchNv12_`'s NV12 UV plane into
-  two separate, tightly-packed U and V scratch buffers (`encodeScratchU_`/`encodeScratchV_`) — MJPEG's
-  encoder wants planar 4:2:0, and NV12 is semi-planar (interleaved UV), a different memory layout.
-  Those planes are copied into a reused `AVFrame` (`encodeFrame_`, `AV_PIX_FMT_YUV420P` with
-  `AVCOL_RANGE_JPEG`) and pushed through `encoderCtx_`, the MJPEG `AVCodecContext` opened by
-  `EnsureCodecContextsOpen()` at the ring's current `bufferWidth_`/`bufferHeight_`, fixed quality via
-  `AV_CODEC_FLAG_QSCALE` (`qmin`/`qmax` both set to `kMjpegQuality = 5` — a commonly-cited MJPEG sweet
-  spot, visually close to lossless while still compressing meaningfully; not yet a dock setting). The
-  resulting packet's bytes are copied into the destination `Slot`'s `pixels`, with `usedBytes` set to
-  the packet size and `compressed = true`.
-- **Decode (playback):** `DecodeSlotIntoScratchNv12()` reverses this — feeds the slot's MJPEG packet
-  (`src.compressed` must be true) through `decoderCtx_` and writes the decoded planes back into
-  `scratchNv12_` as plain NV12 bytes, ready for the existing `gs_texture_set_image()` playback upload
-  (§3.1, step 5) exactly as if that slot had never been compressed at all.
-- **Fallback:** either function returns `false` (destination untouched) if the relevant codec context
-  isn't open — not found in the linked FFmpeg, or `avcodec_open2()` failed at this resolution — or a
-  specific frame genuinely fails to encode/decode. Callers then store/read `scratchNv12_` raw, exactly
-  the same code path platforms without `TRIGGLOW_HAVE_FFMPEG` always use. Compression is therefore
-  never a hard requirement for the ring to work at all — only ever a RAM optimization on top of it.
+- **Encode:** the I420 planes read back from the GPU (§3.1, step 3) are copied into a reused
+  `AVFrame` (`AV_PIX_FMT_YUV420P`, labelled `AVCOL_RANGE_MPEG` — the studio range the shader writes;
+  FFmpeg's MJPEG encoder accepts that label only with `strict_std_compliance =
+  FF_COMPLIANCE_UNOFFICIAL`, and it is metadata only: a 14-byte comment, identical decoded planes)
+  and pushed through an MJPEG `AVCodecContext` with fixed quality via `AV_CODEC_FLAG_QSCALE` (`qmin` =
+  `qmax` = `kMjpegQuality = 5` — a commonly-cited MJPEG sweet spot, visually close to lossless while
+  still compressing meaningfully; not a dock setting). The encoder is reopened lazily when the frame
+  size or the slice-thread count changes (about 1 ms, on the encoding thread). The encode worker
+  copies the packet into the ring's arena and publishes the slot (§4.6).
+- **Decode:** the decode worker pins the slot, copies its packet out, unpins it and decodes it
+  outside every lock. The decoded frame is the decoder's own `AVFrame`, uploaded plane by plane with
+  its own stride (no copy, no re-interleave), and returned to FFmpeg's buffer pool when released.
+- **Fallback:** if the encoder can't open at this size or a frame fails to encode, the frame is
+  stored raw (tightly packed I420) in the arena; raw frames are counted (`rawFallback`) and shown
+  without decoding. Compression is never a hard requirement for the ring to work at all — only ever a
+  RAM optimization on top of it.
 
-**Where this runs, and what it costs (v0.5.1).** Both encode and decode run synchronously inside
-`Render()`, on OBS's graphics thread — the thread that has to finish every frame within 1/fps
-(16.7ms at 60fps). Their cost scales roughly with the buffer's pixel count, which is why v0.5.1 caps
-the buffer at the output resolution (§3.5, rule 1) and adds the changes below. Benchmarked offline
-with the same FFmpeg build (encode + decode per frame, p50/p95): 1080p from 8.6/10.4ms (v0.5.0) to
-5.2/5.9ms; a 1440p canvas with a 1080p output from 14.3/17.4ms to ~5.2/5.9ms. A 1440p *output* is
-still buffered at 1440p: expected to be fine at 30fps, not yet at 60fps. Moving encode/decode onto
-worker threads, off the graphics thread (target 1440p60), is the next step — see
-`docs/ROADMAP.md`, v0.6.0.
+**Where this runs, and what it costs (v0.6.0).** Up to v0.5.0 both encode and decode ran
+synchronously inside `Render()`, on OBS's graphics thread — the thread that has to finish every
+frame within 1/fps (16.7ms at 60fps) — at canvas resolution: 14.3/17.4ms p50/p95 per frame at
+1440p, 8.6/10.4ms at 1080p (offline benchmark, same FFmpeg build). Since v0.6.0 they run on the
+codec worker threads (§4.6), and the graphics thread keeps only the conversion passes, the readback
+copy and the upload: ~1.2–1.7/1.6–2.1ms p50/p95 per frame at 1440p60 in the offline worker
+benchmark (Ryzen 7 7700X), with encode ~8.8/10.4ms and decode ~6.2/7.5ms on their own threads.
 
-- **Slice-threaded encoder (v0.5.1).** `EnsureCodecContextsOpen()` opens the MJPEG encoder with
-  `thread_type = FF_THREAD_SLICE` and `thread_count = clamp(hardware_concurrency() / 4, 1,
-  kMaxEncodeSliceThreads = 4)` — 4 on an 8-core/16-thread CPU, 1 on a 4-thread one — so each frame's
-  slices are encoded in parallel and the wall time on the graphics thread drops. `thread_type` must be
-  set explicitly: with only `thread_count > 1`, FFmpeg picks frame threading for MJPEG (`QSCALE` skips
-  its single-thread exception), `receive_packet()` then returns `EAGAIN` within the same tick, and
-  every frame would be stored raw. If `active_thread_type` still reports frame threading the encoder
-  is reopened single-threaded (WARN), and if opening with slices fails it retries with one thread.
-  Measured with the vendored n9.0.2: the 1080p encode path goes from 5.1 to 1.8ms p50 with 4 slices,
-  same total CPU, ~3.5% bigger packets. The decoder stays at `thread_count = 1` (n9.0's MJPEG decoder
-  has no threading). The `MJPEG encoder/decoder open` log line reports the thread counts, the logical
-  CPUs and `active_thread_type`.
-- **Standard Huffman tables (v0.5.1).** The encoder is opened with `huffman=default`
-  (`av_opt_set()` on its private options) instead of FFmpeg's default "optimal" tables, which need a
-  second pass per frame. With more than one slice FFmpeg already uses the standard tables, so this
-  changes the single-threaded encoder (fewer than 8 logical CPUs, or the single-threaded reopen):
-  10-17% less encode time (p50-p95, 1440p, vendored n9.0.2) for ~3% bigger packets. Huffman coding
-  is lossless, so the decoded frames are identical, and every packet still carries its tables (DHT),
-  so the decoder is unchanged. The result is checked and shown in the open log line
-  (`huffman=default`, or why it couldn't be set).
-- **Decode and upload each slot at most once (v0.5.1).** `Render()` runs once per view of the scene
-  (Program, preview, projectors, multiview) and used to decode and `gs_texture_set_image()` the due
-  slot in every one of those calls. The filter now remembers which slot (index + capture timestamp)
-  an upload was last attempted for; later calls for the same slot only draw the existing playback
-  textures, and a slot that failed to decode isn't retried on every call. If the due slot never got a
-  frame or fails to decode, the last frame uploaded in this cycle is drawn again (a "hold") instead of
-  drawing nothing; the next slot is still picked by age, so a hold is a one-frame stutter, never a
-  drift in the delay. While the ring is still filling nothing is drawn, as before. The cache is
-  invalidated in `ReleaseRing()` (Disable, ring resize) and `ReleaseSizedGpuObjects()` (resolution
-  change, destructor), so a hold can never show a frame from a previous cycle or a destroyed texture.
+- **Slice threads, explicitly.** An encode context can use 1, 2 or 4 slice threads
+  (`thread_type = FF_THREAD_SLICE`, `thread_count = k`); the degradation policy picks how many
+  (§4.7), and in sync mode (§4.6) it starts at `clamp(hardware_concurrency() / 4, 1, 4)` — 4 on an
+  8-core/16-thread CPU, 1 on a 4-thread one — because there they cut the encode's wall time on the
+  graphics thread (1080p encode path 5.1 → 1.8ms p50 with 4 slices, same total CPU, ~3.5% bigger
+  packets). `thread_type` must be set explicitly: with only `thread_count > 1`, FFmpeg picks frame
+  threading for MJPEG (`QSCALE` skips its single-thread exception), `receive_packet()` then returns
+  `EAGAIN` and every frame would be stored raw. If `active_thread_type` still reports frame threading
+  the encoder is reopened single-threaded (WARN). The decoder stays at `thread_count = 1` (n9.0's
+  MJPEG decoder has no threading). The `MJPEG encoder open` log line reports size, qscale, Huffman
+  tables, slice threads requested and granted, `active_thread_type` and the logical CPUs.
+- **Standard Huffman tables.** The encoder is opened with `huffman=default` (`av_opt_set()` on its
+  private options) instead of FFmpeg's default "optimal" tables, which need a second pass per frame.
+  With more than one slice FFmpeg already uses the standard tables, so this matters for the
+  single-slice contexts the worker pipeline starts with: 10-17% less encode time (p50-p95, 1440p,
+  vendored n9.0.2) for 3-3.5% bigger packets. Huffman coding is lossless, so the decoded frames are
+  identical, and every packet still carries its tables (DHT). The open log line says
+  `huffman=default`, or why it couldn't be set.
+- **Each frame decoded and uploaded at most once.** `Render()` runs once per view of the scene
+  (Program, preview, projectors, multiview). The decode worker decodes each frame once, and
+  `Render()` uploads a decoded frame only when it isn't already in the playback textures; other views
+  just redraw them. If the frame due isn't ready (dropped, still encoding, or not decoded in time),
+  the last frame uploaded in this cycle is drawn again (a "hold") instead of nothing; the next frame
+  is still picked by age, so a hold is a one-frame stutter, never a drift in the delay. While the
+  ring is still filling nothing is drawn. The playback cache is invalidated on every cycle end and
+  every resize, so a hold can never show a frame from a previous cycle or a destroyed texture.
 
-### 4.3. Budgeted allocation, grow-only
+### 4.3. Memory: budgeted slots (v0.3.0–v0.5.0), then a block arena (v0.6.0)
 
 Compressing the bytes stored inside a slot only pays off in practice if the slot's own memory
 allocation shrinks too — otherwise a smaller `usedBytes` inside a still-full-size `pixels` vector is a
@@ -463,15 +560,25 @@ size (identical to storing everything uncompressed), and the only way to release
 releasing the whole ring
 (`Disable()`, or a resolution change that reallocates `ring_` from scratch).
 
-**No zero fill (v0.5.1).** Slots used to be `std::vector<uint8_t>` sized with
-`assign(budgetedBytes, 0)`, which touches every page of the ring on the graphics thread the moment it
-is sized: resident memory jumped to the whole ring at once (~1.9GB at 1440p60) and the first
-`Render()` after `Enable()` stalled for ~381ms. `Slot::pixels` is now a default-initialized
-`std::unique_ptr<uint8_t[]>` with an explicit `capacity`, so a page only becomes resident when a frame
-is written to it: resident memory follows the real packet sizes (651-896MB instead of 1923MB at
-1440p60 in the offline simulation) and sizing takes ~5ms. The commit charge doesn't change. This
-relies on nothing ever reading past `usedBytes`: the decoder copies exactly `usedBytes` (checked
-against `capacity`), and a raw slot is only uploaded if it holds a whole NV12 frame.
+**Block arena (v0.6.0).** Per-slot buffers had two more costs. They were zero-filled when sized
+(`assign(budgetedBytes, 0)`), which touched every page of the ring on the graphics thread at once:
+~1.9GB resident at 1440p60 and a ~381ms stall (about 23 dropped frames) on the first `Render()`
+after `Enable()`. And freeing the ring meant one `VirtualFree` per slot (1816 at 1440p60, 87ms
+measured, 141ms in a user's log), also on the graphics thread. Since v0.6.0 the payloads live in a
+`FrameArena` (`src/frame-arena.*`): packets are bump-allocated back to back in blocks, never
+zero-filled, and a packet never straddles two blocks. Every block counts its live allocations;
+when the ring has overwritten every frame a block held, the block is recycled whole. Since the ring
+frees frames in roughly the order it wrote them, committed and resident memory both stay close to
+the real window of packets plus a block or two: ~576-768MB for 30s at 1440p60 in the offline
+simulation (main to heavy content), against 1923MB resident before. Allocations and frees can come
+from any thread in any order (encoders allocate, the ring frees when it reuses a slot). `Free()`
+never calls the OS: emptied blocks go to a spare list, and `Trim()`, the only call that returns
+memory (spares beyond two), runs on the reaper thread (§4.6). Sizing (`ArenaConfigFor()`): blocks of
+about 1/16 of the expected ring bytes, between 4 and 32MiB and never less than two raw frames
+(room for the raw fallback); a hard limit at the RAM budget (or what the ring was sized for, if
+more), past which an allocation fails and the frame is dropped (`drops arena`) instead of memory
+growing without bound. `kAssumedCompressionRatio` now only decides how many seconds fit the budget
+and the arena's expected size; nothing is reserved per slot any more.
 
 **v0.4.0 retune.** `kAssumedCompressionRatio` is `5.0` on `TRIGGLOW_HAVE_FFMPEG` platforms since
 v0.4.0, after the first real measurement (a live 30s/1080p60 gameplay session held a steady ~11-15x
@@ -495,50 +602,214 @@ measurement, not that `kAssumedCompressionRatio`'s value at the time (`3.0`, or 
 number) is what gameplay actually achieves.
 
 *Update:* v0.4.0's periodic `compression check` line produced the first real gameplay measurement
-(~11-15x, see §4.3's retune note), and since v0.5.1 those numbers are part of the `perf check` line
+(~11-15x, see §4.3's retune note), and since v0.6.0 the ratio is part of the `pipeline check` line
 (§4.5), measured on every user's session. It's still one data point per session and content type,
 not a guarantee.
 
-### 4.5. v0.5.1: `perf check` telemetry
+### 4.5. v0.6.0: `perf check` and `pipeline check` telemetry
 
 So a performance report can be checked from a user's log rather than guessed, `VideoDelayFilter`
-writes one INFO line every 10 seconds of rendering (`kPerfLogIntervalNs`), during `Filling` and
-`Active`. It replaces the 300-frame `compression check` line and includes its numbers:
+writes two INFO lines every 10 seconds of rendering (`kPerfLogIntervalNs`), during `Filling` and
+`Active`. They replace the 300-frame `compression check` line:
 
 ```
 perf check (periodic, 10.0s): buf=1920x1080 (capped to OBS output 1920x1080, canvas 2560x1440)
-fps=60.00 | render p50/p95/max=…ms readback=… encode=… decode=… upload=… | calls=…/s captures=…/s
-uploads=…/s holds=N rawFallback=N | obs frames+N lagged+N skipped+N | ratio=…x (cycle …x)
-ring=…MB/N slots growths=N
+fps=60.00 | render p50/p95/max=…ms own=… readback=… upload=… | calls=…/s captures=…/s uploads=…/s
+holds=N (late decode N, dropped N, encoding N) | obs frames+N lagged+N skipped+N
+
+pipeline check (periodic): mode=workers rung=0/4 capture=1920x1080@60.00fps enc=1x1 L=3 S=3 |
+enc0 p50/p95/max=…ms busy=…% enc1=… busy=…% dec=… busy=…% | drops reserve=N backpressure=N arena=N
+capture=N rawFallback=N encFail=N decFail=N staleEnc=N decJumps=N staleDec=N | queue enc max=N
+avg=… dec ahead avg=… min=N | ratio=…x arena=…MB committed (live …MB, peak …MB, N blocks of …MB,
+limit …MB) ring=N slots (ready N, dropped N, in flight N, pinned N)
 ```
 
-(one line in the log; wrapped here.)
+(two lines in the log; wrapped here.)
 
-- **Geometry:** the buffer resolution and why — `capped to OBS output WxH, canvas WxH`, `not capped,
-  source WxH, output WxH`, or `cap off (buffer_output_cap=false), …` — with `, reduced for RAM` when
-  §3.5's rule 2 kicked in; plus the exact fps.
-- **Timings:** per-phase wall time (`os_gettime_ns`) for the whole `Render()` call, the staging
-  readback, the encode (or the raw copy), the decode and the texture upload; p50/p95 through
-  `std::nth_element` over a fixed 4096-sample array per phase, max exact. No allocation per frame or
-  per window.
-- **Counters:** `Render()` calls, captured cells, uploads, holds (§4.2), raw fallbacks (encode
-  failed), this window's and the whole cycle's compression ratio, ring memory (allocated, i.e.
-  committed; since v0.5.1 the resident part is lower, see §4.3) and slot count, slot growths (§4.3),
-  and the deltas of OBS's own counters over the same window — total frames
+- **`perf check` — the graphics thread.** The full-quality buffer resolution and why —
+  `capped to OBS output WxH, canvas WxH`, `not capped, source WxH, output WxH`, or
+  `cap off (buffer_output_cap=false), …` — with `, reduced for RAM` when §3.5's rule 2 kicked in;
+  the exact fps; wall time (`os_gettime_ns`) of the whole `Render()` call (`render`), of the
+  plugin's own part of it (`own`: everything but rendering the live scene into the capture texture,
+  which OBS would render anyway — what the degradation policy judges, §4.7), of the staging readback
+  and copy, and of the texture upload; `Render()` calls, captures and uploads per second; holds
+  (§4.2) split by the state of the slot that was due (Ready but not decoded in time, Dropped, still
+  Encoding); and the deltas of OBS's own counters over the same window — total frames
   (`obs_get_total_frames`), lagged frames (rendering lag, `obs_get_lagged_frames`) and skipped frames
   (encoding lag, `video_output_get_skipped_frames`).
+- **`pipeline check` — the workers and the memory.** Mode (`workers`, or `sync` with the kill
+  switch, §4.6), degradation rung and the last one, the size and rate captured right now, encode
+  contexts × slice threads, decode-ahead (`L`) and staging slots (`S`); p50/p95/max per frame and
+  busy share of each encode context and of the decoder; drops (no free slot, encoders behind, arena
+  at its limit, failed readback), raw fallbacks, codec failures, encodes made stale by a reused slot,
+  decoder jumps, decoded frames dropped as stale after a render pause; encode queue depth and frames
+  decoded ahead; compression ratio; arena committed, live and peak memory, blocks, block size and
+  limit; and the ring's slot states.
+- **Samples:** p50/p95 through `std::nth_element` over a fixed 4096-sample array per series, max
+  exact. No allocation per frame or per window. The dropped and repeated rates of the last window
+  also feed the dock's degradation notice (§4.7).
 - **Windows:** a pause in `Render()` calls longer than 1s (filter hidden, OBS stalled) closes the
   current window early (`resumed after a pause`), so its per-second rates aren't diluted. The last
   partial window is logged when the delay is disabled (`filter disabled`, from the `release_buffers`
-  task) and when the filter is destroyed with the delay on, e.g. OBS closing (`filter destroyed`;
-  safe in the destructor because OBS destroys a source only after detaching it, and the line reads
-  only the filter's own members). Before v0.5.1 the filter was in practice never destroyed:
-  `ObsFrontendBridge` leaked a reference to it on every `Enable()` (`obs_source_get_filter_by_name()`
-  returns a new reference); every lookup now holds it in an `OBSSourceAutoRelease`, and the
-  destructor, which libobs runs on its destruction thread, enters the graphics context to free the
-  GPU objects. Windows shorter than 1s are dropped.
+  task), set to 0s (`delay set to 0`), and when the filter is destroyed with the delay on, e.g. OBS
+  closing (`filter destroyed`; safe in the destructor because OBS destroys a source only after
+  detaching it, and the lines read only the filter's own members). Before v0.6.0 the filter was in
+  practice never destroyed: `ObsFrontendBridge` leaked a reference to it on every `Enable()`
+  (`obs_source_get_filter_by_name()` returns a new reference); every lookup now holds it in an
+  `OBSSourceAutoRelease`, and the destructor, which libobs runs on its destruction thread, joins the
+  codec threads and then enters the graphics context to free the GPU objects. Windows shorter than
+  1s are dropped.
+- **Other lines:** `delay pipeline: …` at every cycle start (mode, buffer size, slots, delay, encode
+  contexts × slices, decode-ahead, staging slots, the degradation ladder down to its last rung, arena
+  block size and limit); a WARN per rung change (§4.7); `settings loaded` and `enabled` with
+  `output_cap=on|off codec_workers=on|off`.
 
-How to read each field from the user's side: `docs/TROUBLESHOOTING.md`, "Encoding overloaded".
+How to read each field from the user's side: `docs/TROUBLESHOOTING.md`, "Reading the log lines".
+
+### 4.6. v0.6.0: codec worker threads, ring and arena
+
+Design invariants: the video delay is exact by wall clock, frames are picked by capture age, and
+video and audio share one whole-second delay (§3.3); "never cut": while `Active` the ring is only
+emptied by a real geometry change; everything `gs_*` stays on the graphics thread (workers never
+touch the GPU); and each `AVCodecContext` is used by one thread only, which also opens and closes
+it. `src/codec-pipeline.*`, `src/frame-ring.*` and `src/frame-arena.*` are pure C++ (std::thread, no
+OBS, the codec injected), so tests drive them without OBS or FFmpeg.
+
+**Threads.**
+
+| Thread | Does | Never does |
+|---|---|---|
+| OBS graphics thread (`Render()`) | Renders and converts the capture, harvests the staging slot staged two captures ago into a raw frame from a pool (`kMaxEncodeContexts + 2` frames), reserves the ring slot, submits the encode job; picks the decoded frame due, uploads it if new, draws it; runs the degradation policy every 250ms | Encode, decode, (de)interleave, free the ring, wait for a worker |
+| Encode workers (1-2, `trigglow-enc-N`) | Pop jobs from a bounded FIFO, encode outside every lock with their own codec context, copy the packet into the arena, publish the slot | Touch the GPU, share a codec context |
+| Decode worker (1, `trigglow-dec`) | Decodes in capture order up to `L = 3` frames ahead of what's on screen, from the playback target the graphics thread publishes (`now − delay`, predictable from the clock); jumps straight to the frame due when it falls behind; is pointed at the oldest frames during the last 250ms of the fill window (`PrimeDecode()`), so the first delayed frame is ready when due; keeps `L + 2` decoded frames | Decode frames that will never be shown |
+| Reaper (1, `trigglow-reap`) | Frees what must never be freed on the graphics thread nor hold up an encode: detached rings and their arenas (600-770MB at 1440p, tens of ms), the raw frame pool after Disable, decoded frames dropped by a detach; runs the arena's `Trim()` | Anything else |
+
+**Ring and slot states.** `FrameRing` is a fixed number of slot headers plus the arena. Each slot is
+`Free`, `Reserved`, `Encoding`, `Ready` or `Dropped`, and whoever owns a state is the only one who
+touches the payload in it: the graphics thread reserves (`Free/Ready/Dropped → Reserved`, in capture
+order, with a new generation unique across rings), an encoder takes and publishes
+(`Reserved → Encoding → Ready`) only if the generation still matches, the decoder pins a `Ready` slot
+to copy its packet without the lock. `captureNs` is assigned at reservation, so timestamps never
+decrease from the oldest slot to the newest whatever order the encoders finish in, and playback's
+binary search stays valid with `Reserved/Encoding/Dropped` slots in between; display picks the
+newest `Ready` slot at or before the target, looking back past a few non-ready ones (a repeat of an
+older frame, never one from the future). One mutex guards headers and indices only, held for
+O(1)/O(log n) work; copies, encodes, decodes and frees happen outside it, and it is never nested
+with the pipeline's or the arena's locks.
+
+**Backpressure.** No free raw frame (encoders behind): the graphics thread drops the **newest**
+capture — nothing already done is wasted, the queue never grows, and playback by age just repeats
+the previous frame. No free slot (an encoder or the decoder a whole ring behind), or the arena at
+its limit: same, the frame is dropped. All of it is counted (`drops …`) and, sustained, it is the
+degradation policy's job (§4.7). After a pause in rendering (more than 4 capture intervals since the
+previous playback call), decoded frames left far behind the frame due are dropped unshown
+(`staleDec`) and the frame on screen is held until the decoder, which jumps to the due frame, has
+it — instead of briefly showing frames hundreds of ms older than the delay.
+
+**Cycle lifecycle.** The first `Render()` after Enable sizes the ring (`EnsureRingSized()`), builds
+the degradation ladder and attaches a new `FrameRing` to the pipeline; the worker threads are created
+lazily the first time and live as long as the filter, waiting on condition variables (no cost while
+idle). Disable: §3.4. A **hard resize** — new buffer size, slot count, frame interval, effective
+delay or kill-switch value with frames in the ring — ends the cycle (the old ring to the reaper) and
+starts a new one, with a WARN and the `buffer_restarted` signal (§3.3). A **soft change** — a
+degradation rung or the encode parallelism — keeps the same ring and slot count, so the span and the
+audio are untouched: staging slots and raw frames carry their own size, each encoder reopens its
+context lazily, the MJPEG decoder adapts to the size in each frame, and the playback textures are
+recreated when the uploaded frame's size changes. Destruction (OBS's destruction thread, never the
+graphics thread): stop and join the workers (each closes its codec; a join waits for at most one
+frame's encode or decode, or a ring being freed), then free the GPU objects inside a graphics
+context.
+
+**Kill switch: `codec_workers` (hidden).** `"codec_workers": false` in `buffer-mode-settings.json`
+puts the pipeline in sync mode: `SubmitEncode()` and `AcquireForDisplay()` run the codec inline on
+the graphics thread, as up to v0.5.0 but slice-threaded, on the same ring and arena; the reaper
+still frees memory off the graphics thread (and if it can't start, memory is freed inline). The
+degradation still runs, adding slice threads before lowering the rung. Same rules as
+`buffer_output_cap` (§3.5): read only at OBS load by `ReadHiddenSwitch()`, only a literal JSON
+`false` turns it off (any other type keeps it on with a WARN and is dropped from the file at exit),
+written back only when `false`, pushed to the filter on every `Enable()`
+(`ObsFrontendBridge::SetBufferFilterCodecWorkers()`), no filter property and no dock control. A
+value that differs from the running pipeline's builds a new pipeline at the next cycle (the old
+one's threads are joined in the destructor, never on the graphics thread). If a worker thread can't
+be started, the pipeline falls back to sync mode by itself. Reported as `codec_workers=on|off` in
+the `settings loaded` and `enabled` lines and as `mode=` in `pipeline check`.
+
+**Measured** (offline worker benchmark `bench-workers`, Ryzen 7 7700X, vendored FFmpeg n9.0.2,
+synthetic gameplay-like content, 20s per run, one encode context and one slice, p50/p95 ms):
+
+| Case | Graphics thread total | Encode | Decode | Encode / decode busy | CPU cores in total |
+|---|---|---|---|---|---|
+| 1440p60 main | 1.2–1.7 / 1.6–2.1 | 8.8–9.6 / 10.4–11.2 | 6.2–6.5 / 7.5–7.6 | 53–57% / 37–39% | ~1.0 |
+| 1440p60 heavy | 1.3 / 1.6 | 10.0–10.3 / 12.5–12.7 | 6.7–6.8 / 8.1–8.3 | 61–62% / 41–42% | ~1.1 |
+| 1080p60 main | 0.6 / 0.9 | 5.1 / 6.2 | 3.6 / 4.3 | 30% / 22% | ~0.5 |
+| 1440p60, sync mode, 4 slices | 10.6 / 12.2 | — | — | — | ~1.0 |
+
+The graphics-thread figures are a proxy (copies into plain memory); real D3D11 readback plus upload
+measured 0.47/0.58ms at 1440p on an RX 7800 XT. Not measured live inside OBS yet, nor on NVIDIA
+GPUs.
+
+**Tests.** `frame_arena_tests` (bump allocation, out-of-order frees, block recycling, the limit,
+oversized payloads, `Trim()`, a FIFO steady state, a multi-threaded run with content checks),
+`frame_ring_tests` (state machine, generations, reservation failures, age-based selection with
+dropped slots in the way, decode-ahead, payload freeing) and `pipeline_stress_tests`: a simulated
+graphics thread at 250fps (with the 2-frame staging delay) that at random moments detaches and
+reattaches (Disable, hard resize), changes the parallelism, the frame size (soft rung change) and
+the capture rate, with a fake codec that stamps every frame with its capture time. Hard checks: a
+shown frame is never younger than the playback target, shown capture times only increase, every
+frame's content matches its timestamp, no deadlock (watchdog), no arena leak, every ring is freed
+and none on the simulated graphics thread. It also covers a 300ms render pause and a decoder 2.5
+captures slow.
+
+### 4.7. v0.6.0: adaptive degradation
+
+`src/degradation-policy.*` (pure, `tests/degradation_policy_tests.cpp`) decides, from numbers only,
+how much parallelism the encoders get and which **quality rung** the buffer is captured at, so that
+a machine that can't keep up lowers the delayed picture's quality instead of lagging OBS or cutting
+the delay.
+
+**The two knobs.**
+- *Parallelism* (encode contexts × slice threads): with workers `1×1 → 2×1 → 2×2 → 2×4`; in sync mode
+  `1 → 2 → 4` slices on the one context. The starting step is predicted from the resolution: the
+  first whose predicted encode p95 (`1.1 × (0.3 + 2.3 ms per megapixel)`, divided by 1.6 per
+  doubling of slices) is at most 70% of what the contexts have per frame — 1440p60 starts at 1×1,
+  4K60 at 2×1; sync mode starts at `clamp(hardware_concurrency() / 4, 1, 4)` slices.
+- *Quality rung*: rung 0 is the fitted buffer (§3.5); then steps of ×0.83 in scale down to the
+  user's minimum quality in buffer pixels (the same floor `bufferfit` used; the floor itself is the
+  last resolution rung, never below it); then that floor captured at half the frame rate (every
+  other capture cell), only when the output runs at 48fps or more. Widths are multiples of 8,
+  heights even. Every rung is a soft change (§4.6): same ring, same slot count, so the delay never
+  moves; on the half-rate rung the span in time is unchanged and playback by age shows each frame
+  twice.
+
+**Evaluation.** Every 250ms, over trailing windows of 2s (0.5s for the immediate rule), and only 2s
+after the previous change (cooldown). Every metric needs at least 20 samples (10 for the immediate
+rule) or it is ignored.
+
+| Trigger (down, one step) | Condition | Action |
+|---|---|---|
+| Graphics thread | Plugin's own work (`own`, §4.5): p95 > 40% of the frame interval, or p95 > 25% while OBS lagged frames in the window, or p50 over the last 0.5s > 50% (checked 0.5s after a change) | Sync: more slices first, then a lower rung. Workers: a lower rung (what's left on the graphics thread scales with pixels) |
+| Encode (workers) | p95 > 80% of what the contexts have per frame (`p95 / (capture interval × contexts)`), or > 2% of captures dropped | More parallelism first, a lower rung once it's maxed out |
+| Decode (workers) | p95 > 80% of the capture interval, or > 5% of due frames not decoded in time | A lower rung (the MJPEG decoder has no threading) |
+| Up (one step) | The load predicted one step up (measured p95 × pixel ratio, or × 1.6 per halving of slices, × 1.1 margin) stays ≤ 25% of the frame interval on the graphics thread and ≤ 50% for the workers, for 30s in a row | Quality first (`higher rung`), then parallelism given back down to the starting step |
+
+The decoder works `delay` seconds behind the capture, so right after a rung change it still decodes
+the previous rung's frames: every frame is tagged with the rung it was captured at, and decode
+metrics only count once they come from the current rung — no second step for a load the first one
+hasn't reached the decoder yet, and no going up on the old rung's numbers. At the last rung with the
+load still too high, nothing more is done (no oscillation, no cut); captures keep being dropped and
+counted.
+
+**Reporting.** Every rung change is a WARN (`delay buffer lower rung (encode, load 85%): now WxH at
+F fps capture, rung N of M (…) -- last 2s: … The delay itself is unchanged.`); parallelism changes
+are INFO. The filter keeps a `PipelineHealth` (`src/pipeline-health.hpp`: rung, maximum rung, size
+now and full, capture and output fps, encode contexts and slices, cause of the last step down,
+dropped and repeated frames per minute over the last telemetry window, a change counter) under a
+small mutex; its `get_pipeline_state` proc only copies it, never hopping to the graphics thread, so
+a lagging render can't block the UI. The dock polls it once a second while `Filling`/`Active` and,
+while the rung is above 0, shows "Buffer quality lowered" in the status card: what was lowered
+(resolution against the full size, capture fps, or both), the cause (OBS's graphics thread,
+compressing or decompressing the frames) and that the delay is unchanged, plus repeated/dropped
+frames per minute when above zero.
 
 ## 5. Scope of v0.2.0, as actually shipped
 
@@ -594,28 +865,44 @@ specifically re-tested for recurrence.
 ## 8. Architecture
 
 ```
-plugin-main.cpp              → obs_module_load/unload, wiring for all components
+plugin-main.cpp              → obs_module_load/unload, wiring for all components, settings file
+                                (hidden buffer_output_cap / codec_workers, .invalid set-aside)
 buffer-mode-controller.*      → the state machine described in §3.3 (Inactive/Filling/Active/Error)
 obs-frontend-bridge.*         → the only layer that touches obs-frontend-api.h + filter/scene wiring
-video-delay-filter.*          → §3.1 -- the RAM/NV12 ring buffer and its small fixed GPU object pool
-                                (§4 -- v0.3.0 MJPEG compression, Windows/Linux only;
-                                §4.5 -- v0.5.1 perf check telemetry)
+video-delay-filter.*          → §3.1 -- capture, I420 conversion, readback, playback and the small
+                                fixed GPU object pool; owns the ring, the codec pipeline and the
+                                degradation policy (§4.5 -- perf check / pipeline check telemetry)
+codec-pipeline.*              → §4.6 -- encode/decode worker threads and the reaper (v0.6.0)
+mjpeg-codec.*                 → §4.2 -- MJPEG over the vendored FFmpeg, one instance per thread
+                                (Windows/Linux only)
+frame-ring.*                  → §4.6 -- ring of slot headers with a state machine (v0.6.0)
+frame-arena.*                 → §4.3 -- block arena for the frame payloads (v0.6.0)
+degradation-policy.*          → §4.7 -- adaptive degradation, pure (v0.6.0)
+pipeline-health.hpp           → §4.7 -- what the dock reads about the pipeline (v0.6.0)
+perf-stats.*                  → §4.5 -- fixed-size percentile series and rolling windows
 buffer-fit.*                  → §3.5 -- pure ring sizing math (output ceiling, quality floor, RAM
-                                budget, exact fps), no libobs/FFmpeg dependency (v0.5.1)
+                                budget, exact fps, whole-second effective delay), no libobs/FFmpeg
 encoder-check.*               → §3.5 -- pure decision behind the "encoder above the buffer" WARN
-                                (which encoders see the main canvas), no libobs dependency (v0.5.1)
+                                (which encoders see the main canvas), no libobs dependency
 audio-delay-filter.*          → §3.2 -- per-leaf-source audio delay ring
+overlay-badge.*               → §3.6 -- paints the live overlay as one PNG (QPainter, UI thread)
+overlay-layout.*              → §3.6 -- pure placement of the overlay on the canvas
+auto-names.*                  → §3.7 -- names of the managed objects and their migration
 hardware-info.*               → total system RAM query (replaces the earlier VRAM/DXGI query)
 scene-combo-box.*             → dock combo box populated from obs_frontend_get_scene_names()
 settings-ui.*                 → the Qt dock (live/loading scene, seconds, quality, fit estimate,
-                                Enable/Disable, live fill countdown)
+                                Enable/Disable, live fill countdown, locked fields, degradation
+                                notice)
+ui-tokens.* / ui-theme.*      → colors derived from OBS's palette (WCAG AA), style sheet, bundled
+                                fonts and recolored SVG icons
 hotkeys.*                     → registration of the 3 native OBS hotkeys, wired to
                                 BufferModeController's Enable()/Disable()/Toggle()
 logging.*                     → logging wrapper with a component prefix
 delay-controller.*            → §6 -- legacy reconnect-mode logic, present but unused
-tests/buffer_fit_tests.cpp    → §3.5 -- unit tests for buffer-fit.*, built only with
-                                -DTRIGGLOW_BUILD_TESTS=ON (v0.5.1)
-tests/encoder_check_tests.cpp → §3.5 -- unit tests for encoder-check.*, same (v0.5.1)
+tests/                        → 9 suites, built only with -DTRIGGLOW_BUILD_TESTS=ON or on their own
+                                (cmake -S tests): buffer_fit, encoder_check, ui_tokens, auto_names,
+                                overlay_layout, frame_arena, frame_ring, degradation_policy,
+                                pipeline_stress
 ```
 
 Design principle: **`BufferModeController` is the only owner of state**. The dock and the hotkeys both
