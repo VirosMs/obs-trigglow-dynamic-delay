@@ -34,7 +34,9 @@ python -P make_fonts.py <folder with the two upstream .ttf files> <output folder
 - OpenType features kept: `kern liga calt ccmp locl mark mkmk tnum case` (`tnum` gives the overlay's
   tabular figures).
 - Names: typographic family "Archivo" / "Geist Mono" with styles "SemiBold", "Bold", "Medium";
-  legacy (GDI) family "Archivo SemiBold" / "Geist Mono Medium" for the non-RIBBI styles. The plugin
+  legacy (GDI) family "Archivo SemiBold" / "Geist Mono Medium" for the non-RIBBI styles, whose legacy
+  style is "Regular". The style bits follow it: `fsSelection` BOLD and `macStyle` bold on
+  Archivo-Bold, `fsSelection` REGULAR on the SemiBold and Medium files, never ITALIC. The plugin
   never hardcodes a family name: it reads what Qt registered
   (`QFontDatabase::applicationFontFamilies()`), which on Windows/DirectWrite is the typographic one.
 

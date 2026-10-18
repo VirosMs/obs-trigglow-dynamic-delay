@@ -1,6 +1,6 @@
 """Instance and subset the bundled brand fonts for the OBS plugin.
 
-Usage: python -I make_fonts.py <input_dir> <output_dir>
+Usage: python -P make_fonts.py <input_dir> <output_dir>
 """
 
 import sys
@@ -38,16 +38,20 @@ JOBS = [
 ]
 
 
+def legacy_style(style: str) -> str:
+    """The legacy (GDI, name ID 2) style: RIBBI styles keep theirs, the rest are "Regular"."""
+    return style if style in ("Regular", "Bold") else "Regular"
+
+
 def set_names(font: TTFont, family: str, style: str) -> None:
     """Static-font naming: typographic family + style, legacy family for non-RIBBI."""
     name = font["name"]
     full = f"{family} {style}"
     ps = f"{family.replace(' ', '')}-{style}"
     legacy_family = family if style in ("Regular", "Bold") else full
-    legacy_style = style if style in ("Regular", "Bold") else "Regular"
     for rec_id, value in (
         (1, legacy_family),
-        (2, legacy_style),
+        (2, legacy_style(style)),
         (4, full),
         (6, ps),
         (16, family),
@@ -65,12 +69,15 @@ def main(src_dir: Path, out_dir: Path) -> None:
         font = TTFont(src_dir / src)
         static = instancer.instantiateVariableFont(font, loc, inplace=False)
         static["OS/2"].usWeightClass = weight
-        # RIBBI bits: Bold only for the 700 instance; never italic.
+        # RIBBI bits match the legacy style set_names() writes: BOLD for "Bold"
+        # (the 700 instance), REGULAR for "Regular" (SemiBold and Medium are
+        # "Regular" members of their own legacy families); never italic.
+        bold = legacy_style(style) == "Bold"
         fs = static["OS/2"].fsSelection & ~0b1100001  # clear ITALIC, BOLD, REGULAR
-        fs |= 0b100000 if weight == 700 else 0b1000000 if weight == 400 else 0
+        fs |= 0b100000 if bold else 0b1000000
         static["OS/2"].fsSelection = fs
         mac = static["head"].macStyle & ~0b11
-        static["head"].macStyle = mac | (0b1 if weight == 700 else 0)
+        static["head"].macStyle = mac | (0b1 if bold else 0)
         set_names(static, family, style)
 
         opts = Options()
