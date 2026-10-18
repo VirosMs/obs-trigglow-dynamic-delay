@@ -170,6 +170,7 @@ private:
 		uint64_t startNs = 0;           // Start of the first Render() measured (0 = window empty).
 		uint64_t lastSampleNs = 0;      // End of the last Render() measured.
 		PerfSeries render;              // Whole Render() call (main path), EnsureRingSized() included.
+		PerfSeries own;                 // The same minus rendering the scene itself: the plugin's own work.
 		PerfSeries readback;            // Staging maps + memcpy into the RawFrame + unmaps (Y, U, V).
 		PerfSeries upload;              // The three gs_texture_set_image() calls.
 		uint64_t calls = 0;             // Render() calls that reached the main path.
@@ -377,7 +378,7 @@ private:
 	degradation::Policy policy_;
 	uint64_t nextPolicyEvalNs_ = 0;
 	// Trailing windows the policy reads (timestamps from os_gettime_ns).
-	RollingWindow renderRecent_;                // Render() wall time per call.
+	RollingWindow renderRecent_;                // Render() own work per call (PerfWindow::own).
 	RollingWindow captureEvents_;               // One per capture attempt.
 	RollingWindow dropEvents_;                  // One per capture lost (busy slot, backpressure, staging).
 	RollingWindow dueEvents_;                   // One per new frame due in playback (tag: its capture rung).
@@ -417,6 +418,7 @@ private:
 	size_t stagingNext_ = 0; // Slot the next capture is staged into.
 
 	PerfWindow perf_;                        // Graphics thread only.
+	uint64_t sceneRenderNs_ = 0;             // This Render() call's obs_source_video_render(target) time.
 	CodecPipeline::WindowStats workerStats_; // Scratch for LogPerfWindow().
 
 	// Dock-facing state (design B.8), written on the graphics thread, read by

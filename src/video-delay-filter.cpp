@@ -588,6 +588,7 @@ void VideoDelayFilter::PerfWindow::Reset()
 	startNs = 0;
 	lastSampleNs = 0;
 	render.Reset();
+	own.Reset();
 	readback.Reset();
 	upload.Reset();
 	calls = 0;
@@ -631,8 +632,15 @@ void VideoDelayFilter::FinishRenderSample(uint64_t renderStartNs)
 		perf_.obsLaggedFramesStart = perf_.obsLaggedFramesLast;
 		perf_.obsSkippedFramesStart = perf_.obsSkippedFramesLast;
 	}
-	perf_.render.Push(endNs - renderStartNs);
-	renderRecent_.Push(endNs, endNs - renderStartNs);
+	// The policy judges only what the plugin adds to the graphics thread:
+	// everything but rendering the scene itself into the capture texture,
+	// which OBS would render anyway (and whose cost, game captures and GPU
+	// waits included, the 25/40% thresholds were never calibrated for).
+	const uint64_t totalNs = endNs - renderStartNs;
+	const uint64_t ownNs = totalNs - std::min(totalNs, sceneRenderNs_);
+	perf_.render.Push(totalNs);
+	perf_.own.Push(ownNs);
+	renderRecent_.Push(endNs, ownNs);
 	++perf_.calls;
 	perf_.lastSampleNs = endNs;
 	if (endNs - perf_.startNs >= kPerfLogIntervalNs)
@@ -652,9 +660,11 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 	const double seconds = static_cast<double>(windowNs) / 1e9;
 
 	double renderP50, renderP95, renderMax;
+	double ownP50, ownP95, ownMax;
 	double readbackP50, readbackP95, readbackMax;
 	double uploadP50, uploadP95, uploadMax;
 	perf_.render.Summarize(renderP50, renderP95, renderMax);
+	perf_.own.Summarize(ownP50, ownP95, ownMax);
 	perf_.readback.Summarize(readbackP50, readbackP95, readbackMax);
 	perf_.upload.Summarize(uploadP50, uploadP95, uploadMax);
 
@@ -681,13 +691,14 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 	const double fps = static_cast<double>(fpsNum_) / std::max<uint32_t>(1, fpsDen_);
 	TRIGGLOW_LOG_INFO(kComponent,
 			  "perf check (%s, %.1fs): buf=%ux%u (%s) fps=%.2f | render p50/p95/max=%.2f/%.2f/%.2fms "
-			  "readback=%.2f/%.2f/%.2f upload=%.2f/%.2f/%.2f | calls=%.1f/s captures=%.1f/s "
-			  "uploads=%.1f/s holds=%llu (late decode %llu, dropped %llu, encoding %llu) | obs frames+%llu "
-			  "lagged+%llu skipped+%llu",
+			  "own=%.2f/%.2f/%.2f readback=%.2f/%.2f/%.2f upload=%.2f/%.2f/%.2f | calls=%.1f/s "
+			  "captures=%.1f/s uploads=%.1f/s holds=%llu (late decode %llu, dropped %llu, encoding %llu) | "
+			  "obs frames+%llu lagged+%llu skipped+%llu",
 			  reason, seconds, bufferWidth_, bufferHeight_, geometry, fps, renderP50, renderP95, renderMax,
-			  readbackP50, readbackP95, readbackMax, uploadP50, uploadP95, uploadMax,
-			  static_cast<double>(perf_.calls) / seconds, static_cast<double>(perf_.captures) / seconds,
-			  static_cast<double>(perf_.uploads) / seconds, static_cast<unsigned long long>(perf_.holds),
+			  ownP50, ownP95, ownMax, readbackP50, readbackP95, readbackMax, uploadP50, uploadP95,
+			  uploadMax, static_cast<double>(perf_.calls) / seconds,
+			  static_cast<double>(perf_.captures) / seconds, static_cast<double>(perf_.uploads) / seconds,
+			  static_cast<unsigned long long>(perf_.holds),
 			  static_cast<unsigned long long>(perf_.holdsLateDecode),
 			  static_cast<unsigned long long>(perf_.holdsDropped),
 			  static_cast<unsigned long long>(perf_.holdsEncoding),
@@ -1087,7 +1098,8 @@ void VideoDelayFilter::ApplyDegradation(const degradation::Decision &decision, c
 	const double intervalMs = static_cast<double>(frameIntervalNs_) / 1e6;
 	char metrics[320];
 	std::snprintf(metrics, sizeof(metrics),
-		      "last 2s: render p95 %.2fms (%.0f%% of a frame), encode p95 %.2fms, decode p95 %.2fms, "
+		      "last 2s: graphics thread (own work) p95 %.2fms (%.0f%% of a frame), encode p95 %.2fms, "
+		      "decode p95 %.2fms, "
 		      "%u of %u captures dropped, %u of %u due frames decoded late, OBS lagged %u",
 		      sample.graphicsP95Ms, 100.0 * sample.graphicsP95Ms / intervalMs, sample.encodeP95Ms,
 		      sample.decodeP95Ms, sample.encodeDrops, sample.captures, sample.decodeMisses, sample.dueFrames,
@@ -1296,6 +1308,7 @@ void VideoDelayFilter::Render()
 {
 	const uint64_t renderStartNs = os_gettime_ns();
 	BeginRenderSample(renderStartNs);
+	sceneRenderNs_ = 0;
 
 	obs_source_t *target = obs_filter_get_target(filterSource_);
 	if (!target) {
@@ -1426,7 +1439,9 @@ void VideoDelayFilter::CaptureFrame(obs_source_t *target, uint32_t sourceWidth, 
 			gs_matrix_push();
 			gs_ortho(0.0f, static_cast<float>(sourceWidth), 0.0f, static_cast<float>(sourceHeight), -100.0f,
 				 100.0f);
-			obs_source_video_render(target);
+			const uint64_t sceneStartNs = os_gettime_ns();
+			obs_source_video_render(target); // The scene's own cost: not ours (FinishRenderSample()).
+			sceneRenderNs_ += os_gettime_ns() - sceneStartNs;
 			gs_matrix_pop();
 			gs_texrender_end(captureTexrender_);
 		}

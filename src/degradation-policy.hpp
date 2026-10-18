@@ -38,10 +38,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //
 // Going down (all over a trailing ~2 s window, after a 2 s cooldown since the
 // last change):
-//   - Graphics thread (Render() p95 > 40% of the frame interval, or its p50
-//     over the last 0.5 s > 50%, or OBS lagging frames while p95 > 25%):
-//     sync -> more slices first, then a lower rung; threaded -> a lower rung
-//     (what's left on G scales with pixels).
+//   - Graphics thread (the plugin's own work in Render() -- conversion,
+//     readback and copy, upload, and the codec in sync mode; not rendering
+//     the scene itself, which OBS does anyway -- p95 > 40% of the frame
+//     interval, or its p50 over the last 0.5 s > 50%, or OBS lagging frames
+//     while p95 > 25%): sync -> more slices first, then a lower rung;
+//     threaded -> a lower rung (what's left on G scales with pixels).
 //   - Encode (threaded): p95 per frame above 80% of what the contexts have
 //     per frame, or > 2% of captures dropped for backpressure -> more
 //     parallelism first, a lower rung once it's maxed out.
@@ -114,6 +116,8 @@ struct Thresholds {
 struct Sample {
 	uint64_t nowNs = 0;
 	uint64_t frameIntervalNs = 0; // OBS output frame interval (1/fps).
+	// The plugin's own work per Render() call on the graphics thread (not the
+	// scene's render), see the header comment.
 	uint32_t graphicsSamples = 0;
 	double graphicsP95Ms = 0.0;
 	uint32_t graphicsShortSamples = 0;
