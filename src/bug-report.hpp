@@ -20,38 +20,36 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <string>
 
-// Finds and copies OBS's own current session log somewhere convenient for a
-// user to attach to a Trigglow support ticket. The plugin has no telemetry
-// of its own -- when a stream lagged live and the user has no idea how to
-// pull logs themselves, OBS's own log file (the same one "Help > Log Files >
-// View Current Log" opens inside OBS) is the only record of what actually
-// happened. Kept deliberately separate from settings-ui.cpp (the dock,
-// Qt-facing): this file does plain filesystem work only, no Qt dependency --
-// same "one small file, one job" split as win-http.cpp/hardware-info.cpp.
+// OBS's own current session log, prepared for a support ticket. The plugin
+// has no telemetry of its own -- when a stream lagged live and the user has no
+// idea how to pull logs themselves, OBS's own log file (the same one "Help >
+// Log Files > View Current Log" opens inside OBS) is the only record of what
+// actually happened. Plain filesystem work, no Qt -- same "one small file, one
+// job" split as win-http.cpp/hardware-info.cpp.
+//
+// Since v0.6.0 the log is read into memory and redacted there
+// (log-redact.hpp: user names in paths, URLs, keys, emails, IPs, tokens)
+// before anything else sees it; no copy is written to disk. It is only ever
+// sent as a ticket attachment, never to Trigi.
 namespace trigglow {
 
-struct BugReportLogResult {
-	bool found = false;     // False if OBS's own log directory/current log couldn't be located.
-	std::string sourcePath; // OBS's original log file path (UTF-8). Empty if !found.
-	std::string copiedPath; // Where it was copied for the user to attach (UTF-8). Empty if the copy failed.
-	std::string copiedDir;  // Just the containing folder of copiedPath, for opening in a file browser.
+// True where the current log can be located (Windows today: OBS's log folder
+// is a fixed, well-known path there, %APPDATA%\obs-studio\logs\). Elsewhere
+// callers point the user at OBS's own "Help > Log Files" menu instead.
+bool CanLocateObsLog();
+
+struct RedactedObsLog {
+	bool found = false;  // OBS's current log was located and read.
+	std::string text;    // Redacted and capped for upload (logredact::CapForUpload). UTF-8.
+	bool capped = false; // The middle of a very long log was left out.
 };
 
-// Windows only for now -- OBS's log directory is a fixed, well-known path
-// there (%APPDATA%\obs-studio\logs\). Other platforms return found=false,
-// same "unknown, degrade gracefully rather than guess" convention
-// hardware-info.hpp's QueryTotalSystemRamBytes() already uses for
-// non-Windows RAM detection. Callers must handle found=false by pointing the
-// user at OBS's own "Help > Log Files > View Current Log" menu instead.
-BugReportLogResult CopyCurrentObsLogForSupport();
+// BLOCKING: reads (up to a few MB of the start and end of a huge log) and
+// redacts. Run it off the UI thread.
+RedactedObsLog ReadCurrentObsLogRedacted();
 
-// Reads `path` fully into `outBytes` (binary, no text-mode newline
-// translation). Returns false (outBytes left untouched) if the file can't be
-// opened. Used by ReportBugDialog to load the copied OBS log before
-// attaching it to a support ticket via win-http.hpp's
-// HttpsPostMultipartFile() -- kept here, not in that Qt-facing dialog file,
-// same "plain filesystem work only" split as CopyCurrentObsLogForSupport()
-// above.
-bool ReadFileBytes(const std::string &path, std::string &outBytes);
+// Deletes the %TEMP%\Trigglow\trigglow-obs-log-*.txt copies that versions
+// before 0.6.0 left behind (they were never cleaned up). Call once at load.
+void DeleteLeftoverSupportLogCopies();
 
 } // namespace trigglow

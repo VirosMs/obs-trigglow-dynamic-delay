@@ -183,7 +183,7 @@ private:
 
 	// Wired to reportBugButton_: opens ReportBugDialog (report-bug-dialog.hpp),
 	// which collects a short description and submits a real support ticket
-	// to trigglow.com with OBS's current log attached automatically -- see
+	// to trigglow.com with OBS's redacted log attached when ticked -- see
 	// that dialog's own header comment. Modal, but never blocks Enable/
 	// Disable or anything else outside of itself while open.
 	void OnReportBugClicked();

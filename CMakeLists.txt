@@ -195,6 +195,10 @@ target_sources(
     src/support-diagnostics.hpp
     src/diagnostics-collector.cpp
     src/diagnostics-collector.hpp
+    src/support-client.cpp
+    src/support-client.hpp
+    src/support-service.cpp
+    src/support-service.hpp
     src/api-client.cpp
     src/api-client.hpp
     src/token-store.cpp
@@ -232,8 +236,9 @@ set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_nam
 
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
 # src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*,
-# src/frame-arena.*, src/frame-ring.*, src/degradation-policy.*) and a stress
-# test of src/codec-pipeline.*. Off by default so plugin packaging is unchanged:
+# src/frame-arena.*, src/frame-ring.*, src/degradation-policy.*, the account,
+# Trigi and ticket client) and a stress test of src/codec-pipeline.*. Off by
+# default so plugin packaging is unchanged:
 #   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
 #   cmake --build <dir> --config RelWithDebInfo
 #   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure

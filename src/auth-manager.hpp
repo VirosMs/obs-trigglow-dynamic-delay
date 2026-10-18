@@ -108,8 +108,6 @@ public:
 	// The code the page must show ("KD7F-29QM"), while waiting.
 	std::string PendingUserCode() const;
 	std::string DisplayName() const { return displayName_; }
-	// Transitional for the guest ticket form: the email is no longer stored.
-	std::string Email() const { return std::string(); }
 	// What the server said about Trigi at the last start check (unknown until
 	// then).
 	const auth::TrigiInfo &Trigi() const { return trigi_; }

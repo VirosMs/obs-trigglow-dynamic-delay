@@ -120,23 +120,3 @@ Response Send(const Request &request);
 const char *ErrorName(Error error);
 
 } // namespace trigglow::http
-
-// Transitional, until the guest ticket form moves to the support client: the
-// two helpers it still calls, now built on Send() (same rules as above).
-namespace trigglow {
-
-struct HttpResult {
-	bool ok = false;    // false only for a transport-level failure.
-	int statusCode = 0; // Valid whenever ok is true.
-	std::string body;
-	std::string error; // Set when ok is false.
-};
-
-HttpResult HttpsPostJson(const std::wstring &host, const std::wstring &pathAndQuery, const std::string &jsonBody,
-			 const std::wstring &bearerToken = L"");
-HttpResult HttpsPostMultipartFile(const std::wstring &host, const std::wstring &pathAndQuery,
-				  const std::string &fieldName, const std::string &fileName,
-				  const std::string &fileContentType, const std::string &fileBytes,
-				  const std::wstring &bearerToken = L"");
-
-} // namespace trigglow

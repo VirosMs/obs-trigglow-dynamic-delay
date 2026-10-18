@@ -17,18 +17,20 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "report-bug-dialog.hpp"
+#include "api-client.hpp"
+#include "auth-manager.hpp"
 #include "bug-report.hpp"
 #include "i18n.hpp"
 #include "logging.hpp"
+#include "plugin-support.h"
 #include "win-http.hpp"
-
-#include <thread>
 
 #include <QAccessible>
 #include <QApplication>
-#include <QCoreApplication>
+#include <QCheckBox>
 #include <QDesktopServices>
-#include <QFileInfo>
+#include <QFile>
+#include <QFileDialog>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -38,20 +40,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QResizeEvent>
+#include <QStandardPaths>
+#include <QTextCursor>
 #include <QUrl>
-#include <QUrlQuery>
 #include <QVBoxLayout>
-
-extern "C" {
-#include <obs-module.h>
-}
 
 namespace trigglow {
 
 namespace {
 constexpr const char *kComponent = "report-bug-dialog";
-constexpr const wchar_t *kApiHost = L"api.trigglow.com"; // Matches auth-manager.cpp's kApiHost.
-constexpr const char *kSupportWebOrigin = "https://www.trigglow.com";
 
 // Widths (logical px). The dialog opens at kDefaultWidth and can shrink to
 // kMinimumWidth; Name | Email stack below kTwoColumnWidth, and the browser
@@ -70,121 +67,54 @@ QString T(const char *key)
 	return QString::fromUtf8(Str(key));
 }
 
-struct SubmitResult {
-	bool ticketCreated = false;
-	std::string ticketId;
-	std::string accessToken;
-	bool attachmentUploaded = false; // Only meaningful when ticketCreated is true and a log was attempted.
-	std::string error;               // Set only when ticketCreated is false.
-};
-
-// Runs on the background thread from OnSubmitClicked() below -- never call
-// this from the UI thread, same BLOCKING contract win-http.hpp documents for
-// every call it makes. Mirrors exactly what the web /support form itself
-// does against the same API: create the ticket, then upload one attachment
-// as a second call -- not atomic server-side, so a successful ticket with a
-// failed attachment is a real, expected outcome this handles gracefully
-// (attachmentUploaded=false, ticketCreated=true) rather than as an error.
-SubmitResult SubmitTicket(const std::string &guestName, const std::string &guestEmail, const std::string &message,
-			  const std::string &pluginVersion, bool hasLog, const std::string &logBytes)
+// Only the plugin's fixed pages (api-client.hpp) are ever opened.
+void OpenAllowed(const QUrl &url)
 {
-	SubmitResult result;
-
-	obs_data_t *body = obs_data_create();
-	obs_data_set_string(body, "guestName", guestName.c_str());
-	obs_data_set_string(body, "guestEmail", guestEmail.c_str());
-	obs_data_set_string(body, "subject", ("Reporte desde el plugin de OBS (v" + pluginVersion + ")").c_str());
-	// "dynamic_delay" is one of the support API's public ticket categories.
-	obs_data_set_string(body, "category", "dynamic_delay");
-	obs_data_set_string(body, "message", message.c_str());
-	std::string jsonBody = obs_data_get_json(body);
-	obs_data_release(body);
-
-	HttpResult createResult = HttpsPostJson(kApiHost, L"/api/support/public/tickets", jsonBody);
-	if (!createResult.ok || createResult.statusCode != 201) {
-		if (!createResult.ok) {
-			// The transport's own (technical, English) error goes to the
-			// log; the user gets the next step instead.
-			result.error = Str("ReportDialog.ErrorNetwork");
-			if (!createResult.error.empty())
-				TRIGGLOW_LOG_WARN(kComponent, "ticket creation transport error: %s",
-						  createResult.error.c_str());
-		} else {
-			std::string tmpl = Str("ReportDialog.ErrorServer");
-			size_t pos = tmpl.find("%1");
-			if (pos != std::string::npos)
-				tmpl.replace(pos, 2, std::to_string(createResult.statusCode));
-			result.error = tmpl;
-		}
-		TRIGGLOW_LOG_WARN(kComponent, "ticket creation failed: %s", result.error.c_str());
-		return result;
-	}
-
-	obs_data_t *responseData = obs_data_create_from_json(createResult.body.c_str());
-	if (!responseData) {
-		result.error = Str("ReportDialog.ErrorInvalidResponse");
-		return result;
-	}
-	const char *ticketId = obs_data_get_string(responseData, "ticketId");
-	const char *accessToken = obs_data_get_string(responseData, "accessToken");
-	if (!ticketId || !*ticketId || !accessToken || !*accessToken) {
-		TRIGGLOW_LOG_WARN(kComponent, "ticket creation response is missing ticketId/accessToken");
-		result.error = Str("ReportDialog.ErrorInvalidResponse");
-		obs_data_release(responseData);
-		return result;
-	}
-	result.ticketCreated = true;
-	result.ticketId = ticketId;
-	result.accessToken = accessToken;
-	obs_data_release(responseData);
-
-	// The ticket ID alone grants nothing; the access token (and any URL that
-	// carries it) must never reach the log.
-	TRIGGLOW_LOG_INFO(kComponent, "support ticket created: %s", result.ticketId.c_str());
-
-	if (hasLog) {
-		// ticketId/accessToken are both server-generated ASCII (a UUID and a
-		// hex token respectively), so this byte-for-byte widening is safe;
-		// nothing here ever contains non-ASCII input.
-		std::wstring ticketIdW(result.ticketId.begin(), result.ticketId.end());
-		std::wstring accessTokenW(result.accessToken.begin(), result.accessToken.end());
-		std::wstring path = L"/api/support/public/tickets/" + ticketIdW + L"/attachments?token=" + accessTokenW;
-		HttpResult uploadResult =
-			HttpsPostMultipartFile(kApiHost, path, "file", "obs-log.txt", "text/plain", logBytes);
-		result.attachmentUploaded = uploadResult.ok && uploadResult.statusCode == 201;
-		if (!result.attachmentUploaded) {
-			TRIGGLOW_LOG_WARN(kComponent,
-					  "attachment upload failed for ticket %s (ticket itself still created): "
-					  "HTTP %d, %s",
-					  result.ticketId.c_str(), uploadResult.statusCode, uploadResult.error.c_str());
-		}
-	}
-
-	return result;
+	const std::string text = url.toString(QUrl::FullyEncoded).toStdString();
+	if (api::IsAllowedWebUrl(text))
+		QDesktopServices::openUrl(url);
+	else
+		TRIGGLOW_LOG_WARN(kComponent, "refused to open a page outside the plugin's fixed list");
 }
 
 } // namespace
 
-ReportBugDialog::ReportBugDialog(QString pluginVersion, QString defaultName, QString defaultEmail, QWidget *parent)
+ReportBugDialog::ReportBugDialog(AuthManager &auth, SupportService::DiagnosticsProvider diagnostics, QWidget *parent)
 	: QDialog(parent),
-	  pluginVersion_(std::move(pluginVersion))
+	  auth_(auth)
 {
 	setWindowTitle(T("ReportDialog.Title"));
 	setModal(true);
 
-	// Computed once up front, not re-fetched at submit time, so the user
-	// finds out right away whether a log was found -- before they've typed
-	// their whole message -- rather than only at the end.
-	BugReportLogResult logResult = CopyCurrentObsLogForSupport();
-	logFound_ = logResult.found && !logResult.copiedPath.empty();
-	logPath_ = QString::fromUtf8(logResult.copiedPath.c_str());
+	service_ = new SupportService(auth_, std::move(diagnostics), this);
+	if (!http::Available())
+		mode_ = Mode::Unavailable;
+	else if (service_->CanSubmitSignedIn())
+		mode_ = Mode::SignedIn;
+	else
+		mode_ = Mode::Guest;
+	footer_ = service_->TicketFooter();
+	logLocatable_ = CanLocateObsLog();
 
 	BuildUi();
 
-	if (!defaultName.isEmpty())
-		nameEdit_->setText(defaultName);
-	if (!defaultEmail.isEmpty())
-		emailEdit_->setText(defaultEmail);
+	if (mode_ == Mode::Guest && auth_.IsLoggedIn())
+		nameEdit_->setText(QString::fromStdString(auth_.DisplayName()));
+
+	if (mode_ == Mode::Unavailable) {
+		ShowInfo(T("ReportDialog.Unavailable"), false, true, false);
+		DisableForm();
+	} else if (mode_ == Mode::Guest) {
+		// The public form may need a human check the plugin can't show: ask
+		// first, and degrade to the web form instead of failing at the end.
+		QPointer<ReportBugDialog> self(this);
+		service_->CheckGuestForm([self](SupportService::GuestForm form) {
+			if (!self || form != SupportService::GuestForm::WebOnly)
+				return;
+			self->ShowInfo(T("ReportDialog.WebOnly"), true, true, self->logLocatable_);
+			self->DisableForm();
+		});
+	}
 }
 
 namespace {
@@ -234,6 +164,14 @@ QLabel *MakeFieldError(QWidget *parent)
 void TrackEmpty(QWidget *field, bool empty)
 {
 	ui::SetStyleProperty(field, "tgEmpty", empty ? QStringLiteral("true") : QStringLiteral("false"));
+}
+
+QPushButton *MakeSecondaryButton(const QString &text, QWidget *parent)
+{
+	auto *button = new QPushButton(text, parent);
+	button->setProperty("tgVariant", QStringLiteral("secondary"));
+	button->setAutoDefault(false);
+	return button;
 }
 
 } // namespace
@@ -292,6 +230,38 @@ void ReportBugDialog::BuildUi()
 	}
 	errorBanner_->setVisible(false);
 	body->addWidget(errorBanner_);
+
+	// Info panel: the web-only guest form, no HTTP client, or a ticket
+	// created without its log. Text plus the buttons that apply.
+	infoPanel_ = new QFrame(this);
+	infoPanel_->setProperty("tgCard", QStringLiteral("inset"));
+	{
+		auto *layout = new QVBoxLayout(infoPanel_);
+		layout->setContentsMargins(10, 8, 10, 8);
+		layout->setSpacing(8);
+		auto *textRow = new QHBoxLayout();
+		textRow->setSpacing(8);
+		infoIcon_ = new QLabel(infoPanel_);
+		infoIcon_->setFixedSize(16, 16);
+		infoLabel_ = new QLabel(infoPanel_);
+		infoLabel_->setWordWrap(true);
+		infoLabel_->setTextFormat(Qt::PlainText);
+		textRow->addWidget(infoIcon_, 0, Qt::AlignTop);
+		textRow->addWidget(infoLabel_, 1);
+		layout->addLayout(textRow);
+		auto *buttons = new QHBoxLayout();
+		buttons->setSpacing(8);
+		signInButton_ = MakeSecondaryButton(T("ReportDialog.SignIn"), infoPanel_);
+		openWebButton_ = MakeSecondaryButton(T("ReportDialog.OpenWebSupport"), infoPanel_);
+		saveLogButton_ = MakeSecondaryButton(T("ReportDialog.SaveLog"), infoPanel_);
+		buttons->addWidget(signInButton_);
+		buttons->addWidget(openWebButton_);
+		buttons->addWidget(saveLogButton_);
+		buttons->addStretch(1);
+		layout->addLayout(buttons);
+	}
+	infoPanel_->setVisible(false);
+	body->addWidget(infoPanel_);
 	body->addSpacing(2);
 
 	nameEdit_ = new QLineEdit(this);
@@ -302,16 +272,18 @@ void ReportBugDialog::BuildUi()
 	emailEdit_->setAccessibleDescription(T("ReportDialog.EmailHelp"));
 	nameError_ = MakeFieldError(this);
 	emailError_ = MakeFieldError(this);
-	// The email's help goes under the email field (it used to sit under both
-	// columns, i.e. under Name); while the email shows an error, the error
-	// takes its place (ShowFieldError/ClearErrors).
+	// The email's help goes under the email field; while the email shows an
+	// error, the error takes its place (ShowFieldError/ClearErrors).
 	emailHelp_ = new QLabel(T("ReportDialog.EmailHelp"), this);
 	emailHelp_->setProperty("tgRole", QStringLiteral("hint"));
 	emailHelp_->setWordWrap(true);
 
 	// Name | Email in two columns from kTwoColumnWidth, stacked below
-	// (resizeEvent).
-	identityRow_ = new QBoxLayout(QBoxLayout::LeftToRight);
+	// (resizeEvent). Only for guests: a signed-in ticket comes from the
+	// account itself.
+	identityBox_ = new QWidget(this);
+	identityRow_ = new QBoxLayout(QBoxLayout::LeftToRight, identityBox_);
+	identityRow_->setContentsMargins(0, 0, 0, 8);
 	identityRow_->setSpacing(12);
 	{
 		auto *nameColumn = new QVBoxLayout();
@@ -330,20 +302,29 @@ void ReportBugDialog::BuildUi()
 		identityRow_->addLayout(nameColumn, 1);
 		identityRow_->addLayout(emailColumn, 1);
 	}
-	body->addLayout(identityRow_);
+	identityBox_->setVisible(mode_ != Mode::SignedIn);
+	body->addWidget(identityBox_);
 
-	body->addSpacing(8);
 	messageEdit_ = new QPlainTextEdit(this);
 	messageEdit_->setPlaceholderText(T("ReportDialog.MessagePlaceholder"));
 	messageEdit_->setAccessibleName(T("ReportDialog.MessageLabel"));
-	messageEdit_->setFixedHeight(92);
+	messageEdit_->setFixedHeight(110);
 	messageEdit_->setTabChangesFocus(true);
+	// The version footer goes in the message, visible and editable; the
+	// cursor starts above it.
+	messageEdit_->setPlainText(footer_);
+	{
+		QTextCursor cursor = messageEdit_->textCursor();
+		cursor.movePosition(QTextCursor::Start);
+		messageEdit_->setTextCursor(cursor);
+	}
 	messageError_ = MakeFieldError(this);
 	body->addWidget(MakeFieldLabel(T("ReportDialog.MessageLabel"), messageEdit_, this));
 	body->addWidget(messageEdit_);
 	body->addWidget(messageError_->parentWidget());
 
-	// Attachment row: what goes with the ticket, known before typing.
+	// Attachment row: ticked when a log can be found; what is hidden in it,
+	// and "See what is sent" with the redacted text.
 	body->addSpacing(8);
 	auto *attachment = new QFrame(this);
 	attachment->setProperty("tgCard", QStringLiteral("inset"));
@@ -354,28 +335,27 @@ void ReportBugDialog::BuildUi()
 		logIcon_ = new QLabel(attachment);
 		logIcon_->setFixedSize(16, 16);
 		auto *texts = new QVBoxLayout();
-		texts->setSpacing(1);
+		texts->setSpacing(3);
+		attachCheck_ = new QCheckBox(T("ReportDialog.AttachLog"), attachment);
+		attachCheck_->setChecked(logLocatable_);
+		attachCheck_->setEnabled(logLocatable_);
 		logStatusLabel_ = new QLabel(attachment);
 		logStatusLabel_->setWordWrap(true);
-		if (logFound_) {
-			auto *file = new QLabel(QStringLiteral("obs-log.txt"), attachment);
-			file->setProperty("tgRole", QStringLiteral("data"));
-			texts->addWidget(file);
-			logStatusLabel_->setText(T("ReportDialog.LogFound"));
+		logStatusLabel_->setTextFormat(Qt::PlainText);
+		if (logLocatable_) {
+			logStatusLabel_->setText(T("ReportDialog.LogRedacted"));
 			logStatusLabel_->setProperty("tgRole", QStringLiteral("hint"));
 		} else {
 			logStatusLabel_->setText(T("ReportDialog.LogNotFound"));
 			logStatusLabel_->setProperty("tgTone", QStringLiteral("warning"));
 		}
+		texts->addWidget(attachCheck_);
 		texts->addWidget(logStatusLabel_);
-		layout->addWidget(logIcon_, 0, Qt::AlignVCenter);
+		layout->addWidget(logIcon_, 0, Qt::AlignTop);
 		layout->addLayout(texts, 1);
-		if (logFound_) {
-			auto *chip = new QLabel(T("ReportDialog.LogChip"), attachment);
-			chip->setProperty("tgRole", QStringLiteral("tag"));
-			chip->setProperty("tgTone", QStringLiteral("accent"));
-			layout->addWidget(chip, 0, Qt::AlignVCenter);
-		}
+		previewButton_ = MakeSecondaryButton(T("ReportDialog.SeeWhatIsSent"), attachment);
+		previewButton_->setVisible(logLocatable_);
+		layout->addWidget(previewButton_, 0, Qt::AlignTop);
 	}
 	body->addWidget(attachment);
 	root->addLayout(body);
@@ -416,7 +396,22 @@ void ReportBugDialog::BuildUi()
 	root->addLayout(footerRow_);
 
 	connect(cancelButton_, &QPushButton::clicked, this, &QDialog::reject);
-	connect(submitButton_, &QPushButton::clicked, this, [this] { OnSubmitClicked(); });
+	connect(submitButton_, &QPushButton::clicked, this, [this] {
+		if (finished_)
+			accept();
+		else
+			OnSubmitClicked();
+	});
+	connect(previewButton_, &QPushButton::clicked, this, [this] { ShowLogPreview(); });
+	connect(saveLogButton_, &QPushButton::clicked, this, [this] { SaveLog(); });
+	connect(openWebButton_, &QPushButton::clicked, this,
+		[] { OpenAllowed(QUrl(QString::fromUtf8(api::web::kPublicSupport))); });
+	connect(signInButton_, &QPushButton::clicked, this, [this] {
+		// The sign-in itself happens in the dock (code + browser).
+		if (!auth_.IsLoggedIn())
+			auth_.StartLogin();
+		reject();
+	});
 	connect(nameEdit_, &QLineEdit::textChanged, this,
 		[this](const QString &text) { TrackEmpty(nameEdit_, text.isEmpty()); });
 	connect(emailEdit_, &QLineEdit::textChanged, this,
@@ -425,7 +420,7 @@ void ReportBugDialog::BuildUi()
 		[this] { TrackEmpty(messageEdit_, messageEdit_->document()->isEmpty()); });
 	TrackEmpty(nameEdit_, true);
 	TrackEmpty(emailEdit_, true);
-	TrackEmpty(messageEdit_, true);
+	TrackEmpty(messageEdit_, messageEdit_->document()->isEmpty());
 
 	// Narrow enough for large OBS font sizes and small screens, where the
 	// rows reflow (resizeEvent); it still opens at a comfortable width.
@@ -434,6 +429,7 @@ void ReportBugDialog::BuildUi()
 	ApplyWidthLayout(kDefaultWidth);
 	resize(kDefaultWidth,
 	       layout()->hasHeightForWidth() ? layout()->totalHeightForWidth(kDefaultWidth) : sizeHint().height());
+	messageEdit_->setFocus();
 }
 
 void ReportBugDialog::ApplyWidthLayout(int width)
@@ -461,15 +457,17 @@ void ReportBugDialog::ApplyTheme()
 		else if (role == QLatin1String("title"))
 			ui::ApplyFont(label, ui::FontRole::Title, basePt);
 	}
-	for (QPushButton *button : {cancelButton_, submitButton_})
+	for (QPushButton *button : findChildren<QPushButton *>())
 		ui::ApplyFont(button, ui::FontRole::Button, basePt);
 
 	const uitokens::Tokens &t = theme_.tokens;
 	const qreal dpr = devicePixelRatioF();
 	errorBannerIcon_->setPixmap(ui::IconPixmap(ui::IconId::AlertTriangle, ui::ToQColor(t.dangerText), 16, dpr));
-	logIcon_->setPixmap(ui::IconPixmap(logFound_ ? ui::IconId::Paperclip : ui::IconId::AlertTriangle,
-					   ui::ToQColor(logFound_ ? t.accentText : t.warningText), 16, dpr));
+	infoIcon_->setPixmap(ui::IconPixmap(ui::IconId::Info, ui::ToQColor(t.accentText), 16, dpr));
+	logIcon_->setPixmap(ui::IconPixmap(logLocatable_ ? ui::IconId::Paperclip : ui::IconId::AlertTriangle,
+					   ui::ToQColor(logLocatable_ ? t.accentText : t.warningText), 16, dpr));
 	opensBrowserIcon_->setPixmap(ui::IconPixmap(ui::IconId::ExternalLink, ui::ToQColor(t.textMuted), 14, dpr));
+	openWebButton_->setIcon(ui::Icon(ui::IconId::ExternalLink, ui::ToQColor(t.text)));
 	for (QLabel *icon : findChildren<QLabel *>(QStringLiteral("tgFieldErrorIcon")))
 		icon->setPixmap(ui::IconPixmap(ui::IconId::AlertTriangle, ui::ToQColor(t.dangerText), 14, dpr));
 }
@@ -504,83 +502,192 @@ void ReportBugDialog::ClearErrors()
 	errorBanner_->setVisible(false);
 }
 
+QString ReportBugDialog::UserMessage() const
+{
+	QString message = messageEdit_->toPlainText();
+	if (!footer_.isEmpty() && message.endsWith(footer_))
+		message.chop(footer_.size());
+	return message.trimmed();
+}
+
 void ReportBugDialog::OnSubmitClicked()
 {
-	QString name = nameEdit_->text().trimmed();
-	QString email = emailEdit_->text().trimmed();
-	QString message = messageEdit_->toPlainText().trimmed();
-
 	ClearErrors();
-	if (name.size() < 2) {
-		ShowFieldError(nameEdit_, nameError_, T("ReportDialog.ErrorNameTooShort"));
-		return;
+	const QString name = nameEdit_->text().trimmed();
+	const QString email = emailEdit_->text().trimmed();
+	if (mode_ == Mode::Guest) {
+		if (name.size() < 2) {
+			ShowFieldError(nameEdit_, nameError_, T("ReportDialog.ErrorNameTooShort"));
+			return;
+		}
+		// Deliberately simple (not RFC 5322): catches an obviously mistyped
+		// address before the server's own (stricter) validation.
+		static const QRegularExpression kEmailPattern(QStringLiteral(R"(^[^\s@]+@[^\s@]+\.[^\s@]+$)"));
+		if (!kEmailPattern.match(email).hasMatch()) {
+			ShowFieldError(emailEdit_, emailError_, T("ReportDialog.ErrorInvalidEmail"));
+			return;
+		}
 	}
-	// Deliberately simple (not RFC 5322): matches this dialog's only real
-	// goal, catching an obviously-mistyped address before it hits the
-	// server's own (stricter) validation, not being a full email validator.
-	static const QRegularExpression kEmailPattern(QStringLiteral(R"(^[^\s@]+@[^\s@]+\.[^\s@]+$)"));
-	if (!kEmailPattern.match(email).hasMatch()) {
-		ShowFieldError(emailEdit_, emailError_, T("ReportDialog.ErrorInvalidEmail"));
-		return;
-	}
-	if (message.size() < 5) {
+	if (UserMessage().size() < 5) {
 		ShowFieldError(messageEdit_, messageError_, T("ReportDialog.ErrorMessageTooShort"));
 		return;
 	}
 
 	SetBusy(true);
-
-	std::string logBytes;
-	bool haveLogBytes = logFound_ && ReadFileBytes(logPath_.toUtf8().constData(), logBytes);
-	if (logFound_ && !haveLogBytes)
-		TRIGGLOW_LOG_WARN(kComponent, "found a copied log (%%TEMP%%\\Trigglow\\%s) but failed to read it back",
-				  QFileInfo(logPath_).fileName().toUtf8().constData());
-
-	std::string nameUtf8 = name.toUtf8().constData();
-	std::string emailUtf8 = email.toUtf8().constData();
-	std::string messageUtf8 = message.toUtf8().constData();
-	std::string versionUtf8 = pluginVersion_.toUtf8().constData();
-
+	const QString subject =
+		QStringLiteral("Reporte desde el plugin de OBS (v%1)").arg(QString::fromUtf8(PLUGIN_VERSION));
+	const QString message = messageEdit_->toPlainText().trimmed();
+	const bool attachLog = attachCheck_->isChecked();
 	QPointer<ReportBugDialog> self(this);
-	std::thread([nameUtf8, emailUtf8, messageUtf8, versionUtf8, haveLogBytes, logBytes, self]() {
-		SubmitResult result =
-			SubmitTicket(nameUtf8, emailUtf8, messageUtf8, versionUtf8, haveLogBytes, logBytes);
-		QMetaObject::invokeMethod(
-			qApp,
-			[result, self]() {
-				if (!self)
-					return; // Dialog closed/destroyed before this result arrived.
+	auto done = [self](const SupportService::TicketOutcome &outcome) {
+		if (self)
+			self->OnTicketDone(outcome);
+	};
+	if (mode_ == Mode::SignedIn)
+		service_->SubmitTicket(subject, message, true, attachLog, done);
+	else
+		service_->SubmitGuestTicket(name, email, subject, message, attachLog, done);
+}
 
-				self->SetBusy(false);
+void ReportBugDialog::OnTicketDone(const SupportService::TicketOutcome &outcome)
+{
+	SetBusy(false);
+	if (!outcome.created) {
+		using support::Status;
+		if (outcome.needsWebForm) {
+			ShowInfo(T("ReportDialog.WebOnly"), true, true, logLocatable_);
+			DisableForm();
+			return;
+		}
+		switch (outcome.status) {
+		case Status::SessionEnded:
+		case Status::SignedOut:
+			ShowError(T("ReportDialog.ErrorSessionEnded"));
+			break;
+		case Status::RateLimited:
+			ShowError(T("ReportDialog.ErrorRateLimited"));
+			break;
+		case Status::Invalid:
+			ShowError(T("ReportDialog.ErrorInvalid"));
+			break;
+		case Status::Network:
+		case Status::Unavailable:
+			ShowError(T("ReportDialog.ErrorNetwork"));
+			break;
+		default:
+			ShowError(T("ReportDialog.ErrorInvalidResponse"));
+			break;
+		}
+		return;
+	}
 
-				if (!result.ticketCreated) {
-					self->ShowError(QString::fromUtf8(result.error.c_str()));
-					return;
-				}
+	OpenAllowed(outcome.ticketUrl);
+	if (outcome.attachmentTried && !outcome.attachmentSent) {
+		// The ticket exists: say the log didn't make it and offer to save it.
+		finished_ = true;
+		DisableForm();
+		ShowInfo(T("ReportDialog.AttachmentFailed"), false, false, true);
+		submitButton_->setText(T("ReportDialog.Close"));
+		submitButton_->setEnabled(true);
+		return;
+	}
+	accept();
+}
 
-				QUrl url(QString::fromUtf8(kSupportWebOrigin) + QStringLiteral("/support"));
-				QUrlQuery query;
-				query.addQueryItem(QStringLiteral("ticket"),
-						   QString::fromUtf8(result.ticketId.c_str()));
-				query.addQueryItem(QStringLiteral("token"),
-						   QString::fromUtf8(result.accessToken.c_str()));
-				url.setQuery(query);
-				QDesktopServices::openUrl(url);
+void ReportBugDialog::ShowInfo(const QString &message, bool signIn, bool openWeb, bool saveLog)
+{
+	infoLabel_->setText(message);
+	signInButton_->setVisible(signIn && http::Available());
+	openWebButton_->setVisible(openWeb);
+	saveLogButton_->setVisible(saveLog);
+	infoPanel_->setVisible(true);
+	if (QAccessible::isActive()) {
+		QAccessibleEvent event(infoLabel_, QAccessible::Alert);
+		QAccessible::updateAccessibility(&event);
+	}
+}
 
-				// Ticket exists regardless of whether the attachment made
-				// it -- close the dialog either way; the warning already
-				// went to the OBS log for us to diagnose later if needed.
-				self->accept();
-			},
-			Qt::QueuedConnection);
-	}).detach();
+void ReportBugDialog::DisableForm()
+{
+	for (QWidget *w : std::initializer_list<QWidget *>{nameEdit_, emailEdit_, messageEdit_, attachCheck_})
+		w->setEnabled(false);
+	submitButton_->setEnabled(finished_);
+}
+
+void ReportBugDialog::ShowLogPreview()
+{
+	previewButton_->setEnabled(false);
+	QPointer<ReportBugDialog> self(this);
+	service_->PrepareLog([self](const SupportService::PreparedLog &log) {
+		if (!self)
+			return;
+		self->previewButton_->setEnabled(true);
+		QDialog preview(self);
+		preview.setWindowTitle(T("ReportDialog.PreviewTitle"));
+		preview.setStyleSheet(self->theme_.styleSheet);
+		auto *layout = new QVBoxLayout(&preview);
+		auto *note = new QLabel(log.preview.truncated || log.capped ? T("ReportDialog.PreviewTruncated")
+									    : T("ReportDialog.LogRedacted"),
+					&preview);
+		note->setWordWrap(true);
+		note->setTextFormat(Qt::PlainText);
+		note->setProperty("tgRole", QStringLiteral("hint"));
+		// Plain text only: the log is never interpreted as markup.
+		auto *text = new QPlainTextEdit(&preview);
+		text->setReadOnly(true);
+		text->setLineWrapMode(QPlainTextEdit::NoWrap);
+		QString content = QString::fromUtf8(log.preview.head.c_str());
+		if (log.preview.truncated)
+			content += QStringLiteral("\n[...]\n\n") + QString::fromUtf8(log.preview.tail.c_str());
+		text->setPlainText(log.found ? content : T("ReportDialog.LogNotFound"));
+		auto *close = new QPushButton(T("ReportDialog.Close"), &preview);
+		close->setProperty("tgVariant", QStringLiteral("secondary"));
+		QObject::connect(close, &QPushButton::clicked, &preview, &QDialog::accept);
+		layout->addWidget(note);
+		layout->addWidget(text, 1);
+		layout->addWidget(close, 0, Qt::AlignRight);
+		preview.resize(680, 480);
+		preview.exec();
+	});
+}
+
+void ReportBugDialog::SaveLog()
+{
+	saveLogButton_->setEnabled(false);
+	QPointer<ReportBugDialog> self(this);
+	service_->PrepareLog([self](const SupportService::PreparedLog &log) {
+		if (!self)
+			return;
+		self->saveLogButton_->setEnabled(true);
+		if (!log.found || !log.text) {
+			self->ShowError(T("ReportDialog.LogNotFound"));
+			return;
+		}
+		const QString dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+		const QString path = QFileDialog::getSaveFileName(self, T("ReportDialog.SaveLogTitle"),
+								  dir + QStringLiteral("/obs-log.txt"),
+								  QStringLiteral("*.txt"));
+		if (path.isEmpty())
+			return;
+		QFile file(path);
+		if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+		    file.write(log.text->data(), static_cast<qint64>(log.text->size())) !=
+			    static_cast<qint64>(log.text->size())) {
+			self->ShowError(T("ReportDialog.SaveLogFailed"));
+			return;
+		}
+		TRIGGLOW_LOG_INFO(kComponent, "saved the redacted OBS log where the user chose");
+	});
 }
 
 void ReportBugDialog::SetBusy(bool busy)
 {
-	nameEdit_->setEnabled(!busy);
-	emailEdit_->setEnabled(!busy);
+	const bool guestFields = mode_ == Mode::Guest;
+	nameEdit_->setEnabled(!busy && guestFields);
+	emailEdit_->setEnabled(!busy && guestFields);
 	messageEdit_->setEnabled(!busy);
+	attachCheck_->setEnabled(!busy && logLocatable_);
+	previewButton_->setEnabled(!busy);
 	cancelButton_->setEnabled(!busy);
 	submitButton_->setEnabled(!busy);
 	submitButton_->setText(busy ? T("ReportDialog.Sending") : T("ReportDialog.Submit"));

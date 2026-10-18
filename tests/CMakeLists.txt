@@ -1,8 +1,12 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
 # src/encoder-check.*, and since v0.6.0 src/ui-tokens.*, src/auto-names.*,
 # src/overlay-layout.*, src/frame-arena.*, src/frame-ring.*,
-# src/degradation-policy.* and a stress test of src/codec-pipeline.*). No
-# libobs, no Qt, no FFmpeg, no test framework. Two ways to build them:
+# src/degradation-policy.*, a stress test of src/codec-pipeline.*, and the
+# account, Trigi and ticket client: src/json.*, src/log-redact.*,
+# src/chat-text.*, src/support-diagnostics.*, src/api-client.*,
+# src/token-store.*, src/auth-client.*, src/support-client.*). No libobs, no
+# Qt, no FFmpeg, no test framework, no network (a scripted transport stands in
+# for it). Two ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
 #      cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
@@ -151,6 +155,10 @@ set(
   "${_src}/token-store.hpp"
   "${_src}/auth-client.cpp"
   "${_src}/auth-client.hpp"
+  "${_src}/chat-text.cpp"
+  "${_src}/chat-text.hpp"
+  "${_src}/support-client.cpp"
+  "${_src}/support-client.hpp"
 )
 
 trigglow_add_client_test(json_tests json_tests.cpp "${_src}/json.cpp" "${_src}/json.hpp")
@@ -171,3 +179,4 @@ trigglow_add_client_test(
 trigglow_add_client_test(api_client_tests api_client_tests.cpp ${_client_sources})
 trigglow_add_client_test(token_store_tests token_store_tests.cpp ${_client_sources})
 trigglow_add_client_test(auth_client_tests auth_client_tests.cpp ${_client_sources})
+trigglow_add_client_test(support_client_tests support_client_tests.cpp ${_client_sources})

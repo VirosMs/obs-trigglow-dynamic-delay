@@ -38,6 +38,7 @@ extern "C" {
 #include "audio-delay-filter.hpp"
 #include "auth-manager.hpp"
 #include "buffer-mode-controller.hpp"
+#include "bug-report.hpp"
 #include "hotkeys.hpp"
 #include "i18n.hpp"
 #include "logging.hpp"
@@ -320,6 +321,9 @@ bool obs_module_load(void)
 
 	g_state->authManager = std::make_unique<trigglow::AuthManager>();
 	g_state->authManager->Init();
+	// Log copies that versions before 0.6.0 left in %TEMP% (0.6.0 keeps the
+	// redacted log in memory only).
+	trigglow::DeleteLeftoverSupportLogCopies();
 
 	g_state->bufferController = std::make_unique<trigglow::BufferModeController>(g_state->bridge);
 	// Free account gate (see docs/ACCOUNT_GATE.md): both the dock's Enable

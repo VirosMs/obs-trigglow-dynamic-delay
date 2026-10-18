@@ -51,7 +51,9 @@ diag::OsVersion CurrentOsVersion()
 	VersionInfo info{};
 	info.size = sizeof(info);
 	if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
-		auto fn = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"));
+		// Through void (*)(), the generic function pointer type.
+		auto fn = reinterpret_cast<RtlGetVersionFn>(
+			reinterpret_cast<void (*)()>(GetProcAddress(ntdll, "RtlGetVersion")));
 		if (fn && fn(&info) == 0)
 			return diag::WindowsVersionFromBuild(info.major, info.build);
 	}

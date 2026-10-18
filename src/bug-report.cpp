@@ -17,10 +17,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "bug-report.hpp"
+#include "log-redact.hpp"
 #include "logging.hpp"
 
-#include <chrono>
-#include <ctime>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
@@ -32,131 +32,154 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace trigglow {
 
 namespace {
+
 #ifdef _WIN32
 // Only referenced by the Windows implementation below -- the non-Windows
-// stub doesn't log at all (see its own comment), so declaring this
-// unconditionally would be an unused-variable warning-as-error there.
+// stubs don't log at all, so declaring this unconditionally would be an
+// unused-variable warning-as-error there.
 constexpr const char *kComponent = "bug-report";
-#endif
-} // namespace
 
-bool ReadFileBytes(const std::string &path, std::string &outBytes)
+// Logs up to this size are read whole; past it, only the start and the end
+// (redaction and the upload cap only keep 4.5 MB anyway).
+constexpr std::uintmax_t kReadWholeBytes = 16ull * 1024 * 1024;
+constexpr std::uintmax_t kReadHeadBytes = 1024 * 1024;
+constexpr std::uintmax_t kReadTailBytes = 8ull * 1024 * 1024;
+
+bool ReadRange(std::ifstream &file, std::uintmax_t offset, std::uintmax_t length, std::string &out)
 {
-	std::ifstream file(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
-	if (!file)
-		return false;
+	out.assign(static_cast<size_t>(length), '\0');
+	file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+	if (!file.read(out.data(), static_cast<std::streamsize>(length))) {
+		out.resize(static_cast<size_t>(file.gcount()));
+		file.clear();
+	}
+	return !out.empty();
+}
 
-	std::streamsize size = file.tellg();
-	if (size < 0)
+bool AppDataDir(std::filesystem::path &out)
+{
+	wchar_t appData[MAX_PATH] = {};
+	const DWORD len = GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
+	if (len == 0 || len >= MAX_PATH)
 		return false;
-	file.seekg(0, std::ios::beg);
-
-	std::string bytes(static_cast<size_t>(size), '\0');
-	if (size > 0 && !file.read(bytes.data(), size))
-		return false;
-
-	outBytes = std::move(bytes);
+	out = std::filesystem::path(appData);
 	return true;
 }
 
-#ifdef _WIN32
-
-BugReportLogResult CopyCurrentObsLogForSupport()
+// OBS names each session's log by timestamp, not a fixed "current.log"
+// filename -- the most-recently-modified .txt file in its log folder IS the
+// current session's log.
+bool FindCurrentLog(std::filesystem::path &out)
 {
-	BugReportLogResult result;
-
-	wchar_t appData[MAX_PATH] = {};
-	DWORD len = GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
-	if (len == 0 || len >= MAX_PATH) {
+	std::filesystem::path appData;
+	if (!AppDataDir(appData)) {
 		TRIGGLOW_LOG_WARN(kComponent, "could not resolve %%APPDATA%% to find OBS's log folder");
-		return result;
+		return false;
 	}
-
-	std::filesystem::path logsDir = std::filesystem::path(appData) / L"obs-studio" / L"logs";
-
+	const std::filesystem::path logsDir = appData / L"obs-studio" / L"logs";
 	std::error_code ec;
 	if (!std::filesystem::exists(logsDir, ec) || ec) {
 		TRIGGLOW_LOG_WARN(kComponent, "OBS log folder not found at the expected path");
-		return result;
+		return false;
 	}
-
-	// OBS names each session's log by timestamp, not a fixed "current.log"
-	// filename -- the most-recently-modified .txt file in this folder IS
-	// the current session's log, the same file "Help > Log Files > View
-	// Current Log" opens inside OBS itself.
-	std::filesystem::path newestPath;
 	std::filesystem::file_time_type newestTime{};
 	bool any = false;
 	for (const auto &entry : std::filesystem::directory_iterator(logsDir, ec)) {
-		if (ec)
-			break;
 		std::error_code entryEc;
 		if (!entry.is_regular_file(entryEc) || entryEc || entry.path().extension() != L".txt")
 			continue;
-		std::error_code timeEc;
-		auto modified = entry.last_write_time(timeEc);
-		if (timeEc)
+		const auto modified = entry.last_write_time(entryEc);
+		if (entryEc)
 			continue;
 		if (!any || modified > newestTime) {
 			newestTime = modified;
-			newestPath = entry.path();
+			out = entry.path();
 			any = true;
 		}
 	}
-
-	if (!any) {
+	if (!any)
 		TRIGGLOW_LOG_WARN(kComponent, "OBS log folder exists but has no .txt log files in it");
+	return any;
+}
+#endif
+
+} // namespace
+
+#ifdef _WIN32
+
+bool CanLocateObsLog()
+{
+	return true;
+}
+
+RedactedObsLog ReadCurrentObsLogRedacted()
+{
+	RedactedObsLog result;
+	std::filesystem::path path;
+	if (!FindCurrentLog(path))
+		return result;
+
+	std::error_code ec;
+	const std::uintmax_t size = std::filesystem::file_size(path, ec);
+	// OBS keeps writing to it: shared read, and whatever is there right now.
+	std::ifstream file(path, std::ios::binary);
+	if (ec || !file) {
+		TRIGGLOW_LOG_WARN(kComponent, "found OBS's current log but could not open it");
 		return result;
 	}
-
+	std::string raw;
+	if (size <= kReadWholeBytes) {
+		ReadRange(file, 0, size, raw);
+	} else {
+		std::string head;
+		std::string tail;
+		ReadRange(file, 0, kReadHeadBytes, head);
+		ReadRange(file, size - kReadTailBytes, kReadTailBytes, tail);
+		raw = head + logredact::kCutMarker + tail;
+	}
 	result.found = true;
-	result.sourcePath = newestPath.u8string();
-
-	std::filesystem::path destDir = std::filesystem::temp_directory_path(ec);
-	if (ec) {
-		TRIGGLOW_LOG_WARN(kComponent, "could not resolve a temp folder to copy the log into");
-		return result;
-	}
-	destDir /= L"Trigglow";
-	std::filesystem::create_directories(destDir,
-					    ec); // Fine if it already exists; ec checked via destPath copy below.
-
-	// Timestamped so reporting a second issue the same day doesn't silently
-	// overwrite the first copy still sitting in that folder.
-	auto now = std::chrono::system_clock::now();
-	std::time_t nowT = std::chrono::system_clock::to_time_t(now);
-	std::tm tmBuf{};
-	localtime_s(&tmBuf, &nowT);
-	char stamp[32] = {};
-	std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tmBuf);
-
-	std::filesystem::path destPath = destDir / (std::string("trigglow-obs-log-") + stamp + ".txt");
-
-	std::filesystem::copy_file(newestPath, destPath, std::filesystem::copy_options::overwrite_existing, ec);
-	if (ec) {
-		TRIGGLOW_LOG_WARN(kComponent, "failed to copy the OBS log for the support ticket: %s",
-				  ec.message().c_str());
-		return result;
-	}
-
-	result.copiedPath = destPath.u8string();
-	result.copiedDir = destDir.u8string();
-	// File name only: the full path carries the Windows user name.
-	TRIGGLOW_LOG_INFO(kComponent, "copied OBS log to %%TEMP%%\\Trigglow\\%s",
-			  destPath.filename().u8string().c_str());
+	result.text = logredact::CapForUpload(logredact::RedactText(raw), &result.capped);
+	result.capped = result.capped || size > kReadWholeBytes;
+	TRIGGLOW_LOG_INFO(kComponent, "prepared OBS's current log for support (%zu KB redacted%s)",
+			  result.text.size() / 1024, result.capped ? ", shortened" : "");
 	return result;
+}
+
+void DeleteLeftoverSupportLogCopies()
+{
+	std::error_code ec;
+	const std::filesystem::path dir = std::filesystem::temp_directory_path(ec) / L"Trigglow";
+	if (ec || !std::filesystem::exists(dir, ec))
+		return;
+	size_t removed = 0;
+	for (const auto &entry : std::filesystem::directory_iterator(dir, ec)) {
+		const std::wstring name = entry.path().filename().wstring();
+		if (name.rfind(L"trigglow-obs-log-", 0) == 0 && entry.path().extension() == L".txt") {
+			std::error_code removeEc;
+			if (std::filesystem::remove(entry.path(), removeEc))
+				++removed;
+		}
+	}
+	std::filesystem::remove(dir, ec); // Only if it is empty now.
+	if (removed > 0)
+		TRIGGLOW_LOG_INFO(kComponent, "deleted %zu old log copies from %%TEMP%%\\Trigglow", removed);
 }
 
 #else
 
-BugReportLogResult CopyCurrentObsLogForSupport()
+bool CanLocateObsLog()
+{
+	return false;
+}
+
+RedactedObsLog ReadCurrentObsLogRedacted()
 {
 	// Not implemented yet -- same "unknown, degrade gracefully" convention
 	// as hardware-info.hpp's QueryTotalSystemRamBytes() on these platforms.
-	// The dock's button still opens the support page; it just can't
-	// pre-copy the log for the user on macOS/Linux yet.
 	return {};
 }
+
+void DeleteLeftoverSupportLogCopies() {}
 
 #endif
 

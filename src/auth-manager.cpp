@@ -72,6 +72,7 @@ template<typename R> void AuthManager::RunAsync(std::function<R()> work, std::fu
 		try {
 			result = work();
 		} catch (...) {
+			TRIGGLOW_LOG_WARN(kComponent, "a background call failed unexpectedly");
 		}
 		QMetaObject::invokeMethod(
 			qApp,

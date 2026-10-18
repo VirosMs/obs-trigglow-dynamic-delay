@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "settings-ui.hpp"
 #include "api-client.hpp"
 #include "auth-manager.hpp"
+#include "diagnostics-collector.hpp"
 #include "i18n.hpp"
 #include "logging.hpp"
 #include "report-bug-dialog.hpp"
@@ -1495,14 +1496,15 @@ void TrigglowDelayDock::OnReportBugClicked()
 {
 	TRIGGLOW_LOG_INFO(kComponent, "Report a problem pressed in dock");
 
-	// ReportBugDialog does everything itself: copies the current OBS log,
-	// collects a short description, submits a real support ticket (category
-	// "dynamic_delay") with that log attached, and opens the resulting
-	// ticket in the browser on success -- see its own header comment. exec()
+	// ReportBugDialog does everything itself: collects a short description,
+	// submits a real support ticket (category "dynamic_delay", from the
+	// account when signed in) with OBS's redacted log attached if the user
+	// leaves it ticked, and opens the ticket in the browser -- see its own
+	// header comment. The diagnostics provider is for the support dialog's
+	// Trigi page (opt-in technical data, support-diagnostics.hpp). exec()
 	// (modal) is fine here: this is a deliberate, occasional action, not
 	// something that needs to coexist with using the rest of the dock.
-	ReportBugDialog dialog(QString::fromUtf8(PLUGIN_VERSION), QString::fromStdString(authManager_.DisplayName()),
-			       QString::fromStdString(authManager_.Email()), this);
+	ReportBugDialog dialog(authManager_, [this] { return CollectDiagnostics(bufferController_); }, this);
 	dialog.exec();
 }
 

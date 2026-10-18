@@ -21,48 +21,52 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialog>
 #include <QString>
 
+#include "support-service.hpp"
 #include "ui-theme.hpp"
 
 class QBoxLayout;
+class QCheckBox;
 class QFrame;
 class QLineEdit;
 class QPlainTextEdit;
 class QLabel;
 class QPushButton;
 
-// Small modal dialog for TrigglowDelayDock's "Reportar un problema" button.
-// Replaces the earlier "just copy the log and open the browser" flow: this
-// collects a short description (name/email/message) and submits a real
-// support ticket directly to trigglow.com -- category "dynamic_delay", one
-// of the support API's public ticket categories -- with OBS's current log
-// attached automatically, no manual attach step left for the user. Mirrors exactly
-// what the web /support form itself does (create ticket, then upload one
-// attachment), just from inside OBS.
+// Small modal dialog for TrigglowDelayDock's "Reportar un problema" button:
+// a short description (plus name and email when not signed in) submitted as
+// a real support ticket on trigglow.com -- category "dynamic_delay" -- with
+// OBS's current log attached if the user leaves it ticked, and the ticket
+// opened in the browser afterwards.
 //
-// Both HTTP calls (ticket create, then attachment upload) run together on
-// one background std::thread, same RunHttp pattern AuthManager::RunHttp
-// uses elsewhere in this plugin -- the dialog stays responsive, and the
-// result is marshaled back via QMetaObject::invokeMethod(qApp, ...) guarded
-// by a QPointer, so a dialog the user already closed is a safe no-op.
+// Since v0.6.0 every network call goes through SupportService
+// (support-service.hpp), which picks the route:
+//   - signed in (plugin token): the account's own ticket, no name or email to
+//     type; it shows up in the user's support panel on trigglow.com;
+//   - not signed in: the guest form. If trigglow.com asks guests for a human
+//     check the plugin can't show, the form degrades to "sign in, or use the
+//     web form" (plus "Save log") instead of failing;
+//   - no HTTP client on this platform (macOS/Linux today): the form stays
+//     disabled with a link to the web form.
+// The log is redacted before it leaves the machine (log-redact.hpp), and
+// "See what is sent" shows the redacted text.
 namespace trigglow {
+
+class AuthManager;
 
 class ReportBugDialog : public QDialog {
 	Q_OBJECT
 
 public:
-	// defaultName/defaultEmail: prefilled from AuthManager::DisplayName()/
-	// Email() when the user is logged in (Enable() already requires it --
-	// see docs/ACCOUNT_GATE.md -- so this is the common case), empty
-	// otherwise. Either can still come back empty even when logged in (no
-	// display name set, or an OAuth-only account with no email on file) --
-	// the user can always edit both fields regardless.
-	explicit ReportBugDialog(QString pluginVersion, QString defaultName, QString defaultEmail,
-				 QWidget *parent = nullptr);
+	// diagnostics: passed on to SupportService (the Trigi page's technical
+	// data); the ticket form itself never sends it.
+	ReportBugDialog(AuthManager &auth, SupportService::DiagnosticsProvider diagnostics, QWidget *parent = nullptr);
 
 protected:
 	void resizeEvent(QResizeEvent *event) override;
 
 private:
+	enum class Mode { SignedIn, Guest, Unavailable };
+
 	void BuildUi();
 	// Name | Email in two columns, and the browser note beside the buttons,
 	// when `width` has room for them; stacked otherwise (see the widths in
@@ -82,19 +86,27 @@ private:
 	// "Esperando..." during login in settings-ui.cpp.
 	void SetBusy(bool busy);
 	void ShowError(const QString &message); // Network/server error banner.
+	// The info panel above the form (web-only guest form, no HTTP client, or
+	// a ticket created without its log), with the buttons that apply.
+	void ShowInfo(const QString &message, bool signIn, bool openWeb, bool saveLog);
+	// No form: only the info panel's buttons (and Cancel/Close) remain.
+	void DisableForm();
+	void OnTicketDone(const SupportService::TicketOutcome &outcome);
+	void ShowLogPreview();
+	void SaveLog();
+	// The message without the version footer the form prefills.
+	QString UserMessage() const;
 
-	QString pluginVersion_;
-
-	// Populated once in the constructor from bug-report.hpp's
-	// CopyCurrentObsLogForSupport() -- computed up front (not re-fetched at
-	// submit time) so the dialog can tell the user right away whether a log
-	// was actually found, instead of only finding out after they've already
-	// typed their whole message and pressed Enviar.
-	QString logPath_;
-	bool logFound_ = false;
+	AuthManager &auth_;
+	SupportService *service_ = nullptr;
+	Mode mode_ = Mode::Guest;
+	QString footer_;
+	bool logLocatable_ = false;
+	bool finished_ = false; // The ticket exists: Submit now just closes.
 
 	ui::Theme theme_;
 
+	QWidget *identityBox_ = nullptr; // Name and email: hidden when signed in.
 	QLineEdit *nameEdit_ = nullptr;
 	QLineEdit *emailEdit_ = nullptr;
 	QPlainTextEdit *messageEdit_ = nullptr;
@@ -107,8 +119,16 @@ private:
 	QFrame *errorBanner_ = nullptr;
 	QLabel *errorBannerIcon_ = nullptr;
 	QLabel *statusLabel_ = nullptr; // Text of errorBanner_.
+	QFrame *infoPanel_ = nullptr;
+	QLabel *infoIcon_ = nullptr;
+	QLabel *infoLabel_ = nullptr;
+	QPushButton *signInButton_ = nullptr;
+	QPushButton *openWebButton_ = nullptr;
+	QPushButton *saveLogButton_ = nullptr;
 	QLabel *logIcon_ = nullptr;
+	QCheckBox *attachCheck_ = nullptr;
 	QLabel *logStatusLabel_ = nullptr;
+	QPushButton *previewButton_ = nullptr;
 	QLabel *opensBrowserIcon_ = nullptr;
 	QPushButton *submitButton_ = nullptr;
 	QPushButton *cancelButton_ = nullptr;
