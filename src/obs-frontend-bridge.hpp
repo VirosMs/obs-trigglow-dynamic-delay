@@ -25,6 +25,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "video-delay-filter.hpp" // VideoDelayFilter::BufferFitEstimate, for EstimateBufferFit()
 
+#include <obs.hpp> // OBSSourceAutoRelease: libobs's own RAII wrapper for owned source references
+
 extern "C" {
 #include <obs-frontend-api.h>  // needed here too: obs_frontend_event is the exact callback param type
 #include <graphics/graphics.h> // gs_texrender_t, for AcquireLiveSceneRendering's private render target
@@ -54,6 +56,8 @@ extern "C" {
 //   - obs_enum_scenes(): the main canvas's scenes only, no groups (obs.c,
 //     obs_canvas_enum_scenes + obs_source_is_scene)
 //   - obs_get_output_source(): +1 ref (obs_view_get_source), release it
+//   - obs_source_get_filter_by_name(): +1 ref (obs_source_get_ref), release
+//     it -- every caller here holds it in an OBSSourceAutoRelease
 //   - obs_source_enum_filters(): calls back under the parent's filter_mutex
 //   - obs_enum_outputs(): calls back under obs->data.outputs_mutex
 //   - obs_output_get_video_encoder2() / obs_encoder_get_width/height() /
@@ -337,22 +341,20 @@ private:
 
 	// Locates the video-delay filter previously attached to `liveSceneName`'s
 	// source by EnsureBufferWrapperScene, if the wrapper scene, its
-	// scene-item, and the filter all still exist. Returned pointer is
-	// borrowed (caller must NOT release it) — release the object obtained
-	// from obs_source_get_filter_by_name would be correct per libobs
-	// convention, but every call site here needs it only transiently, so
-	// this wraps that release internally and returns a raw non-owning
-	// pointer valid only for the duration of the calling function.
-	obs_source_t *FindBufferFilter(const std::string &liveSceneName) const;
+	// scene-item, and the filter all still exist. Returns an OWNED reference
+	// (obs_source_get_filter_by_name() increments the filter's refcount,
+	// libobs 31.1.1 obs-source.c), released when the returned object goes out
+	// of scope -- keep it alive for as long as the filter is used, and never
+	// store the raw pointer past that. Null if any step is missing.
+	OBSSourceAutoRelease FindBufferFilter(const std::string &liveSceneName) const;
 
 	// Collects the direct children of `liveSceneName` that advertise
 	// OBS_SOURCE_AUDIO (see EnsureAudioDelayFilters's header comment for
 	// why only direct children, and why this naturally skips nested
-	// scenes/groups without needing to special-case them). Every returned
-	// pointer is a borrowed reference (owned by the scene item), valid only
-	// for the duration of the calling function -- same convention as
-	// FindBufferFilter.
-	std::vector<obs_source_t *> GetAudioCapableChildren(const std::string &liveSceneName) const;
+	// scenes/groups without needing to special-case them). Each entry holds
+	// its own strong reference, released when the vector goes away, so a
+	// child removed from the scene meanwhile can't be freed under the caller.
+	std::vector<OBSSourceAutoRelease> GetAudioCapableChildren(const std::string &liveSceneName) const;
 
 	FrontendEventHandler handler_;
 	bool initialized_ = false;

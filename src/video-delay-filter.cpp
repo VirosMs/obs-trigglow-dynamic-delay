@@ -407,7 +407,17 @@ VideoDelayFilter::~VideoDelayFilter()
 	// ReleaseBuffersTask (delay disabled) is empty and writes nothing.
 	LogPerfWindow("filter destroyed");
 	ReleaseRing();
+	// libobs 31.1.1 calls a source's destroy on its destruction task thread
+	// (obs_source_destroy_defer, obs-source.c) with NO graphics context, and
+	// every gs_*_destroy() is then a silent no-op (gs_valid() fails) that
+	// leaks the object -- so enter it explicitly, like OBS's own filters do.
+	// Before v0.5.1 this hardly ever ran: ObsFrontendBridge leaked a reference
+	// to the filter on every Enable(), so it was never destroyed. Reentrant,
+	// so harmless if a context is already current. The ring above is freed
+	// outside it: that's plain RAM and needn't hold the graphics lock.
+	obs_enter_graphics();
 	ReleaseGpuObjects();
+	obs_leave_graphics();
 }
 
 bool VideoDelayFilter::RefreshVideoInfo()

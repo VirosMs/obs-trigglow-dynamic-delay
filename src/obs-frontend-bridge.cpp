@@ -244,14 +244,15 @@ constexpr int kOverlayTextH = 80;
 constexpr const char *kAudioDelayFilterPrefix = "Trigglow Audio Delay (auto, no tocar) - ";
 } // namespace
 
-obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneName) const
+OBSSourceAutoRelease ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneName) const
 {
-	// obs_source_get_filter_by_name() and obs_scene_from_source() are plain
-	// accessors into structures already owned elsewhere (no "increments the
-	// reference counter, use obs_source_release" doc comment, unlike
-	// obs_get_source_by_name()) - the only owned reference in this function
-	// is wrapperSource itself.
-	obs_source_t *wrapperSource = obs_get_source_by_name(kBufferWrapperSceneName);
+	// Owned references here (libobs 31.1.1): obs_get_source_by_name() and
+	// obs_source_get_filter_by_name() both return the source with its refcount
+	// incremented (the latter through obs_source_get_ref(), obs-source.c), so
+	// both are wrapped and released automatically -- the filter's by the
+	// caller. obs_scene_from_source() and obs_sceneitem_get_source() are
+	// borrowed: the wrapper scene's own reference keeps them alive here.
+	OBSSourceAutoRelease wrapperSource = obs_get_source_by_name(kBufferWrapperSceneName);
 	if (!wrapperSource) {
 		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: obs_get_source_by_name(\"%s\") found nothing",
 				  kBufferWrapperSceneName);
@@ -261,8 +262,7 @@ obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneNa
 	obs_scene_t *wrapperScene = obs_scene_from_source(wrapperSource);
 	if (!wrapperScene) {
 		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: \"%s\" exists but isn't a scene (%p)",
-				  kBufferWrapperSceneName, static_cast<void *>(wrapperSource));
-		obs_source_release(wrapperSource);
+				  kBufferWrapperSceneName, static_cast<void *>(wrapperSource.Get()));
 		return nullptr;
 	}
 
@@ -290,20 +290,17 @@ obs_source_t *ObsFrontendBridge::FindBufferFilter(const std::string &liveSceneNa
 
 	if (!ctx.itemSource) {
 		TRIGGLOW_LOG_WARN(kComponent, "FindBufferFilter: wrapper scene %p has no item for live scene \"%s\"",
-				  static_cast<void *>(wrapperSource), liveSceneName.c_str());
-		obs_source_release(wrapperSource);
+				  static_cast<void *>(wrapperSource.Get()), liveSceneName.c_str());
 		return nullptr;
 	}
 
-	obs_source_t *filter = obs_source_get_filter_by_name(ctx.itemSource, kBufferFilterInstanceName);
+	OBSSourceAutoRelease filter = obs_source_get_filter_by_name(ctx.itemSource, kBufferFilterInstanceName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent,
 				  "FindBufferFilter: wrapper's item source %p (\"%s\") has no filter named \"%s\"",
 				  static_cast<void *>(ctx.itemSource), obs_source_get_name(ctx.itemSource),
 				  kBufferFilterInstanceName);
 	}
-
-	obs_source_release(wrapperSource);
 	return filter;
 }
 
@@ -312,8 +309,8 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 	if (liveSceneName.empty())
 		return false;
 
-	if (FindBufferFilter(liveSceneName) != nullptr)
-		return true; // Already fully set up.
+	if (FindBufferFilter(liveSceneName))
+		return true; // Already fully set up (the temporary reference is released right here).
 
 	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
 	if (!liveSource) {
@@ -402,7 +399,7 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 			  static_cast<void *>(itemSource), obs_source_get_name(itemSource));
 
 	bool ok = true;
-	obs_source_t *existingFilter = obs_source_get_filter_by_name(itemSource, kBufferFilterInstanceName);
+	OBSSourceAutoRelease existingFilter = obs_source_get_filter_by_name(itemSource, kBufferFilterInstanceName);
 	if (!existingFilter) {
 		obs_data_t *filterSettings = obs_data_create();
 		obs_source_t *filter =
@@ -446,7 +443,9 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 
 bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const
 {
-	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	// Held until this function returns: the "release_buffers" call below
+	// blocks on a graphics task that uses the filter's private data.
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterEnabled(%s): FindBufferFilter returned null, no-op",
 				  enabled ? "true" : "false");
@@ -475,13 +474,13 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 	}
 
 	TRIGGLOW_LOG_INFO(kComponent, "SetBufferFilterEnabled(%s) applied to filter %p", enabled ? "true" : "false",
-			  static_cast<void *>(filter));
+			  static_cast<void *>(filter.Get()));
 	return true;
 }
 
 bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const
 {
-	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterDelaySeconds(%us): FindBufferFilter returned null, no-op",
 				  seconds);
@@ -496,7 +495,7 @@ bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveScene
 
 bool ObsFrontendBridge::SetBufferFilterOutputCap(const std::string &liveSceneName, bool capToOutput) const
 {
-	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterOutputCap(%s): FindBufferFilter returned null, no-op",
 				  capToOutput ? "true" : "false");
@@ -513,7 +512,7 @@ bool ObsFrontendBridge::SetBufferFilterOutputCap(const std::string &liveSceneNam
 bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &liveSceneName,
 							   uint32_t heightPixels) const
 {
-	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent,
 				  "SetBufferFilterMinResolutionHeight(%u): FindBufferFilter returned null, no-op",
@@ -531,7 +530,9 @@ bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &li
 
 uint32_t ObsFrontendBridge::GetVideoEffectiveDelaySeconds(const std::string &liveSceneName) const
 {
-	obs_source_t *filter = FindBufferFilter(liveSceneName);
+	// Held until this function returns: the proc call blocks on a graphics
+	// task that uses the filter's private data.
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
 	if (!filter)
 		return 0;
 
@@ -783,11 +784,11 @@ bool ObsFrontendBridge::ShowBufferWrapperScene() const
 	return SetCurrentSceneByName(kBufferWrapperSceneName);
 }
 
-std::vector<obs_source_t *> ObsFrontendBridge::GetAudioCapableChildren(const std::string &liveSceneName) const
+std::vector<OBSSourceAutoRelease> ObsFrontendBridge::GetAudioCapableChildren(const std::string &liveSceneName) const
 {
-	std::vector<obs_source_t *> result;
+	std::vector<OBSSourceAutoRelease> result;
 
-	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
+	OBSSourceAutoRelease liveSource = obs_get_source_by_name(liveSceneName.c_str());
 	if (!liveSource)
 		return result;
 
@@ -796,15 +797,17 @@ std::vector<obs_source_t *> ObsFrontendBridge::GetAudioCapableChildren(const std
 		obs_scene_enum_items(
 			liveScene,
 			[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
-				obs_source_t *itemSource = obs_sceneitem_get_source(item);
-				if (itemSource && (obs_source_get_output_flags(itemSource) & OBS_SOURCE_AUDIO) != 0)
-					static_cast<std::vector<obs_source_t *> *>(param)->push_back(itemSource);
+				obs_source_t *itemSource = obs_sceneitem_get_source(item); // Borrowed from the item.
+				if (itemSource && (obs_source_get_output_flags(itemSource) & OBS_SOURCE_AUDIO) != 0) {
+					// Own reference: the caller uses it after the enumeration.
+					if (obs_source_t *ref = obs_source_get_ref(itemSource))
+						static_cast<std::vector<OBSSourceAutoRelease> *>(param)->emplace_back(
+							ref);
+				}
 				return true; // Keep enumerating -- unlike FindBufferFilter, we want ALL matches.
 			},
 			&result);
 	}
-
-	obs_source_release(liveSource);
 	return result;
 }
 
@@ -820,11 +823,13 @@ bool ObsFrontendBridge::EnsureAudioDelayFilters(const std::string &liveSceneName
 		return false;
 	}
 
-	for (obs_source_t *child : children) {
+	for (const OBSSourceAutoRelease &childRef : children) {
+		obs_source_t *child = childRef.Get();
 		const char *childName = obs_source_get_name(child);
 		std::string filterName = std::string(kAudioDelayFilterPrefix) + (childName ? childName : "?");
 
-		if (obs_source_get_filter_by_name(child, filterName.c_str()))
+		OBSSourceAutoRelease existing = obs_source_get_filter_by_name(child, filterName.c_str());
+		if (existing)
 			continue; // Already attached.
 
 		obs_data_t *filterSettings = obs_data_create();
@@ -863,10 +868,11 @@ bool ObsFrontendBridge::SetAudioDelayFiltersEnabled(const std::string &liveScene
 	auto children = GetAudioCapableChildren(liveSceneName);
 	bool foundAny = false;
 
-	for (obs_source_t *child : children) {
+	for (const OBSSourceAutoRelease &childRef : children) {
+		obs_source_t *child = childRef.Get();
 		const char *childName = obs_source_get_name(child);
 		std::string filterName = std::string(kAudioDelayFilterPrefix) + (childName ? childName : "?");
-		obs_source_t *filter = obs_source_get_filter_by_name(child, filterName.c_str());
+		OBSSourceAutoRelease filter = obs_source_get_filter_by_name(child, filterName.c_str());
 		if (!filter)
 			continue;
 		if (enabled) {
@@ -892,10 +898,11 @@ bool ObsFrontendBridge::SetAudioDelayFiltersDelaySeconds(const std::string &live
 	auto children = GetAudioCapableChildren(liveSceneName);
 	bool foundAny = false;
 
-	for (obs_source_t *child : children) {
+	for (const OBSSourceAutoRelease &childRef : children) {
+		obs_source_t *child = childRef.Get();
 		const char *childName = obs_source_get_name(child);
 		std::string filterName = std::string(kAudioDelayFilterPrefix) + (childName ? childName : "?");
-		obs_source_t *filter = obs_source_get_filter_by_name(child, filterName.c_str());
+		OBSSourceAutoRelease filter = obs_source_get_filter_by_name(child, filterName.c_str());
 		if (!filter)
 			continue;
 		obs_data_t *settings = obs_data_create();
