@@ -68,6 +68,39 @@ float SafetyMargin(float canvasShortSide);
 // (zero) canvas sizes fall back to 1920x1080.
 Placement Place(float canvasWidth, float canvasHeight, uint32_t corner);
 
+// What the plugin last applied to the badge's scene item: the inputs of
+// Place() and its result. Kept in the item's private settings, so it travels
+// with the scene collection.
+struct AppliedLayout {
+	bool valid = false; // False: never placed by this version of the plugin.
+	uint32_t corner = 0;
+	float canvasWidth = 0.0f;
+	float canvasHeight = 0.0f;
+	float x = 0.0f;
+	float y = 0.0f;
+	float scale = 0.0f;
+};
+
+// The item's position and scale as OBS has them now.
+struct ItemTransform {
+	float x = 0.0f;
+	float y = 0.0f;
+	float scaleX = 0.0f;
+	float scaleY = 0.0f;
+};
+
+// True while `current` is still what the plugin applied: the user hasn't moved
+// or scaled the badge in OBS since (half a pixel / 0.1 % of tolerance).
+bool IsUntouched(const AppliedLayout &applied, const ItemTransform &current);
+
+// Whether showing the badge has to (re)place it with Place(). The position and
+// size the user gives it in OBS are kept: it is placed the first time, again
+// whenever the corner chosen in the dock changes, and on a canvas size change
+// only while the user hasn't moved or scaled it (left where the plugin put
+// it, it follows the new canvas; placed by the user, it stays put).
+bool ShouldPlace(const AppliedLayout &applied, const ItemTransform &current, float canvasWidth, float canvasHeight,
+		 uint32_t corner);
+
 // "delay-badge-30s.png": one file per value, so OBS reloads the image source
 // when the value changes. Values outside [kMinSeconds, kMaxSeconds] are clamped.
 std::string BadgeFileName(uint32_t seconds);

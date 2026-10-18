@@ -245,10 +245,14 @@ public:
 	// Shows/hides the "DELAY 30 s" overlay inside the wrapper scene -- the
 	// scene that is on Program exactly while the delay is Active, so the
 	// overlay never appears anywhere else. One image source
-	// (autonames::kOverlayBadge) showing the PNG the provider returns for
-	// `seconds`; created once, then repointed, placed in `corner` (0 top-left,
-	// 1 top-right, 2 bottom-left, 3 bottom-right, see overlay-layout.hpp) and
-	// toggled. Removes the overlay sources of earlier versions on sight.
+	// (autonames::kOverlayBadge, reused if it already exists elsewhere, its
+	// wrapper item tagged in its private settings) showing the PNG the
+	// provider returns for `seconds`; created once, then repointed and
+	// toggled. Placed in `corner` (0 top-left, 1 top-right, 2 bottom-left,
+	// 3 bottom-right, see overlay-layout.hpp) the first time and whenever
+	// `corner` changes; a position or size the user gives it in OBS is kept
+	// otherwise (overlaylayout::ShouldPlace). Removes the overlay sources of
+	// earlier versions on sight.
 	// `seconds` is ignored when `visible` is false. False if the wrapper scene
 	// doesn't exist or no image could be produced (the overlay then stays
 	// hidden; the delay itself is unaffected).

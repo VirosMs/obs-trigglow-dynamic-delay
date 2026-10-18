@@ -257,14 +257,82 @@ OBSSourceAutoRelease FindAudioFilterOn(obs_source_t *child)
 	return FindFilterByNames(child, autonames::AudioFilterLookupNames(childName ? childName : ""));
 }
 
-// Borrowed: the overlay badge's item in the wrapper scene, current or legacy name.
+// Keys SetDelayOverlay() keeps in the badge item's private settings, which OBS
+// saves with the scene collection: a marker that finds the item whatever its
+// source ends up called, and the layout last applied (overlay-layout.hpp's
+// AppliedLayout), so a position or size the user gives the badge is kept.
+constexpr const char *kImageSourceId = "image_source";
+constexpr const char *kBadgeMarkerKey = "trigglow_overlay_badge";
+constexpr const char *kBadgePlacedKey = "trigglow_overlay_placed";
+constexpr const char *kBadgeCornerKey = "trigglow_overlay_corner";
+constexpr const char *kBadgeCanvasWidthKey = "trigglow_overlay_canvas_width";
+constexpr const char *kBadgeCanvasHeightKey = "trigglow_overlay_canvas_height";
+constexpr const char *kBadgeXKey = "trigglow_overlay_x";
+constexpr const char *kBadgeYKey = "trigglow_overlay_y";
+constexpr const char *kBadgeScaleKey = "trigglow_overlay_scale";
+
+bool HasBadgeMarker(obs_sceneitem_t *item)
+{
+	OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(item);
+	return priv && obs_data_get_bool(priv, kBadgeMarkerKey);
+}
+
+// An overlay item of the wrapper scene (the badge, or an older overlay
+// source): by name, or by the badge's marker when OBS had to name its source
+// "Trigglow Delay Badge (auto) 2" or the user renamed it.
+bool IsOverlayItem(obs_sceneitem_t *item, const char *sourceName)
+{
+	return (sourceName && autonames::IsOverlayName(sourceName)) || HasBadgeMarker(item);
+}
+
+// Borrowed: the overlay badge's item in the wrapper scene -- current or legacy
+// name first, then the marker.
 obs_sceneitem_t *FindOverlayBadgeItem(obs_scene_t *wrapperScene)
 {
 	for (const std::string &name : autonames::LookupNames(Kind::OverlayBadge)) {
 		if (obs_sceneitem_t *item = obs_scene_find_source(wrapperScene, name.c_str()))
 			return item;
 	}
-	return nullptr;
+	obs_sceneitem_t *marked = nullptr;
+	obs_scene_enum_items(
+		wrapperScene,
+		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
+			if (!HasBadgeMarker(item))
+				return true;
+			*static_cast<obs_sceneitem_t **>(param) = item;
+			return false;
+		},
+		&marked);
+	return marked;
+}
+
+overlaylayout::AppliedLayout ReadAppliedLayout(obs_data_t *priv)
+{
+	overlaylayout::AppliedLayout applied;
+	if (!priv || !obs_data_get_bool(priv, kBadgePlacedKey))
+		return applied;
+	applied.valid = true;
+	applied.corner = static_cast<uint32_t>(obs_data_get_int(priv, kBadgeCornerKey));
+	applied.canvasWidth = static_cast<float>(obs_data_get_double(priv, kBadgeCanvasWidthKey));
+	applied.canvasHeight = static_cast<float>(obs_data_get_double(priv, kBadgeCanvasHeightKey));
+	applied.x = static_cast<float>(obs_data_get_double(priv, kBadgeXKey));
+	applied.y = static_cast<float>(obs_data_get_double(priv, kBadgeYKey));
+	applied.scale = static_cast<float>(obs_data_get_double(priv, kBadgeScaleKey));
+	return applied;
+}
+
+void WriteAppliedLayout(obs_data_t *priv, uint32_t corner, float canvasWidth, float canvasHeight,
+			const overlaylayout::Placement &placement)
+{
+	if (!priv)
+		return;
+	obs_data_set_bool(priv, kBadgePlacedKey, true);
+	obs_data_set_int(priv, kBadgeCornerKey, corner);
+	obs_data_set_double(priv, kBadgeCanvasWidthKey, canvasWidth);
+	obs_data_set_double(priv, kBadgeCanvasHeightKey, canvasHeight);
+	obs_data_set_double(priv, kBadgeXKey, placement.x);
+	obs_data_set_double(priv, kBadgeYKey, placement.y);
+	obs_data_set_double(priv, kBadgeScaleKey, placement.scale);
 }
 
 // Removes the overlay sources earlier versions put in the wrapper scene and
@@ -404,7 +472,7 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 				return true;
 			// The delay overlay lives in this scene too; it is never the
 			// live scene the filter attaches to.
-			if (autonames::IsOverlayName(name))
+			if (IsOverlayItem(item, name))
 				return true;
 			if (*c->liveName == name) {
 				c->itemSource = source;
@@ -688,29 +756,44 @@ bool ObsFrontendBridge::SetDelayOverlay(bool visible, uint32_t seconds, uint32_t
 		return false;
 	}
 
-	obs_data_t *settings = obs_data_create();
+	OBSDataAutoRelease settings = obs_data_create();
 	obs_data_set_string(settings, "file", imagePath.c_str());
 	if (!badgeItem) {
-		obs_source_t *badgeSource =
-			obs_source_create("image_source", autonames::kOverlayBadge, settings, nullptr);
-		if (badgeSource) {
-			badgeItem = obs_scene_add(wrapperScene, badgeSource);
-			obs_source_release(badgeSource); // The scene item holds it now.
+		// One badge source per collection. A source already called
+		// kOverlayBadge outside this scene (the user also put it in one of
+		// their scenes, or removed it from this one) is reused: creating
+		// another one would make OBS call it "... 2", and -- before the
+		// marker below -- add yet another copy on every appearance.
+		OBSSourceAutoRelease badgeSource = obs_get_source_by_name(autonames::kOverlayBadge);
+		const char *id = badgeSource ? obs_source_get_unversioned_id(badgeSource) : nullptr;
+		const bool reused = id && strcmp(id, kImageSourceId) == 0;
+		if (reused) {
+			obs_source_update(badgeSource, settings);
+		} else {
+			// Nothing by that name, or something that isn't an image: a new
+			// source (OBS may suffix its name; the marker finds it anyway).
+			badgeSource = obs_source_create(kImageSourceId, autonames::kOverlayBadge, settings, nullptr);
 		}
+		if (badgeSource)
+			badgeItem = obs_scene_add(wrapperScene, badgeSource); // The item holds its own reference.
 		if (!badgeItem) {
-			obs_data_release(settings);
 			TRIGGLOW_LOG_WARN(kComponent, "delay overlay: could not create the image source");
 			return false;
 		}
-		TRIGGLOW_LOG_INFO(kComponent, "delay overlay: created \"%s\"", autonames::kOverlayBadge);
+		TRIGGLOW_LOG_INFO(kComponent, "delay overlay: %s \"%s\"", reused ? "reused" : "created",
+				  obs_source_get_name(badgeSource));
 	} else {
 		obs_source_update(obs_sceneitem_get_source(badgeItem), settings);
 	}
-	obs_data_release(settings);
 
-	// Position/scale are re-applied on every show so the chosen corner takes
-	// effect immediately and follows a canvas resolution change. The safety
-	// margin keeps it clear of players' controls and clip crops.
+	OBSDataAutoRelease priv = obs_sceneitem_get_private_settings(badgeItem);
+	if (priv)
+		obs_data_set_bool(priv, kBadgeMarkerKey, true); // Also tags items of v0.5.x and earlier 0.6 builds.
+
+	// Placed in the chosen corner the first time and whenever the dock's
+	// corner changes; otherwise the position and size the user gave it in OBS
+	// stay (overlaylayout::ShouldPlace). The safety margin keeps it clear of
+	// players' controls and clip crops.
 	obs_video_info ovi = {};
 	float canvasW = 0.0f;
 	float canvasH = 0.0f;
@@ -718,15 +801,21 @@ bool ObsFrontendBridge::SetDelayOverlay(bool visible, uint32_t seconds, uint32_t
 		canvasW = static_cast<float>(ovi.base_width);
 		canvasH = static_cast<float>(ovi.base_height);
 	}
-	const overlaylayout::Placement placement = overlaylayout::Place(canvasW, canvasH, corner);
 	vec2 pos;
 	vec2 scale;
-	vec2_set(&pos, placement.x, placement.y);
-	vec2_set(&scale, placement.scale, placement.scale);
-	obs_sceneitem_set_alignment(badgeItem, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
-	obs_sceneitem_set_bounds_type(badgeItem, OBS_BOUNDS_NONE);
-	obs_sceneitem_set_pos(badgeItem, &pos);
-	obs_sceneitem_set_scale(badgeItem, &scale);
+	obs_sceneitem_get_pos(badgeItem, &pos);
+	obs_sceneitem_get_scale(badgeItem, &scale);
+	const overlaylayout::ItemTransform current{pos.x, pos.y, scale.x, scale.y};
+	if (overlaylayout::ShouldPlace(ReadAppliedLayout(priv), current, canvasW, canvasH, corner)) {
+		const overlaylayout::Placement placement = overlaylayout::Place(canvasW, canvasH, corner);
+		vec2_set(&pos, placement.x, placement.y);
+		vec2_set(&scale, placement.scale, placement.scale);
+		obs_sceneitem_set_alignment(badgeItem, OBS_ALIGN_LEFT | OBS_ALIGN_TOP);
+		obs_sceneitem_set_bounds_type(badgeItem, OBS_BOUNDS_NONE);
+		obs_sceneitem_set_pos(badgeItem, &pos);
+		obs_sceneitem_set_scale(badgeItem, &scale);
+		WriteAppliedLayout(priv, corner, canvasW, canvasH, placement);
+	}
 	// The live scene can be (re)added to the wrapper AFTER the overlay was
 	// created (e.g. after switching live scene), which would put it on top
 	// and hide the overlay. Always bring the overlay back above everything.

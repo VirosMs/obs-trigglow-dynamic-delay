@@ -152,6 +152,62 @@ void TestVerticalAndUltrawide()
 	CHECK(Near(ultrawide.x, 2560.0f - 200.0f - 24.0f));
 }
 
+// What SetDelayOverlay() stores after placing the badge with Place().
+AppliedLayout Applied(float canvasWidth, float canvasHeight, uint32_t corner)
+{
+	const Placement p = Place(canvasWidth, canvasHeight, corner);
+	AppliedLayout a;
+	a.valid = true;
+	a.corner = corner;
+	a.canvasWidth = canvasWidth;
+	a.canvasHeight = canvasHeight;
+	a.x = p.x;
+	a.y = p.y;
+	a.scale = p.scale;
+	return a;
+}
+
+ItemTransform Transform(float x, float y, float scale)
+{
+	return ItemTransform{x, y, scale, scale};
+}
+
+void TestKeepsTheUsersTransform()
+{
+	g_currentTest = "user transform";
+	const AppliedLayout none;
+	const AppliedLayout tl1080 = Applied(1920.0f, 1080.0f, 0);
+	const ItemTransform asPlaced = Transform(tl1080.x, tl1080.y, tl1080.scale);
+	const ItemTransform moved = Transform(900.0f, 500.0f, tl1080.scale);
+	const ItemTransform scaled = Transform(tl1080.x, tl1080.y, 0.6f);
+
+	// First show (nothing stored, e.g. a v0.5.x badge): placed.
+	CHECK(ShouldPlace(none, moved, 1920.0f, 1080.0f, 0));
+	CHECK(!IsUntouched(none, asPlaced));
+
+	// Shown again with nothing changed: never re-placed, moved or not. This
+	// was the bug: every appearance reset the user's position and scale.
+	CHECK(!ShouldPlace(tl1080, asPlaced, 1920.0f, 1080.0f, 0));
+	CHECK(!ShouldPlace(tl1080, moved, 1920.0f, 1080.0f, 0));
+	CHECK(!ShouldPlace(tl1080, scaled, 1920.0f, 1080.0f, 0));
+
+	// Another corner picked in the dock: placed there, even if it was moved.
+	CHECK(ShouldPlace(tl1080, moved, 1920.0f, 1080.0f, 3));
+	CHECK(ShouldPlace(tl1080, asPlaced, 1920.0f, 1080.0f, 1));
+	// Out-of-range corners are top-left, the same corner.
+	CHECK(!ShouldPlace(tl1080, asPlaced, 1920.0f, 1080.0f, 9));
+
+	// Canvas size changed: follows it only while untouched.
+	CHECK(ShouldPlace(tl1080, asPlaced, 2560.0f, 1440.0f, 0));
+	CHECK(!ShouldPlace(tl1080, moved, 2560.0f, 1440.0f, 0));
+	CHECK(!ShouldPlace(tl1080, scaled, 2560.0f, 1440.0f, 0));
+
+	// Tolerances: sub-pixel and float noise count as untouched.
+	CHECK(IsUntouched(tl1080, Transform(tl1080.x + 0.3f, tl1080.y - 0.3f, tl1080.scale * 1.0005f)));
+	CHECK(!IsUntouched(tl1080, Transform(tl1080.x + 2.0f, tl1080.y, tl1080.scale)));
+	CHECK(!IsUntouched(tl1080, ItemTransform{tl1080.x, tl1080.y, tl1080.scale, tl1080.scale * 1.5f}));
+}
+
 void TestFileNames()
 {
 	g_currentTest = "file names";
@@ -173,6 +229,7 @@ int main()
 	TestPlacement1080p();
 	TestPlacementOtherCanvases();
 	TestVerticalAndUltrawide();
+	TestKeepsTheUsersTransform();
 	TestFileNames();
 
 	std::printf("overlay_layout_tests: %d checks, %d failures\n", g_checks, g_failures);
