@@ -10,6 +10,7 @@
 !/installers
 !/src
 !/tests
+!/tools
 !.clang-format
 !.gersemirc
 !.gitignore

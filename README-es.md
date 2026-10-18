@@ -141,10 +141,10 @@ por ahora (ver `docs/ROADMAP-es.md`).
    bloquea tu elección.
 3. Ve a `Configuración → Atajos de teclado`, busca "Trigglow" y asigna una tecla a **Toggle Dynamic
    Delay** (y opcionalmente a Enable/Disable por separado).
-4. Pulsa Enable (desde el botón del dock, la hotkey o Stream Deck). El dock muestra `Filling` con
-   una cuenta atrás en vivo mientras se llena el buffer hasta el delay pedido; en cuanto se llena,
-   pasa automáticamente a `Active` y el Programa empieza a mostrar el vídeo y el audio delayed, en
-   sincronía. **El output de streaming en sí no se toca en ningún momento**: los espectadores en
+4. Pulsa Activar delay (desde el botón del dock, la hotkey o Stream Deck). El dock muestra
+   **Preparando delay** con una barra de progreso y una cuenta atrás en vivo mientras se llena el
+   buffer hasta el delay pedido; en cuanto se llena, pasa automáticamente a **Delay activo** y el
+   Programa empieza a mostrar el vídeo y el audio delayed, en sincronía. **El output de streaming en sí no se toca en ningún momento**: los espectadores en
    Twitch/YouTube/Kick/donde sea nunca ven un corte ni una reconexión, ya pulses el botón antes o
    durante un directo.
 
@@ -163,8 +163,9 @@ No hace falta ningún plugin de Stream Deck propio:
    sistema; OBS necesita tener el foco, o al menos estar corriendo y escuchando el atajo global,
    según cómo tengas configurado OBS/tu SO).
 4. Pulsarlo estando ya en directo es igual de seguro que pulsarlo antes de salir en directo: OBS
-   pasa por `Filling` (con la cuenta atrás en vivo del dock) hasta `Active` en cuanto el buffer se
-   llena — no hay reconexión ni corte visible en el stream en ningún momento de esa transición.
+   pasa por **Preparando delay** (con la cuenta atrás en vivo del dock) hasta **Delay activo** en
+   cuanto el buffer se llena — no hay reconexión ni corte visible en el stream en ningún momento de
+   esa transición.
 
 Guía más detallada, con capturas de ejemplo y solución de problemas: `docs/STREAM_DECK.md`.
 
@@ -193,6 +194,17 @@ src/
   settings-ui.{hpp,cpp}            → el dock Qt (escena en directo/de carga, segundos, calidad,
                                      estimación de ajuste, Enable/Disable, cuenta atrás de llenado,
                                      aviso de actualización)
+  ui-tokens.{hpp,cpp}              → tokens de color puros derivados de la paleta de OBS, con el
+                                     contrato WCAG AA probado en tests/
+  ui-theme.{hpp,cpp}               → la hoja de estilo única de la UI, las fuentes de marca
+                                     empaquetadas y los iconos SVG recoloreados (src/resources/),
+                                     compartidos por el dock y el diálogo
+  overlay-badge.{hpp,cpp}          → pinta el overlay "DELAY 30 s" del directo como un único PNG
+                                     (QPainter)
+  overlay-layout.{hpp,cpp}         → colocación pura de ese overlay en el lienzo, con tests
+  auto-names.{hpp,cpp}             → nombres de la escena, filtros y overlay que gestiona el plugin
+                                     y su migración desde los nombres "(no tocar)" de v0.5.x, con
+                                     tests
   report-bug-dialog.{hpp,cpp}      → diálogo "Reportar un problema" — crea un ticket de soporte en
                                      trigglow.com con el log actual de OBS adjuntado automáticamente
   bug-report.{hpp,cpp}             → localiza/copia el archivo de log actual de OBS (solo Windows
@@ -213,10 +225,14 @@ src/
                                      build actual
 data/
   locale/en-US.ini, es-ES.ini      → las cadenas traducidas reales del plugin (ver src/i18n.hpp)
+  fonts/                           → Archivo y Geist Mono empaquetadas + sus licencias OFL
+  licenses/                        → avisos de los recursos de terceros compilados en el plugin
 tests/
   buffer_fit_tests.cpp             → tests unitarios de buffer-fit (desactivados por defecto:
                                      -DTRIGGLOW_BUILD_TESTS=ON, después ctest)
   encoder_check_tests.cpp          → tests unitarios de encoder-check (igual)
+  ui_tokens_tests.cpp · auto_names_tests.cpp · overlay_layout_tests.cpp → igual, para esos módulos
+tools/fonts/                       → cómo se generan los subconjuntos de las fuentes empaquetadas
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
   INSTALL_GUIDE-es.md       → guía de instalación paso a paso con capturas (SmartScreen,
@@ -241,3 +257,21 @@ del producto. Detalle completo de esta decisión en `docs/SPEC.md` §9.
 `main` es una rama protegida en GitHub: las fusiones requieren un pull request, incluso para el
 propio dueño del repositorio (sin pushes directos, sin force-push, sin borrar la rama). El trabajo
 del día a día ocurre en `develop`; los PRs van de `develop` a `main`.
+
+### Recursos de terceros
+
+La interfaz del plugin incluye algunos recursos de terceros, cada uno con su licencia (todas
+compatibles con distribuirlos junto a un binario GPL-2.0):
+
+| Recurso | Dónde | Licencia |
+|---|---|---|
+| **Archivo** (SemiBold, Bold), subconjunto | `data/fonts/Archivo-*.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-Archivo.txt` |
+| **Geist Mono** (Medium), subconjunto | `data/fonts/GeistMono-Medium.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-GeistMono.txt` |
+| Iconos de la interfaz (trazados de Lucide, como en la web de Trigglow) | compilados desde `src/resources/icons/` | ISC (partes MIT, Feather), `data/licenses/LICENSE-lucide.txt` |
+
+Las fuentes son instancias estáticas, en subconjunto, de las fuentes variables originales de
+[google/fonts](https://github.com/google/fonts) (`ofl/archivo`, `ofl/geistmono`); `tools/fonts/`
+explica cómo se generan. La OFL exige que su texto acompañe a las fuentes, así que cada `OFL-*.txt`
+va junto a su fuente en el paquete y en el instalador. Las fuentes solo las usan el dock, el diálogo
+y el overlay del plugin (la fuente de la interfaz de OBS nunca cambia); sin ellas, todo el texto usa
+la fuente de OBS.

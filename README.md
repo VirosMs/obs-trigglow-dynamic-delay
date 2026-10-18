@@ -134,9 +134,10 @@ macOS/Linux don't have a one-click installer yet — manual install is the only 
    instead of lowering the quality further, but never blocks your choice.
 3. Go to `Settings → Hotkeys`, search for "Trigglow", and assign a key to **Toggle Dynamic
    Delay** (and optionally to Enable/Disable separately).
-4. Press Enable (from the dock button, the hotkey, or Stream Deck). The dock shows `Filling` with
-   a live countdown while the buffer fills up to the requested delay; once full, it switches
-   automatically to `Active` and Program starts showing the delayed video and audio, in sync.
+4. Press Enable (from the dock button, the hotkey, or Stream Deck). The dock shows **Preparing
+   delay** with a progress bar and a live countdown while the buffer fills up to the requested
+   delay; once full, it switches automatically to **Delay on** and Program starts showing the
+   delayed video and audio, in sync.
    **The streaming output itself is never touched at any point** — viewers on Twitch/YouTube/Kick/
    wherever never see a cut or a reconnect, whether you press the button before or during a live
    stream.
@@ -156,8 +157,8 @@ No dedicated Stream Deck plugin is needed:
    system; OBS needs to have focus, or at least be running and listening for the global shortcut,
    depending on how you have OBS/your OS configured).
 4. Pressing it while already live is exactly as safe as pressing it before going live: OBS moves
-   through `Filling` (with the dock's live countdown) to `Active` once the buffer is full — there
-   is no reconnection and no visible cut on stream at any point in that transition.
+   through **Preparing delay** (with the dock's live countdown) to **Delay on** once the buffer is
+   full — there is no reconnection and no visible cut on stream at any point in that transition.
 
 More detailed guide, with example screenshots and troubleshooting: `docs/STREAM_DECK.md`.
 
@@ -181,6 +182,14 @@ src/
   scene-combo-box.{hpp,cpp}        → dock combo box populated from OBS's own scene list
   settings-ui.{hpp,cpp}            → the Qt dock (live/loading scene, seconds, quality, fit
                                      estimate, Enable/Disable, live fill countdown, update notice)
+  ui-tokens.{hpp,cpp}              → pure color tokens derived from OBS's palette, with the WCAG
+                                     AA contract unit-tested in tests/
+  ui-theme.{hpp,cpp}               → the UI's single style sheet, bundled brand fonts and
+                                     recolored SVG icons (src/resources/), shared by dock and dialog
+  overlay-badge.{hpp,cpp}          → paints the live "DELAY 30 s" overlay as one PNG (QPainter)
+  overlay-layout.{hpp,cpp}         → pure placement of that overlay on the canvas, unit-tested
+  auto-names.{hpp,cpp}             → names of the scene/filters/overlay the plugin manages, and
+                                     their migration from the v0.5.x "(no tocar)" names, unit-tested
   report-bug-dialog.{hpp,cpp}      → "Report a problem" dialog — creates a trigglow.com support
                                      ticket with the current OBS log attached automatically
   bug-report.{hpp,cpp}             → locates/copies OBS's current log file (Windows only for now)
@@ -199,10 +208,14 @@ src/
                                      instantiated by plugin-main.cpp; ships in no current build
 data/
   locale/en-US.ini, es-ES.ini      → the plugin's actual translated strings (see src/i18n.hpp)
+  fonts/                           → bundled Archivo and Geist Mono + their OFL licenses
+  licenses/                        → notices of third-party assets compiled into the plugin
 tests/
   buffer_fit_tests.cpp             → unit tests for buffer-fit (off by default:
                                      -DTRIGGLOW_BUILD_TESTS=ON, then ctest)
   encoder_check_tests.cpp          → unit tests for encoder-check (same)
+  ui_tokens_tests.cpp · auto_names_tests.cpp · overlay_layout_tests.cpp → same, for those modules
+tools/fonts/                       → how the bundled font subsets are generated
 docs/
   SPEC.md                  → full technical specification (start here)
   INSTALL_GUIDE.md          → step-by-step install walkthrough with screenshots (SmartScreen,
@@ -227,3 +240,21 @@ rest of the product. Full detail on this decision in `docs/SPEC.md` §9.
 `main` is a protected branch on GitHub: merges require a pull request, even for the repo owner (no
 direct pushes, no force-push, no branch deletion). Day-to-day work happens on `develop`; PRs go
 `develop` → `main`.
+
+### Third-party assets
+
+The plugin's UI ships a few third-party assets, each under its own license (all compatible with
+redistribution next to a GPL-2.0 binary):
+
+| Asset | Where | License |
+|---|---|---|
+| **Archivo** (SemiBold, Bold), subset | `data/fonts/Archivo-*.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-Archivo.txt` |
+| **Geist Mono** (Medium), subset | `data/fonts/GeistMono-Medium.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-GeistMono.txt` |
+| Interface icons (Lucide paths, as in the Trigglow web app) | compiled in from `src/resources/icons/` | ISC (portions MIT, Feather), `data/licenses/LICENSE-lucide.txt` |
+
+The fonts are static instances subset from the upstream variable fonts in
+[google/fonts](https://github.com/google/fonts) (`ofl/archivo`, `ofl/geistmono`); `tools/fonts/`
+documents how. The OFL requires its text to travel with the fonts, so each `OFL-*.txt` sits next to
+its font in the package and in the installer. The fonts are only used by the plugin's own dock,
+dialog and overlay (OBS's UI font is never changed); without them every text falls back to OBS's
+font.
