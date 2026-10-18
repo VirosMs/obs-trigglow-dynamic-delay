@@ -174,6 +174,8 @@ src/
                                      GPU object pool
   buffer-fit.{hpp,cpp}             → pure buffer sizing math (output-resolution cap, quality
                                      floor, RAM budget), unit-tested in tests/
+  encoder-check.{hpp,cpp}          → pure decision behind the "encoder above the buffer" log
+                                     warning (which encoders see the main canvas), unit-tested
   audio-delay-filter.{hpp,cpp}     → per-leaf-source audio delay ring, kept in sync with video
   hardware-info.{hpp,cpp}          → total system RAM query, used to size the buffer budget
   scene-combo-box.{hpp,cpp}        → dock combo box populated from OBS's own scene list
@@ -200,6 +202,7 @@ data/
 tests/
   buffer_fit_tests.cpp             → unit tests for buffer-fit (off by default:
                                      -DTRIGGLOW_BUILD_TESTS=ON, then ctest)
+  encoder_check_tests.cpp          → unit tests for encoder-check (same)
 docs/
   SPEC.md                  → full technical specification (start here)
   INSTALL_GUIDE.md          → step-by-step install walkthrough with screenshots (SmartScreen,

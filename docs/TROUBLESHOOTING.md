@@ -36,14 +36,15 @@ decompresses the delayed one inside OBS's graphics thread — the same thread th
 frame of your stream in time (16.7 ms per frame at 60 fps, 33.3 ms at 30 fps). When that work takes
 too long, OBS falls behind and shows "Encoding overloaded" (frames skipped due to encoding lag) or
 rendering lag (frames missed). Up to v0.5.0 the buffer was stored at your **canvas** resolution, so
-with a 2560x1440 canvas and a 1920x1080 output each frame cost 14.3/17.4 ms p50/p95 there — most of
-a 60 fps frame — even though OBS throws those extra pixels away when it scales to the output.
+with a 2560x1440 canvas and a 1920x1080 output each frame cost 14.3/17.4 ms p50/p95 there in our
+benchmarks — most of a 60 fps frame — even though OBS throws those extra pixels away when it scales
+to the output.
 
 **v0.5.1 fixes the canvas-larger-than-output case.** The buffer is never stored above OBS's output
 resolution (`Settings → Video → Output (Scaled) Resolution`), and compression uses several threads:
-the same 1440p-canvas / 1080p-output setup now costs ~5.2/5.9 ms per frame. Update to v0.5.1 first
-(the dock shows a notice when a newer version exists). If you lowered your canvas to work around
-this, you can set it back.
+the same 1440p-canvas / 1080p-output setup now costs ~5.2/5.9 ms per frame in the same benchmark.
+Update to v0.5.1 first (the dock shows a notice when a newer version exists). If you lowered your
+canvas to work around this, you can set it back.
 
 **If it still happens on v0.5.1:**
 - **Make the canvas equal to the output if you can** (`Settings → Video`: Base (Canvas) Resolution =
@@ -80,7 +81,7 @@ or close OBS. Example (illustrative values — yours will differ):
 | `holds` | Times the last frame was repeated because the one due couldn't be shown. An occasional one is harmless; a steadily growing count means capture is falling behind. |
 | `rawFallback` | Frames stored uncompressed because compression failed. Should be 0. |
 | `obs frames+ lagged+ skipped+` | OBS's own counters over the same window: frames rendered, frames missed due to rendering lag, frames skipped due to encoding lag. Non-zero `lagged`/`skipped` with `render` p95 close to the frame budget points at the plugin; with a low `render`, look elsewhere (game, encoder, GPU load). |
-| `ratio`, `ring`, `growths` | Compression ratio (this window, and the whole delay cycle), RAM used by the buffer and its slot count, and how many slots had to grow beyond their budgeted size. |
+| `ratio`, `ring`, `growths` | Compression ratio (this window, and the whole delay cycle), RAM reserved for the buffer and its slot count, and how many slots had to grow beyond their budgeted size. Since v0.5.1 the buffer isn't zero-filled, so the memory Task Manager shows for it (resident) is usually well below `ring`: only what frames have actually written. |
 
 The `settings loaded` line (when OBS starts) and the `enabled` line (each time you press Enable)
 end in `output_cap=on` or `output_cap=off`, so support can tell which sizing was in use.
@@ -88,9 +89,11 @@ end in `output_cap=on` or `output_cap=off`, so support can tell which sizing was
 **Turning the output cap off (`buffer_output_cap`).** Only for someone who records (or sends an
 Enhanced Broadcasting track) above the output resolution and prefers that quality for the delayed
 part at the cost of CPU. It brings back v0.5.0's sizing, including the risk of "Encoding
-overloaded" described above. When it would make a difference, the log warns with a line like
-`video encoder "…" (output "…") is 2560x1440, above the delay buffer's 1920x1080 …: its delayed
-video is upscaled`.
+overloaded" described above, and with more pixels to store per second the same RAM holds less: if
+RAM runs short, the buffer is reduced or the delay ends up shorter than requested. When it would
+make a difference, the log warns with a line like `video encoder "…" (output "…") is 2560x1440,
+above the delay buffer's 1920x1080 …: its delayed video is upscaled`, which also gives the size the
+buffer would have without the cap (and, if it wouldn't fit, how many seconds it would hold).
 
 1. **Close OBS completely.** The setting is only read when OBS starts, and OBS rewrites this file
    when it exits, so a change made with OBS open is lost.
@@ -100,7 +103,9 @@ video is upscaled`.
    inside OBS's config directory). If the file doesn't exist yet, open and close OBS once with the
    plugin installed.
 3. Add `"buffer_output_cap": false` as one more key, keeping everything else as it is (mind the
-   comma on the line before):
+   comma on the line before). It has to be a literal `false`, without quotes: `"false"` (a string),
+   `0` or anything else keeps the cap on and the log says why (`"buffer_output_cap" … is not a JSON
+   boolean`).
 
    ```json
    {
@@ -113,6 +118,13 @@ video is upscaled`.
    (Your file has more keys and your own values; only the last line is new.)
 4. Start OBS. The log shows `output_cap=off` in the `settings loaded` line, and again when you press
    Enable; the `perf check` line says `cap off (buffer_output_cap=false)`.
+
+If the file ends up as invalid JSON (a missing comma or quote is enough), the plugin doesn't
+overwrite it: at start it moves it aside as
+`buffer-mode-settings.json.<date-time>.invalid` in the same folder, uses the defaults (your live
+and loading scenes, delay and overlay settings too, until you set them again) and writes a WARN
+with both paths (`settings file … is not valid JSON -- moved it to …`). Fix the copy, close OBS,
+rename it back to `buffer-mode-settings.json` and start OBS again.
 
 To undo it: with OBS closed, delete the key (or set it to `true`) and start OBS again.
 

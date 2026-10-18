@@ -12,13 +12,14 @@ cuanto se activaba el delay.
 - **Sobrecarga al codificar con el delay activo cuando el lienzo es mayor que la salida.** El
   buffer de vídeo se guardaba a la resolución del lienzo, así que con un lienzo 1440p emitido a
   1080p el plugin comprimía y descomprimía en MJPEG cada frame del buffer a 1440p dentro del hilo
-  gráfico de OBS: 14,3/17,4 ms p50/p95 por frame, la mayor parte de los 16,7 ms que tiene un frame
-  a 60 fps, y OBS se quedaba atrás. Esos píxeles de más los descartaba de todos modos el propio
-  reescalado de salida de OBS. Ahora el buffer nunca supera la resolución de salida de OBS
-  (Ajustes → Vídeo → Resolución de salida (escalada)) y, junto con la compresión con varios hilos
-  de abajo, el mismo montaje cuesta ~5,2/5,9 ms p50/p95. Puedes volver a usar un lienzo 2560x1440
-  con salida 1920x1080. `EnsureRingSized()` y la estimación del dock pasan ambos por la nueva
-  función pura de dimensionado `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, sin dependencia
+  gráfico de OBS: 14,3/17,4 ms p50/p95 por frame en un benchmark del mismo pipeline fuera de OBS,
+  la mayor parte de los 16,7 ms que tiene un frame a 60 fps, y OBS se quedaba atrás. Esos píxeles
+  de más los descartaba de todos modos el propio reescalado de salida de OBS. Ahora el buffer nunca
+  supera la resolución de salida de OBS (Ajustes → Vídeo → Resolución de salida (escalada)) y,
+  junto con la compresión con varios hilos de abajo, el mismo montaje cuesta ~5,2/5,9 ms p50/p95
+  (mismo benchmark). Puedes volver a usar un lienzo 2560x1440 con salida 1920x1080.
+  `EnsureRingSized()` y la estimación del dock pasan ambos por la nueva función pura de
+  dimensionado `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, sin dependencia
   de libobs/FFmpeg) con la geometría del lienzo (`obs_video_info::base_*`) y de la salida
   (`output_*`). El techo es una escala uniforme, `min(1, max(outW/baseW, outH/baseH))`, que
   conserva la relación de aspecto y nunca baja de la salida en ningún eje; solo se aplica cuando el
@@ -47,6 +48,22 @@ cuanto se activaba el delay.
   su dimensionado. El delay efectivo con el que se sincroniza el audio
   (`get_effective_delay_seconds`) también usa aritmética racional: multiplicar por el intervalo
   truncado podía redondear a 29 s un tramo de exactamente 1800 frames a 60 fps (30 s).
+- **Sin parón ni pico de RAM al empezar el delay.** Al dimensionar el buffer se rellenaba con
+  ceros cada slot en el hilo gráfico de OBS, lo que tocaba toda su memoria de golpe: a 1440p60 eran
+  ~1,9 GB residentes de una vez y un parón de ~381 ms (unos 23 frames perdidos) en el primer frame
+  tras Enable. Ahora los slots se reservan sin inicializar (`Slot::pixels` es un
+  `std::unique_ptr<uint8_t[]>` sin inicializar), así que la memoria solo pasa a ser residente a
+  medida que se escriben frames: en la simulación fuera de OBS, 651-896 MB en vez de 1923 MB a
+  1440p60, dimensionar cuesta ~5 ms y liberar el buffer al desactivar también es más rápido
+  (87 → 30 ms). La memoria reservada (comprometida), y la cifra `ring` de `perf check`, no cambian.
+  Nada lee más allá de los bytes que escribió cada frame.
+- **Compresión más rápida en CPU con menos de 8 núcleos lógicos.** El codificador MJPEG usa ahora
+  las tablas de Huffman estándar de JPEG (`huffman=default`) en vez de las óptimas por frame de
+  FFmpeg, que cuestan una segunda pasada sobre cada frame. Con slices FFmpeg ya lo hacía, así que
+  cambia el codificador de un hilo: un 10-17% menos de tiempo de codificación a 1440p a cambio de
+  frames ~3% más grandes, y la imagen decodificada es idéntica (la codificación Huffman no pierde
+  información). La línea de log `MJPEG encoder/decoder open` dice ahora `huffman=default` (o por
+  qué no se pudo fijar).
 - **Delay que se quedaba puesto tras cerrar OBS estando Activo (el fix de v0.5.0 no funcionaba).**
   Si OBS se cerraba con el delay activo, en el siguiente arranque la escena en directo quedaba con
   delay permanente mientras el dock decía "Inactivo". La v0.5.0 intentaba apagar esos filtros al
@@ -57,6 +74,18 @@ cuanto se activaba el delay.
 - **Corregidos el tooltip del dock y el texto de la propiedad del filtro para la calidad mínima.**
   Decían que el vídeo retrasado "nunca baja de" esa resolución, lo que dejó de ser cierto con el
   techo de salida (ver Cambiado).
+- **Se perdían referencias al filtro de delay en cada Enable.** `obs_source_get_filter_by_name()`
+  devuelve una referencia nueva, pero el plugin la trataba como prestada y nunca la liberaba
+  (filtro de vídeo: varias por Enable; filtros de audio: una por fuente de audio y llamada), así que
+  el filtro de vídeo nunca se destruía. Ahora cada búsqueda libera su referencia
+  (`OBSSourceAutoRelease`), y el destructor del filtro, que libobs ejecuta sin contexto gráfico,
+  entra en uno para liberar sus objetos de GPU.
+- **Un archivo de ajustes con JSON inválido ya no se sobrescribe.** Si `buffer-mode-settings.json`
+  no se podía leer (por ejemplo tras editarlo a mano y dejarse una coma), el plugin cargaba los
+  valores por defecto y los escribía encima al cerrar OBS, y se perdía lo que había. Ahora se aparta
+  como `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (se copia si no se puede renombrar) con
+  un WARN que da las dos rutas; si no funciona ninguna de las dos cosas, el archivo no se toca al
+  salir.
 
 **Cambiado:**
 - **La "Calidad mínima" es un suelo para la reducción por RAM, acotado por la salida de OBS.**
@@ -77,23 +106,37 @@ cuanto se activaba el delay.
   que lee soporte cuando el delay parece costar demasiado; guía campo a campo en
   `docs/TROUBLESHOOTING-es.md`. Arrays fijos de 4096 muestras por fase, sin asignaciones por frame.
 - **Aviso cuando una salida codifica por encima del buffer.** Si una salida activa tiene un encoder
-  de vídeo por encima de la resolución del buffer (por ejemplo una grabación reescalada a la
-  resolución del lienzo, o pistas de Enhanced Broadcasting por encima de la salida), el log avisa
-  una vez por encoder y ciclo de delay de que su vídeo diferido se reescala hacia arriba, con
-  ambas resoluciones y cómo quitar el límite. Se comprueba al activar, al llenarse el buffer y al
-  empezar el streaming, la grabación o el Replay Buffer; solo cuando quitar el límite cambiaría de
-  verdad el buffer. Los encoders de otros lienzos se ignoran.
+  de vídeo del lienzo principal por encima de la resolución del buffer (por ejemplo una grabación
+  reescalada a la resolución del lienzo con Reescalar salida de la salida avanzada, o pistas de
+  Enhanced Broadcasting por encima de la salida), el log avisa una vez por encoder, tamaño y ciclo de
+  delay de que su vídeo diferido se reescala hacia arriba, con ambas resoluciones, el tamaño que
+  tendría el buffer sin el límite y cómo quitarlo, y añade que quitarlo cuesta CPU y RAM y puede
+  acortar el delay si falta RAM (con la cifra cuando el buffer sin límite no guardaría el delay
+  completo). Se comprueba al activar, al llenarse el buffer y al empezar el streaming, la grabación
+  o el Replay Buffer; solo cuando quitar el límite cambiaría de verdad el buffer. Los encoders de
+  otros lienzos con nombre (p. ej. un lienzo vertical) se reconocen y se ignoran. Los encoders
+  reescalados en GPU, que libobs pasa a una mezcla que no expone, se atribuyen al lienzo principal
+  cuando tienen su relación de aspecto (o la de la salida), y el WARN lo indica; un segundo lienzo
+  con la misma forma podría tomarse por el principal, y un encoder del lienzo principal reescalado a
+  otra relación de aspecto no se detecta. Decisión en `src/encoder-check.{hpp,cpp}`, detalles en
+  `docs/SPEC-es.md` §3.5.
 - **Ajuste oculto `buffer_output_cap`, para soporte.** `"buffer_output_cap": false` en el
-  `buffer-mode-settings.json` del plugin recupera el dimensionado de v0.5.0 (resolución de la
-  fuente/lienzo, reducida solo por RAM) para quien graba a resolución de lienzo y prefiere esa
-  calidad a costa de CPU. Sin control en el dock a propósito; solo se lee al cargar OBS, y el log
-  lo confirma con `output_cap=off`. Pasos en `docs/TROUBLESHOOTING-es.md`.
+  `buffer-mode-settings.json` del plugin recupera la forma de dimensionar de v0.5.0 (resolución de
+  la fuente/lienzo, reducida solo por RAM) para quien graba a resolución de lienzo y prefiere esa
+  calidad a costa de CPU. Solo un `false` literal de JSON quita el límite: cualquier otro valor
+  (`"false"` entre comillas, `0`...) lo deja activado y escribe un WARN. Sin control en el dock a
+  propósito; solo se lee al cargar OBS, y el log lo confirma con `output_cap=off`. Pasos en
+  `docs/TROUBLESHOOTING-es.md`.
 - **Tests unitarios del cálculo de dimensionado del buffer** (`tests/buffer_fit_tests.cpp`,
   desactivados por defecto: configura con `-DTRIGGLOW_BUILD_TESTS=ON`, o por separado con
   `cmake -S tests -B build_tests` sin ninguna dependencia de OBS; ejecuta con `ctest`). Cubren
   lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que el lienzo, relaciones de aspecto
   distintas, un suelo por encima de la salida, reducción por RAM, redondeo, dimensiones impares,
-  entradas degeneradas, 59,94 fps y barridos de presupuesto/salida.
+  entradas degeneradas, 59,94 fps y barridos de presupuesto/salida. Un segundo programa de tests,
+  `tests/encoder_check_tests.cpp`, cubre la decisión del aviso de encoders: un encoder del lienzo
+  con y sin escalado, encoders reescalados en GPU por encima y por debajo del buffer, pistas de
+  Enhanced Broadcasting, lienzos verticales (720x1280, 1080x1920) y un buffer al que el límite no
+  afecta.
 
 **Build / CI:**
 - **FFmpeg de Windows fijado a otra versión**: el build de fin de mes de BtbN

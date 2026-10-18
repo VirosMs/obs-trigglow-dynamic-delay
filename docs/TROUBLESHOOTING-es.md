@@ -39,14 +39,14 @@ frame de tu stream (16,7 ms por frame a 60 fps, 33,3 ms a 30 fps). Cuando ese tr
 demasiado, OBS se queda atrás y muestra "Encoding overloaded" / sobrecarga al codificar (frames
 saltados por retraso de codificación) o retraso de renderizado (frames perdidos). Hasta la v0.5.0
 el buffer se guardaba a la resolución del **lienzo**, así que con un lienzo 2560x1440 y una salida
-1920x1080 cada frame costaba ahí 14,3/17,4 ms p50/p95 — la mayor parte de un frame a 60 fps —
-aunque OBS tira esos píxeles de más al escalar a la salida.
+1920x1080 cada frame costaba ahí 14,3/17,4 ms p50/p95 en nuestros benchmarks — la mayor parte de
+un frame a 60 fps — aunque OBS tira esos píxeles de más al escalar a la salida.
 
 **La v0.5.1 corrige el caso de lienzo mayor que la salida.** El buffer nunca se guarda por encima
 de la resolución de salida de OBS (`Ajustes → Vídeo → Resolución de salida (escalada)`), y la
 compresión usa varios hilos: el mismo montaje de lienzo 1440p / salida 1080p cuesta ahora ~5,2/5,9
-ms por frame. Lo primero, actualiza a la v0.5.1 (el dock muestra un aviso cuando hay una versión
-nueva). Si bajaste el lienzo para esquivar el problema, puedes volver a subirlo.
+ms por frame en el mismo benchmark. Lo primero, actualiza a la v0.5.1 (el dock muestra un aviso
+cuando hay una versión nueva). Si bajaste el lienzo para esquivar el problema, puedes volver a subirlo.
 
 **Si sigue pasando con la v0.5.1:**
 - **Pon el lienzo igual que la salida si puedes** (`Ajustes → Vídeo`: Resolución base (lienzo) =
@@ -83,7 +83,7 @@ cerrar OBS. Ejemplo (valores ilustrativos — los tuyos serán distintos):
 | `holds` | Veces que se repitió el último frame porque el que tocaba no se podía mostrar. Alguno suelto no importa; un contador que crece sin parar significa que la captura se está quedando atrás. |
 | `rawFallback` | Frames guardados sin comprimir porque falló la compresión. Debería ser 0. |
 | `obs frames+ lagged+ skipped+` | Contadores propios de OBS en la misma ventana: frames renderizados, frames perdidos por retraso de renderizado y frames saltados por retraso de codificación. `lagged`/`skipped` distintos de cero con un p95 de `render` cerca del presupuesto apuntan al plugin; con un `render` bajo, busca en otra parte (juego, codificador, carga de la GPU). |
-| `ratio`, `ring`, `growths` | Ratio de compresión (de esta ventana y del ciclo de delay completo), RAM que usa el buffer y su número de slots, y cuántos slots tuvieron que crecer por encima de su tamaño presupuestado. |
+| `ratio`, `ring`, `growths` | Ratio de compresión (de esta ventana y del ciclo de delay completo), RAM reservada para el buffer y su número de slots, y cuántos slots tuvieron que crecer por encima de su tamaño presupuestado. Desde la v0.5.1 el buffer no se rellena con ceros, así que la memoria que el Administrador de tareas le atribuye (la residente) suele quedar bastante por debajo de `ring`: solo lo que los frames han escrito de verdad. |
 
 La línea `settings loaded` (al arrancar OBS) y la línea `enabled` (cada vez que pulsas Enable)
 terminan en `output_cap=on` u `output_cap=off`, para que soporte sepa qué dimensionado se usaba.
@@ -91,9 +91,11 @@ terminan en `output_cap=on` u `output_cap=off`, para que soporte sepa qué dimen
 **Desactivar el límite de salida (`buffer_output_cap`).** Solo para quien graba (o envía una pista
 de Enhanced Broadcasting) por encima de la resolución de salida y prefiere esa calidad para el
 tramo retrasado a costa de CPU. Recupera el dimensionado de la v0.5.0, incluido el riesgo de
-sobrecarga al codificar descrito arriba. Cuando marcaría la diferencia, el log avisa con una línea
-como `video encoder "…" (output "…") is 2560x1440, above the delay buffer's 1920x1080 …: its
-delayed video is upscaled`.
+sobrecarga al codificar descrito arriba, y como hay que guardar más píxeles por segundo, la misma
+RAM da para menos: si falta RAM, el buffer se reduce o el delay acaba siendo más corto de lo pedido.
+Cuando marcaría la diferencia, el log avisa con una línea como `video encoder "…" (output "…") is
+2560x1440, above the delay buffer's 1920x1080 …: its delayed video is upscaled`, que además da el
+tamaño que tendría el buffer sin el límite (y, si no cupiera, cuántos segundos guardaría).
 
 1. **Cierra OBS del todo.** El ajuste solo se lee al arrancar OBS, y OBS reescribe este archivo al
    salir, así que un cambio hecho con OBS abierto se pierde.
@@ -103,7 +105,9 @@ delayed video is upscaled`.
    `plugin_config/obs-trigglow-dynamic-delay/` dentro del directorio de configuración de OBS). Si el
    archivo todavía no existe, abre y cierra OBS una vez con el plugin instalado.
 3. Añade `"buffer_output_cap": false` como una clave más, dejando todo lo demás como está (ojo con
-   la coma de la línea anterior):
+   la coma de la línea anterior). Tiene que ser un `false` literal, sin comillas: `"false"` (texto),
+   `0` o cualquier otra cosa deja el límite activado y el log explica por qué
+   (`"buffer_output_cap" … is not a JSON boolean`).
 
    ```json
    {
@@ -116,6 +120,13 @@ delayed video is upscaled`.
    (Tu archivo tiene más claves y tus propios valores; solo la última línea es nueva.)
 4. Arranca OBS. El log muestra `output_cap=off` en la línea `settings loaded`, y otra vez al pulsar
    Enable; la línea `perf check` dice `cap off (buffer_output_cap=false)`.
+
+Si el archivo queda con un JSON inválido (basta con una coma o unas comillas de menos), el plugin no
+lo sobrescribe: al arrancar lo aparta como `buffer-mode-settings.json.<fecha-hora>.invalid` en la
+misma carpeta, usa los valores por defecto (también para las escenas en directo y de carga, el delay
+y el overlay, hasta que los vuelvas a elegir) y escribe un WARN con las dos rutas
+(`settings file … is not valid JSON -- moved it to …`). Corrige la copia, cierra OBS, renómbrala de
+vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
 
 Para deshacerlo: con OBS cerrado, borra la clave (o ponla a `true`) y vuelve a arrancar OBS.
 

@@ -182,6 +182,8 @@ src/
   buffer-fit.{hpp,cpp}             → aritmética pura de dimensionado del buffer (límite de
                                      resolución de salida, suelo de calidad, presupuesto de RAM),
                                      con tests unitarios en tests/
+  encoder-check.{hpp,cpp}          → decisión pura del aviso de "encoder por encima del buffer"
+                                     en el log (qué encoders ven el lienzo principal), con tests
   audio-delay-filter.{hpp,cpp}     → ring de delay de audio por fuente hoja, sincronizado con el
                                      vídeo
   hardware-info.{hpp,cpp}          → consulta de RAM total del sistema, usada para dimensionar el
@@ -214,6 +216,7 @@ data/
 tests/
   buffer_fit_tests.cpp             → tests unitarios de buffer-fit (desactivados por defecto:
                                      -DTRIGGLOW_BUILD_TESTS=ON, después ctest)
+  encoder_check_tests.cpp          → tests unitarios de encoder-check (igual)
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
   INSTALL_GUIDE-es.md       → guía de instalación paso a paso con capturas (SmartScreen,

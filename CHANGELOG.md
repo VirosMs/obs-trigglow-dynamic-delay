@@ -11,11 +11,13 @@ Performance hotfix. With a canvas larger than the output (reported live: 2560x14
 - **"Encoding overloaded" with the delay on when the canvas is larger than the output.** The video
   buffer was stored at canvas resolution, so with a 1440p canvas streamed at 1080p the plugin
   MJPEG-compressed and decompressed every buffered frame at 1440p inside OBS's graphics thread:
-  14.3/17.4 ms p50/p95 per frame, most of the 16.7 ms a 60 fps frame has, and OBS fell behind.
+  14.3/17.4 ms p50/p95 per frame in an offline benchmark of the same pipeline, most of the
+  16.7 ms a 60 fps frame has, and OBS fell behind.
   Those extra pixels were discarded by OBS's own output rescale anyway. The buffer now never
   exceeds OBS's output resolution (Settings → Video → Output (Scaled) Resolution), and together
-  with the multi-threaded compression below the same setup costs ~5.2/5.9 ms p50/p95. You can go
-  back to a 2560x1440 canvas with a 1920x1080 output. `EnsureRingSized()` and the dock estimate
+  with the multi-threaded compression below the same setup costs ~5.2/5.9 ms p50/p95 (same
+  benchmark). You can go back to a 2560x1440 canvas with a 1920x1080 output. `EnsureRingSized()`
+  and the dock estimate
   both go through the new pure sizing function `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`,
   no libobs/FFmpeg dependency) with the canvas (`obs_video_info::base_*`) and output (`output_*`)
   geometry. The ceiling is a uniform scale, `min(1, max(outW/baseW, outH/baseH))`, which keeps
@@ -37,6 +39,20 @@ Performance hotfix. With a canvas larger than the output (reported live: 2560x14
   never stretches the delay. The cache is keyed by slot index + capture timestamp and invalidated
   in `ReleaseRing()`/`ReleaseSizedGpuObjects()`, so a repeated frame never comes from a previous
   cycle.
+- **No freeze or RAM spike when the delay starts.** Sizing the buffer zero-filled every slot on
+  OBS's graphics thread, which touched all of its memory at once: at 1440p60 that was ~1.9 GB
+  resident in one go and a ~381 ms stall (about 23 dropped frames) on the first frame after Enable.
+  Slots are now allocated without initializing them (`Slot::pixels` is a default-initialized
+  `std::unique_ptr<uint8_t[]>`), so memory only becomes resident as frames are written: in the
+  offline simulation 651-896 MB instead of 1923 MB at 1440p60, with sizing taking ~5 ms and freeing
+  the buffer on Disable also faster (87 → 30 ms). The reserved (committed) memory, and the `ring`
+  figure in `perf check`, don't change. Nothing reads beyond the bytes each frame wrote.
+- **Faster compression on CPUs with fewer than 8 logical cores.** The MJPEG encoder now uses the
+  standard JPEG Huffman tables (`huffman=default`) instead of FFmpeg's per-frame optimal ones, which
+  cost a second pass over every frame. With slices FFmpeg already did this, so it changes the
+  single-threaded encoder: 10-17% less encode time at 1440p for ~3% bigger frames, and the decoded
+  picture is identical (Huffman coding is lossless). The `MJPEG encoder/decoder open` log line now
+  says `huffman=default` (or why it couldn't be set).
 - **Exact frame interval at fractional frame rates.** At 59.94 fps the capture interval was
   `1e9 / 59` ns, so almost one real frame per second was lost. It is now `1e9 × fps_den / fps_num`
   (16,683,333 ns at 59.94), used for capture, the ring span and its sizing. The effective delay
@@ -53,6 +69,17 @@ Performance hotfix. With a canvas larger than the output (reported live: 2560x14
 - **Dock tooltip and filter property text for the minimum quality corrected.** They said the
   delayed video "never drops below" that resolution, which stopped being true with the output
   ceiling (see Changed).
+- **References to the delay filter leaked on every Enable.** `obs_source_get_filter_by_name()`
+  returns a new reference, but the plugin treated it as borrowed and never released it (video
+  filter: several per Enable; audio filters: one per audio source and call), so the video filter
+  was never destroyed. Every lookup now releases its reference (`OBSSourceAutoRelease`), and the
+  filter's destructor, which libobs runs without a graphics context, now enters one to free its GPU
+  objects.
+- **A settings file with invalid JSON is no longer overwritten.** If `buffer-mode-settings.json`
+  couldn't be parsed (for example after a hand edit with a missing comma), the plugin loaded the
+  defaults and wrote them over the file when OBS closed, losing what was there. It is now moved
+  aside as `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (copied if it can't be renamed)
+  with a WARN giving both paths; if neither works, the file is left untouched at exit.
 
 **Changed:**
 - **"Minimum quality" is a floor for the RAM reduction, bounded by OBS's output.** When RAM is
@@ -72,21 +99,35 @@ Performance hotfix. With a canvas larger than the output (reported live: 2560x14
   to cost too much; field-by-field guide in `docs/TROUBLESHOOTING.md`. Fixed 4096-sample arrays per
   phase, no allocation per frame.
 - **Warning when an output encodes above the buffer.** If an active output has a video encoder
-  above the buffer's resolution (for example a recording rescaled to canvas resolution, or Enhanced
-  Broadcasting tracks above the output), the log warns once per encoder and delay cycle that its
-  delayed video is upscaled, with both resolutions and how to lift the cap. Checked on Enable, when
-  the buffer fills, and when streaming, recording or the Replay Buffer start; only when lifting the
-  cap would actually change the buffer. Encoders of other canvases are skipped.
+  of the main canvas above the buffer's resolution (for example a recording rescaled to canvas
+  resolution with Advanced output's Rescale output, or Enhanced Broadcasting tracks above the
+  output), the log warns once per encoder, size and delay cycle that its delayed video is upscaled,
+  with both resolutions, the size the buffer would have without the cap and how to lift it, adding
+  that lifting it costs CPU and RAM and can shorten the delay if RAM runs short (with the figure
+  when the uncapped buffer wouldn't hold the full delay). Checked on Enable, when the buffer fills,
+  and when streaming, recording or the Replay Buffer start; only when lifting the cap would actually
+  change the buffer. Encoders of other named canvases (e.g. a vertical canvas) are recognized and
+  skipped. GPU-rescaled encoders, which libobs moves to a mix it doesn't expose, are attributed to
+  the main canvas when they have its aspect ratio (or the output's), and the WARN says so; a
+  same-shaped second canvas could be mistaken for the main one, and a main-canvas encoder rescaled
+  to another aspect ratio is not detected. Decision in `src/encoder-check.{hpp,cpp}`, details in
+  `docs/SPEC.md` §3.5.
 - **Hidden `buffer_output_cap` setting, for support.** `"buffer_output_cap": false` in the
-  plugin's `buffer-mode-settings.json` brings back v0.5.0's sizing (source/canvas resolution, only
-  reduced for RAM) for someone who records at canvas resolution and prefers that quality at the
-  cost of CPU. No dock control on purpose; read only when OBS loads, and confirmed in the log with
-  `output_cap=off`. Steps in `docs/TROUBLESHOOTING.md`.
+  plugin's `buffer-mode-settings.json` brings back v0.5.0's way of sizing (source/canvas
+  resolution, only reduced for RAM) for someone who records at canvas resolution and prefers that
+  quality at the cost of CPU. Only a literal JSON `false` turns the cap off: any other value
+  (`"false"` in quotes, `0`...) keeps it on and logs a WARN. No dock control on purpose; read only
+  when OBS loads, and confirmed in the log with `output_cap=off`. Steps in
+  `docs/TROUBLESHOOTING.md`.
 - **Unit tests for the buffer sizing math** (`tests/buffer_fit_tests.cpp`, off by default:
   configure with `-DTRIGGLOW_BUILD_TESTS=ON`, or standalone with `cmake -S tests -B build_tests`
   without any OBS dependency; run with `ctest`). They cover canvas = output, 1440p → 1080p,
   4K → 1080p, output above canvas, mismatched aspect ratios, a floor above the output, RAM
-  reduction, rounding, odd dimensions, degenerate input, 59.94 fps, and budget/output sweeps.
+  reduction, rounding, odd dimensions, degenerate input, 59.94 fps, and budget/output sweeps. A
+  second test program, `tests/encoder_check_tests.cpp`, covers the encoder warning's decision: a
+  canvas encoder with and without scaling, GPU-rescaled encoders above and below the buffer,
+  Enhanced Broadcasting tracks, vertical canvases (720x1280, 1080x1920) and a buffer the cap
+  doesn't limit.
 
 **Build / CI:**
 - **Windows FFmpeg re-pinned** to BtbN's month-end build `autobuild-2026-09-30-13-08`

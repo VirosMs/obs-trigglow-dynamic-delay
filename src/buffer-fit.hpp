@@ -40,8 +40,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     floor, the ring gets fewer frames instead.
 //   - Exact frame rate (fpsNum/fpsDen), so 59.94 doesn't truncate to 59.
 //   - Escape hatch: capToOutput = false (the hidden "buffer_output_cap"
-//     plugin setting) drops the output cap and sizes exactly like v0.5.0:
+//     plugin setting) drops the output cap and sizes like v0.5.0 did:
 //     source resolution, only reduced for RAM, never below minResolutionHeight.
+//     Not bit-identical to v0.5.0, though: the exact fps and the quarter
+//     second of slack rounded up give one more slot at 25/30/50fps, and when
+//     RAM runs short the row walk below can land up to 2px away from it.
 namespace trigglow::bufferfit {
 
 struct Input {

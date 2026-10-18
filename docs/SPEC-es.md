@@ -255,11 +255,13 @@ en orden:
    principal de OBS (Ajustes → Vídeo → Resolución de salida (escalada)). Lo que esté por encima lo
    descarta el propio reescalado de salida de OBS, pero le costaba CPU al plugin: la codificación y
    decodificación MJPEG (§4.2) escalan más o menos linealmente con los píxeles y se ejecutan en el
-   hilo gráfico de OBS. Medido en directo con un lienzo 2560x1440 y una salida 1920x1080 a 60fps, el
-   buffer del tamaño del lienzo de v0.5.0 costaba ahí 14,3/17,4ms p50/p95 por frame, y OBS mostraba
-   "Encoding overloaded". El techo es una escala uniforme, `capScale = min(1, max(outW/baseW,
-   outH/baseH))`: conserva la relación de aspecto del lienzo y nunca baja de la salida en ningún eje
-   (inclinándose por la calidad cuando las relaciones de aspecto de lienzo y salida difieren). Solo
+   hilo gráfico de OBS. Un usuario con un lienzo 2560x1440 y una salida 1920x1080 a 60fps veía
+   "Encoding overloaded" en OBS con v0.5.0, que guardaba el buffer al tamaño del lienzo; en un
+   benchmark fuera de OBS con el mismo FFmpeg y el mismo pipeline, un buffer 2560x1440 cuesta
+   14,3/17,4ms p50/p95 de codificación + decodificación por frame (codificador de un hilo). El techo
+   es una escala uniforme, `capScale = min(1, max(outW/baseW, outH/baseH))`: conserva la relación de
+   aspecto del lienzo y nunca baja de la salida en ningún eje (inclinándose por la calidad cuando las
+   relaciones de aspecto de lienzo y salida difieren). Solo
    se aplica cuando el objetivo tiene el tamaño del lienzo (el caso normal de la escena en directo) y
    la geometría se conoce; cualquier otro objetivo se deja sin límite, la opción conservadora.
 2. **Suelo de calidad.** Si el delay completo no cabe en el presupuesto en el techo, la escala se
@@ -290,10 +292,19 @@ cambiados con el delay activo — el ring vuelve a llenarse desde vacío).
 `"buffer_output_cap": false` en `buffer-mode-settings.json` (la carpeta de configuración del plugin
 que da `obs_module_get_config_path()`; en Windows
 `%APPDATA%\obs-studio\plugin_config\obs-trigglow-dynamic-delay\`) quita la regla 1 y dimensiona
-exactamente como v0.5.0: resolución de la fuente, reducida solo por RAM, nunca por debajo de la
-calidad mínima. Existe para soporte — por ejemplo quien graba a resolución de lienzo y prefiere esa
-calidad a costa de CPU —, así que no tiene propiedad en el filtro ni control en el dock.
-`plugin-main.cpp` lo lee solo al cargar (ausente = `true`); `BufferModeController` lo envía al
+como v0.5.0: resolución de la fuente, reducida solo por RAM, nunca por debajo de la calidad mínima.
+No es idéntico byte a byte, eso sí: el ritmo exacto y el cuarto de segundo de holgura redondeado
+hacia arriba dan un slot más que v0.5.0 a 25/30/50fps, y cuando falta RAM la reducción fila a fila
+de la regla 2 puede quedar hasta 2px por debajo o por encima del tamaño de v0.5.0. Existe para
+soporte — por ejemplo quien graba a resolución de lienzo y prefiere esa calidad a costa de CPU —,
+así que no tiene propiedad en el filtro ni control en el dock. `plugin-main.cpp` lo lee solo al
+cargar, de forma estricta: solo un `false` literal de JSON quita el límite (se comprueba con
+`obs_data_item_gettype() == OBS_DATA_BOOLEAN`); ausente, `true` o `null` (libobs lo descarta al
+cargar) lo dejan activado, y cualquier otro tipo — `"false"` como texto, `0` — también, con un WARN.
+Un archivo de ajustes que existe pero no es JSON válido se renombra (o, si no se puede, se copia) a
+`buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` con un WARN que da las dos rutas antes de
+usar los valores por defecto, así que el guardado al salir nunca lo sustituye en silencio; si no
+funciona ninguna de las dos cosas, el archivo no se toca al salir. `BufferModeController` lo envía al
 filtro en cada `Enable()` mediante `ObsFrontendBridge::SetBufferFilterOutputCap()`, así que el
 archivo de ajustes siempre gana sobre lo que el filtro guardó con la colección de escenas, y la
 estimación del dock también lo usa. `SaveBufferSettings()` reescribe el archivo desde cero al salir
@@ -305,27 +316,54 @@ cuándo está desactivado. Pasos para el usuario: `docs/TROUBLESHOOTING-es.md`.
 **Encoders por encima del buffer (v0.5.1).** Con el techo activo, una salida cuyo encoder de vídeo
 trabaja por encima del buffer — una grabación reescalada al lienzo, o una pista de Enhanced
 Broadcasting por encima de la salida — recibe vídeo diferido reescalado hacia arriba.
-`BufferModeController::WarnAboutEncodersAboveBuffer()` registra un WARN por encoder y ciclo de
-delay, con el nombre del encoder y de la salida, ambas resoluciones, el tamaño sin límite y el
-ajuste `buffer_output_cap`. Revisa cada slot de encoder de vídeo (`MAX_OUTPUT_VIDEO_ENCODERS`) de
-cada salida activa alimentada desde el lienzo principal
-(`ObsFrontendBridge::ListActiveMainCanvasVideoEncoders()`; los encoders de otros lienzos se ignoran
-mediante `obs_encoder_parent_video()`), y solo cuando quitar el límite guardaría de verdad más. Se
-ejecuta solo en el hilo de UI — en `Enable()`, al llenarse el buffer y en los eventos de frontend de
-inicio de streaming / grabación / replay buffer —, nunca desde el hilo gráfico, porque
+`BufferModeController::WarnAboutEncodersAboveBuffer()` registra un WARN por encoder, tamaño y ciclo
+de delay (un encoder que se reinicia a otro tamaño vuelve a avisar), con el nombre del encoder y de
+la salida, ambas resoluciones, el tamaño sin límite y el ajuste `buffer_output_cap`, y añade que
+quitar el límite cuesta CPU y RAM y puede acortar el delay si falta RAM (con la cifra real cuando el
+buffer sin límite no guardaría el delay completo). Revisa cada slot de encoder de vídeo
+(`MAX_OUTPUT_VIDEO_ENCODERS`) de cada salida activa, y solo cuando quitar el límite guardaría de
+verdad más. Se ejecuta solo en el hilo de UI — en `Enable()`, al llenarse el buffer y en los eventos
+de frontend de inicio de streaming / grabación / replay buffer —, nunca desde el hilo gráfico, porque
 `obs_enum_outputs()` mantiene `outputs_mutex`.
+
+Qué encoders ven el lienzo principal (`ObsFrontendBridge::ListActiveVideoEncoders()`; la decisión
+es la función pura de `src/encoder-check.*`): en libobs 31.1.1 un encoder renderiza el `video_t` que
+recibió y `obs_encoder_parent_video()` lo devuelve, pero un encoder reescalado en GPU (Ajustes →
+Salida → Avanzado → Reescalar salida, y todas las pistas de Enhanced Broadcasting, que además fijan
+un formato preferido) se pasa al arrancar a una mezcla propia de la misma vista al tamaño escalado
+(`maybe_set_up_gpu_rescale()` en `obs-encoder.c`), un `video_t` que ninguna API pública relaciona
+con su lienzo. Así que:
+
+- `obs_get_video()` → el lienzo principal (exacto).
+- el vídeo de otro lienzo con nombre (`obs_enum_canvases()` + `obs_canvas_get_video()`, p. ej. un
+  lienzo vertical) → no es el lienzo principal (exacto).
+- cualquier otra mezcla → el lienzo principal si el tamaño del encoder tiene la relación de aspecto
+  del lienzo o de la salida (tolerancia del 2%, suficiente para los tamaños pares que ofrece OBS,
+  como 852x480); si no, no. El WARN dice cuándo se ha basado en esto.
+
+Límites de esa heurística: un encoder reescalado en GPU de otro lienzo, de un lienzo privado o de la
+vista de un plugin con la misma relación de aspecto que el lienzo principal (un segundo lienzo 16:9)
+se toma por el principal — un WARN que no aplica —, y un encoder del lienzo principal reescalado a
+otra relación de aspecto (estirado) se pasa por alto. Un lienzo vertical (9:16) con un lienzo
+principal 16:9 siempre se distingue.
 
 **Tests (v0.5.1).** `tests/buffer_fit_tests.cpp` prueba `bufferfit::Compute()` sin OBS: lienzo =
 salida, 1440p → 1080p, 4K → 1080p, salida mayor que el lienzo, relaciones de aspecto distintas, un
 suelo por encima de la salida, reducción por RAM dentro de rango, un suelo activo, redondeo,
 dimensiones impares, entradas degeneradas, un objetivo que no es el lienzo, delay cero, 59,94fps, el
-límite desactivado y barridos de presupuesto/salida. Desactivados por defecto, así que el
-empaquetado del plugin no cambia. Dos formas de compilarlos (`tests/CMakeLists.txt`):
+límite desactivado y barridos de presupuesto/salida. `tests/encoder_check_tests.cpp` prueba la
+decisión del WARN de encoders (`encodercheck`), con los buffers calculados por `bufferfit::Compute()`
+con y sin límite: coincidencia de relación de aspecto, un encoder del lienzo sin escalar y escalado
+en CPU, encoders reescalados en GPU por encima/igual/por debajo del buffer, pistas de Enhanced
+Broadcasting, lienzos verticales (720x1280, 1080x1920) y un lienzo principal vertical, y un buffer al
+que el límite no afecta (límite desactivado, salida = lienzo, limitado por RAM). Desactivados por
+defecto, así que el empaquetado del plugin no cambia. Dos formas de compilarlos
+(`tests/CMakeLists.txt`):
 
 ```
 # Desde el build del propio plugin (mismos flags de compilación que el plugin):
 cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
-cmake --build <dir> --target buffer_fit_tests --config RelWithDebInfo
+cmake --build <dir> --target buffer_fit_tests encoder_check_tests --config RelWithDebInfo
 ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
 
 # Por separado, sin descargar ninguna dependencia de OBS/Qt/FFmpeg:
@@ -405,12 +443,12 @@ crudo de un frame completo, reutilizado cada tick como espacio de scratch. A par
 **Dónde se ejecuta esto y cuánto cuesta (v0.5.1).** Tanto la codificación como la decodificación se
 ejecutan de forma síncrona dentro de `Render()`, en el hilo gráfico de OBS — el hilo que tiene que
 terminar cada frame en 1/fps (16,7ms a 60fps). Su coste escala más o menos con el número de píxeles
-del buffer, por eso v0.5.1 limita el buffer a la resolución de salida (§3.5, regla 1) y añade los dos
-cambios de abajo. Medido por frame en el hilo gráfico (p50/p95): 1080p de 8,6/10,4ms (v0.5.0) a
-5,2/5,9ms; un lienzo 1440p con salida 1080p de 14,3/17,4ms a ~5,2/5,9ms. Una *salida* 1440p se sigue
-guardando a 1440p: se espera que vaya bien a 30fps, todavía no a 60fps. Llevar la codificación y
-decodificación a hilos worker, fuera del hilo gráfico (objetivo 1440p60), es el siguiente paso — ver
-`docs/ROADMAP-es.md`, v0.6.0.
+del buffer, por eso v0.5.1 limita el buffer a la resolución de salida (§3.5, regla 1) y añade los
+cambios de abajo. En un benchmark fuera de OBS con el mismo FFmpeg (codificación + decodificación
+por frame, p50/p95): 1080p de 8,6/10,4ms (v0.5.0) a 5,2/5,9ms; un lienzo 1440p con salida 1080p de
+14,3/17,4ms a ~5,2/5,9ms. Una *salida* 1440p se sigue guardando a 1440p: se espera que vaya bien a
+30fps, todavía no a 60fps. Llevar la codificación y decodificación a hilos worker, fuera del hilo
+gráfico (objetivo 1440p60), es el siguiente paso — ver `docs/ROADMAP-es.md`, v0.6.0.
 
 - **Codificador con hilos por slices (v0.5.1).** `EnsureCodecContextsOpen()` abre el codificador
   MJPEG con `thread_type = FF_THREAD_SLICE` y `thread_count = clamp(hardware_concurrency() / 4, 1,
@@ -425,6 +463,15 @@ decodificación a hilos worker, fuera del hilo gráfico (objetivo 1440p60), es e
   paquetes ~3,5% más grandes. El decodificador se queda en `thread_count = 1` (el decodificador MJPEG
   de n9.0 no tiene threading). La línea de log `MJPEG encoder/decoder open` indica los hilos, las CPU
   lógicas y `active_thread_type`.
+- **Tablas de Huffman estándar (v0.5.1).** El codificador se abre con `huffman=default`
+  (`av_opt_set()` sobre sus opciones privadas) en vez de las tablas "óptimas" que FFmpeg usa por
+  defecto, que necesitan una segunda pasada por frame. Con más de un slice FFmpeg ya usa las tablas
+  estándar, así que esto cambia el codificador de un hilo (menos de 8 CPU lógicas, o la reapertura con
+  un hilo): un 10-17% menos de tiempo de codificación (p50-p95, 1440p, n9.0.2 vendorizado) a cambio
+  de paquetes ~3% más grandes. La codificación Huffman no pierde información, así que los frames
+  decodificados son idénticos, y cada paquete sigue llevando sus tablas (DHT), así que el
+  decodificador no cambia. El resultado se comprueba y aparece en la línea de log de apertura
+  (`huffman=default`, o por qué no se pudo fijar).
 - **Decodificar y subir cada slot como mucho una vez (v0.5.1).** `Render()` se ejecuta una vez por
   vista de la escena (Programa, vista previa, proyectores, multiview) y antes decodificaba y hacía
   `gs_texture_set_image()` del slot que tocaba en cada una de esas llamadas. Ahora el filtro recuerda
@@ -445,15 +492,16 @@ asignación de memoria del slot también se reduce — de lo contrario, un `used
 de un vector `pixels` que sigue siendo de tamaño completo es una victoria de papel, no una real.
 `EnsureRingSized()` ahora asigna `pixels` de cada slot a un tamaño **presupuestado** —
 `frameBytes / kAssumedCompressionRatio` — en vez del techo NV12 bruto completo.
-`kAssumedCompressionRatio` es una constante conservadora, elegida de antemano deliberadamente: `3.0`
-en plataformas `TRIGGLOW_HAVE_FFMPEG` (elegida conservadora porque el contenido de captura de OBS
-está desproporcionadamente lleno de justo lo que peor comprime — bordes afilados de UI/HUD, texto en
-pantalla — aunque MJPEG sobre vídeo natural a menudo lo hace mucho mejor), y `1.0` (sin ninguna
-compresión asumida) en cualquier otro sitio, lo que mantiene la asignación de esa plataforma idéntica
-al comportamiento anterior a v0.3.0.
+`kAssumedCompressionRatio` es una constante conservadora, elegida de antemano deliberadamente. Valía
+`3.0` en plataformas `TRIGGLOW_HAVE_FFMPEG` cuando se introdujo (elegida conservadora porque el
+contenido de captura de OBS está desproporcionadamente lleno de justo lo que peor comprime — bordes
+afilados de UI/HUD, texto en pantalla — aunque MJPEG sobre vídeo natural a menudo lo hace mucho
+mejor), y vale `5.0` desde v0.4.0 (ver la nota de reajuste de abajo); en cualquier otro sitio vale
+`1.0` (sin ninguna compresión asumida), lo que mantiene la asignación de esa plataforma idéntica al
+comportamiento anterior a v0.3.0.
 
 `EncodeScratchNv12Into()` y el fallback de almacenamiento en crudo hacen crecer el `pixels` de un
-slot más allá de su presupuesto con un simple `resize()` cada vez que un frame concreto necesita
+slot más allá de su presupuesto (`Slot::EnsureCapacity()`) cada vez que un frame concreto necesita
 genuinamente más espacio del asumido — contenido difícil de comprimir, o el codec no disponible/
 fallido para ese frame. Ese crecimiento es **permanente** durante el resto de la vida del slot: la
 capacidad nunca se reduce de vuelta, para evitar pagar un realloc+memcpy en cada frame. Esto es un
@@ -461,6 +509,17 @@ trinquete deliberado de un solo sentido, no un bug — en el peor caso, un slot 
 asumido de forma consistente termina creciendo hasta el tamaño bruto completo (idéntico a
 almacenarlo todo sin comprimir), y la única forma de liberar ese crecimiento es liberar todo el ring
 (`Disable()`, o un cambio de resolución que reasigna `ring_` desde cero).
+
+**Sin relleno de ceros (v0.5.1).** Los slots eran `std::vector<uint8_t>` dimensionados con
+`assign(budgetedBytes, 0)`, que toca todas las páginas del ring en el hilo gráfico en cuanto se
+dimensiona: la memoria residente subía de golpe al ring entero (~1,9GB a 1440p60) y el primer
+`Render()` tras `Enable()` se paraba ~381ms. `Slot::pixels` es ahora un
+`std::unique_ptr<uint8_t[]>` sin inicializar con una `capacity` explícita, así que una página solo
+pasa a ser residente cuando se escribe un frame en ella: la memoria residente sigue el tamaño real de
+los paquetes (651-896MB en vez de 1923MB a 1440p60 en la simulación fuera de OBS) y dimensionar
+cuesta ~5ms. La memoria comprometida no cambia. Esto se basa en que nada lee nunca más allá de
+`usedBytes`: el decodificador copia exactamente `usedBytes` (comprobado contra `capacity`), y un slot
+en crudo solo se sube si contiene un frame NV12 completo.
 
 **Reajuste de v0.4.0.** `kAssumedCompressionRatio` vale `5.0` en plataformas
 `TRIGGLOW_HAVE_FFMPEG` desde v0.4.0, tras la primera medición real (una sesión en directo de
@@ -482,8 +541,9 @@ contenido de gameplay real sostenido. El único ratio registrado hasta ahora (`l
 primera codificación exitosa tras `EnsureCodecContextsOpen()`) vino de un frame mayormente estático de
 escena de carga y no es representativo del contenido real — no debería leerse como un número típico
 o esperado. La afirmación honesta es que el ratio de compresión real depende mucho de lo que haya en
-pantalla y sigue siendo una medición abierta, no que el `3.0` de `kAssumedCompressionRatio` (ni
-ningún otro número concreto) sea lo que logra realmente el gameplay.
+pantalla y sigue siendo una medición abierta, no que el valor de entonces de
+`kAssumedCompressionRatio` (`3.0`, ni ningún otro número concreto) sea lo que logra realmente el
+gameplay.
 
 *Actualización:* la línea periódica `compression check` de v0.4.0 dio la primera medición real con
 gameplay (~11-15x, ver la nota de reajuste del §4.3), y desde v0.5.1 esos números forman parte de la
@@ -514,8 +574,9 @@ ring=…MB/N slots growths=N
   p50/p95 mediante `std::nth_element` sobre un array fijo de 4096 muestras por fase, máximo exacto.
   Sin asignaciones por frame ni por ventana.
 - **Contadores:** llamadas a `Render()`, celdas capturadas, subidas, holds (§4.2), fallbacks a crudo
-  (falló la codificación), ratio de compresión de esta ventana y del ciclo completo, memoria y número
-  de slots del ring, crecimientos de slots (§4.3), y los incrementos de los contadores propios de OBS
+  (falló la codificación), ratio de compresión de esta ventana y del ciclo completo, memoria del ring
+  (la reservada, es decir, comprometida; desde v0.5.1 la residente es menor, ver §4.3) y número de
+  slots, crecimientos de slots (§4.3), y los incrementos de los contadores propios de OBS
   en la misma ventana — frames totales (`obs_get_total_frames`), frames perdidos por retraso de
   renderizado (`obs_get_lagged_frames`) y frames saltados por retraso de codificación
   (`video_output_get_skipped_frames`).
@@ -524,8 +585,11 @@ ring=…MB/N slots growths=N
   última ventana parcial se registra al desactivar el delay (`filter disabled`, desde la tarea
   `release_buffers`) y al destruirse el filtro con el delay activo, p. ej. al cerrar OBS
   (`filter destroyed`; seguro en el destructor porque OBS solo destruye una fuente después de
-  desengancharla, y la línea solo lee miembros propios del filtro). Las ventanas de menos de 1s se
-  descartan.
+  desengancharla, y la línea solo lee miembros propios del filtro). Antes de v0.5.1 el filtro en la
+  práctica nunca se destruía: `ObsFrontendBridge` perdía una referencia a él en cada `Enable()`
+  (`obs_source_get_filter_by_name()` devuelve una referencia nueva); ahora cada búsqueda la guarda en
+  un `OBSSourceAutoRelease`, y el destructor, que libobs ejecuta en su hilo de destrucción, entra en
+  el contexto gráfico para liberar los objetos de GPU. Las ventanas de menos de 1s se descartan.
 
 Cómo leer cada campo desde el lado del usuario: `docs/TROUBLESHOOTING-es.md`, "Encoding
 overloaded".
@@ -598,6 +662,8 @@ video-delay-filter.*          → §3.1 -- el ring buffer en RAM/NV12 y su peque
                                 §4.5 -- telemetría perf check de v0.5.1)
 buffer-fit.*                  → §3.5 -- aritmética pura de dimensionado del ring (techo de salida, suelo
                                 de calidad, presupuesto de RAM, fps exactos), sin libobs/FFmpeg (v0.5.1)
+encoder-check.*               → §3.5 -- decisión pura del WARN de "encoder por encima del buffer"
+                                (qué encoders ven el lienzo principal), sin libobs (v0.5.1)
 audio-delay-filter.*          → §3.2 -- ring de delay de audio por fuente hoja
 hardware-info.*               → consulta de la RAM total del sistema (sustituye a la antigua consulta VRAM/DXGI)
 scene-combo-box.*             → combo box del dock poblado desde obs_frontend_get_scene_names()
@@ -609,6 +675,7 @@ logging.*                     → envoltorio de logging con prefijo de component
 delay-controller.*            → §6 -- lógica heredada del modo reconexión, presente pero sin usar
 tests/buffer_fit_tests.cpp    → §3.5 -- tests unitarios de buffer-fit.*, solo se compilan con
                                 -DTRIGGLOW_BUILD_TESTS=ON (v0.5.1)
+tests/encoder_check_tests.cpp → §3.5 -- tests unitarios de encoder-check.*, igual (v0.5.1)
 ```
 
 Principio de diseño: **`BufferModeController` es el único dueño del estado**. Tanto el dock como las
