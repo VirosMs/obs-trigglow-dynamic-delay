@@ -6,6 +6,7 @@ project(${_name} VERSION ${_version})
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
+option(TRIGGLOW_BUILD_TESTS "Build the standalone unit tests (no libobs needed, run with ctest)" OFF)
 
 include(compilerconfig)
 include(defaults)
@@ -137,6 +138,8 @@ target_sources(
     src/logging.hpp
     src/video-delay-filter.cpp
     src/video-delay-filter.hpp
+    src/buffer-fit.cpp
+    src/buffer-fit.hpp
     src/audio-delay-filter.cpp
     src/audio-delay-filter.hpp
     src/hardware-info.cpp
@@ -161,3 +164,16 @@ target_sources(
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+# Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*).
+# Off by default so plugin packaging is unchanged:
+#   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
+#   cmake --build <dir> --target buffer_fit_tests --config RelWithDebInfo
+#   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
+if(TRIGGLOW_BUILD_TESTS)
+  enable_testing()
+  add_executable(buffer_fit_tests tests/buffer_fit_tests.cpp src/buffer-fit.cpp src/buffer-fit.hpp)
+  target_include_directories(buffer_fit_tests PRIVATE src)
+  set_target_properties(buffer_fit_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+  add_test(NAME buffer_fit_tests COMMAND buffer_fit_tests)
+endif()

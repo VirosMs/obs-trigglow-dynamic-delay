@@ -1,0 +1,80 @@
+/*
+Trigglow Dynamic Delay for OBS
+Copyright (C) 2026 Trigglow (VirosMs)
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>
+*/
+
+#pragma once
+
+#include <cstdint>
+
+// Pure sizing math for VideoDelayFilter's RAM ring: which resolution to buffer
+// at and how many frames fit the RAM budget. Deliberately free of any libobs
+// (or FFmpeg) dependency so tests/buffer_fit_tests.cpp can exercise it
+// without OBS. VideoDelayFilter::EnsureRingSized() (actually resizes the ring)
+// and VideoDelayFilter::EstimateBufferFit() (the dock's prediction) both call
+// Compute() with the same Input, so what the dock predicts is what happens.
+//
+// Rules (v0.5.1, docs: buffer pipeline design A.1/A.6):
+//   - Never buffer more pixels than OBS's main mix outputs. Anything above the
+//     output resolution is thrown away by OBS's own output rescale anyway, but
+//     it cost the plugin CPU (MJPEG encode/decode scale ~linearly with pixels).
+//     The cap only applies when the target is canvas-sized (the normal live
+//     scene case); anything else is left uncapped, the conservative choice.
+//   - Quality floor second: never go below minResolutionHeight rows, unless
+//     the output itself is smaller (storing more rows than OBS emits buys
+//     nothing).
+//   - Duration last: if the full delay doesn't fit the budget even at the
+//     floor, the ring gets fewer frames instead.
+//   - Exact frame rate (fpsNum/fpsDen), so 59.94 doesn't truncate to 59.
+namespace trigglow::bufferfit {
+
+struct Input {
+	uint32_t sourceWidth = 0; // obs_source_get_base_width/height(target)
+	uint32_t sourceHeight = 0;
+	uint32_t baseWidth = 0; // obs_video_info::base_* (canvas). 0 = unknown -> no output cap.
+	uint32_t baseHeight = 0;
+	uint32_t outputWidth = 0; // obs_video_info::output_*. 0 = unknown -> no output cap.
+	uint32_t outputHeight = 0;
+	uint32_t fpsNum = 0; // obs_video_info::fps_num / fps_den
+	uint32_t fpsDen = 1;
+	uint32_t delaySeconds = 0;
+	uint32_t minResolutionHeight = 0;
+	uint64_t budgetBytes = 0;
+	double compressionRatio = 1.0; // Assumed bytes(raw NV12) / bytes(stored) per frame.
+};
+
+struct Result {
+	uint32_t bufferWidth = 0; // Always even and >= 2 (NV12 chroma subsampling). 0 only for invalid input.
+	uint32_t bufferHeight = 0;
+	uint64_t actualFrames = 0;    // Ring slots that fit the budget (<= desiredFrames, >= 1).
+	uint64_t desiredFrames = 0;   // Slots the full delay needs (delay*fps + ~0.25s slack + 1).
+	double scale = 1.0;           // Final scale relative to the source.
+	double capScale = 1.0;        // Ceiling from the OBS output resolution (1.0 = no cap).
+	bool cappedByOutput = false;  // capScale < 1
+	bool reducedByRam = false;    // scale < capScale
+	bool fitsFullDuration = true; // actualFrames >= desiredFrames
+};
+
+Result Compute(const Input &in);
+
+// Exposed for tests and for VideoDelayFilter's own bookkeeping.
+double OutputCapScale(const Input &in);
+uint32_t EvenDim(uint32_t orig, double scale); // llround, clamp to [2, orig], then forced even.
+uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen);
+uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen); // 1e9 * den / num; 0 if num == 0.
+uint64_t Nv12FrameBytes(uint32_t width, uint32_t height);   // width * height * 3 / 2.
+
+} // namespace trigglow::bufferfit
