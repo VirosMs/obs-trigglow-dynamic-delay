@@ -55,6 +55,9 @@ constexpr const char *kSettingBufferOutputCap = "buffer_output_cap";
 // runs the MJPEG encode/decode on the graphics thread, no codec worker threads
 // (the pipeline's reaper thread still frees memory off it).
 constexpr const char *kSettingCodecWorkers = "codec_workers";
+// The one entry of the filter's properties: a note that the dock manages it
+// (no delay or quality fields, see GetProperties()). Never a stored setting.
+constexpr const char *kPropertyManagedInfo = "trigglow_managed_info";
 
 // RAM budget for the ring buffer. Even stored as NV12/I420 (1.5 bytes/pixel)
 // 1920x1080@60fps is ~178MB PER SECOND raw (1920*1080*1.5 bytes * 60) -- a
@@ -189,11 +192,6 @@ uint64_t GetBufferBudget()
 // ceiling wins over this floor: a 720p output buffers at 720p even with a
 // 1080p minimum (bufferfit::Compute()).
 constexpr uint32_t kDefaultMinResolutionHeight = 720;
-
-// UI slider cap. The real enforcement is EnsureRingSized()'s budget math —
-// this just keeps the properties panel from offering a wildly unrealistic
-// number before that math clamps it anyway.
-constexpr int kUiMaxDelaySeconds = 60;
 
 // Extra headroom on top of configuredDelaySeconds_ worth of audio frames, so
 // a write can never catch up to a read mid-copy. Audio is cheap (raw PCM,
@@ -1266,23 +1264,79 @@ obs_audio_data *VideoDelayFilter::FilterAudio(obs_audio_data *audio)
 	return &audioOutput_;
 }
 
+void VideoDelayFilter::ApplyDelaySeconds(uint32_t seconds)
+{
+	if (seconds == configuredDelaySeconds_.load())
+		return;
+	configuredDelaySeconds_ = seconds;
+	if (seconds == 0)
+		TRIGGLOW_LOG_INFO(kComponent, "delay set to 0s: the video passes through, no buffer");
+	else
+		TRIGGLOW_LOG_INFO(kComponent, "delay set to %us", seconds);
+}
+
+void VideoDelayFilter::ApplyMinResolutionHeight(uint32_t heightPixels)
+{
+	if (heightPixels == 0)
+		heightPixels = kDefaultMinResolutionHeight;
+	if (heightPixels == configuredMinResolutionHeight_.load())
+		return;
+	configuredMinResolutionHeight_ = heightPixels;
+	TRIGGLOW_LOG_INFO(kComponent, "minimum resolution height set to %up", heightPixels);
+}
+
+void VideoDelayFilter::SetManagedSetting(const char *key, uint32_t value)
+{
+	std::lock_guard<std::mutex> lock(managedMutex_);
+	if (!managed_)
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "\"%s\": delay and minimum quality managed by the Trigglow dock from now on",
+				  obs_source_get_name(filterSource_));
+	managed_ = true;
+	warnedForeignSettings_ = false; // One WARN per push of the dock's values, at most.
+	if (std::strcmp(key, kSettingDelaySeconds) == 0)
+		ApplyDelaySeconds(value);
+	else
+		ApplyMinResolutionHeight(value);
+	// The settings say the same: what the scene collection saves, and what
+	// Update() compares with. Under the mutex, so Update() never sees the new
+	// value applied but the old one in the settings.
+	if (obs_data_t *settings = obs_source_get_settings(filterSource_)) {
+		obs_data_set_int(settings, key, value);
+		obs_data_release(settings);
+	}
+}
+
 void VideoDelayFilter::Update(obs_data_t *settings)
 {
-	auto seconds = static_cast<uint32_t>(obs_data_get_int(settings, kSettingDelaySeconds));
-	if (seconds != configuredDelaySeconds_.load()) {
-		configuredDelaySeconds_ = seconds;
-		if (seconds == 0)
-			TRIGGLOW_LOG_INFO(kComponent, "delay set to 0s: the video passes through, no buffer");
-		else
-			TRIGGLOW_LOG_INFO(kComponent, "delay set to %us", seconds);
-	}
-
-	auto minHeight = static_cast<uint32_t>(obs_data_get_int(settings, kSettingMinResolutionHeight));
-	if (minHeight == 0)
-		minHeight = kDefaultMinResolutionHeight;
-	if (minHeight != configuredMinResolutionHeight_.load()) {
-		configuredMinResolutionHeight_ = minHeight;
-		TRIGGLOW_LOG_INFO(kComponent, "minimum resolution height set to %up", minHeight);
+	{
+		// The delay and the quality floor are the dock's once it has pushed
+		// them (SetManagedSetting()): a different value in the settings came
+		// from somewhere else -- OBS's Defaults button, an older properties
+		// dialog, obs-websocket -- and is ignored, so this filter never
+		// delays by anything but what the dock shows, and never passes the
+		// video through (0 s) while the delay is on. Until then (a filter
+		// added by hand, or loaded with a collection before the first Enable)
+		// the settings apply, as before.
+		std::lock_guard<std::mutex> lock(managedMutex_);
+		const auto seconds = static_cast<uint32_t>(obs_data_get_int(settings, kSettingDelaySeconds));
+		auto minHeight = static_cast<uint32_t>(obs_data_get_int(settings, kSettingMinResolutionHeight));
+		if (minHeight == 0)
+			minHeight = kDefaultMinResolutionHeight;
+		if (!managed_) {
+			ApplyDelaySeconds(seconds);
+			ApplyMinResolutionHeight(minHeight);
+		} else if ((seconds != configuredDelaySeconds_.load() ||
+			    minHeight != configuredMinResolutionHeight_.load()) &&
+			   !warnedForeignSettings_) {
+			warnedForeignSettings_ = true;
+			TRIGGLOW_LOG_WARN(
+				kComponent,
+				"\"%s\": delay_seconds=%u / min_resolution_height=%u set outside the Trigglow "
+				"dock -- ignored, the dock manages this filter (%us, %up)",
+				obs_source_get_name(filterSource_), seconds, minHeight, configuredDelaySeconds_.load(),
+				configuredMinResolutionHeight_.load());
+		}
 	}
 
 	// GetDefaults() makes this true unless the plugin pushed false.
@@ -1346,10 +1400,12 @@ void VideoDelayFilter::Render()
 		return;
 	}
 
-	// A 0s delay (possible from the filter's own properties; the dock's
-	// minimum is 1) means no delay: pass the video straight through, with no
-	// ring and no codec. Before v0.6.0 it built a 1-slot ring, encoded every
-	// frame into it and never drew anything (black output at full CPU cost).
+	// A 0s delay (only on a filter the dock doesn't manage, e.g. one added by
+	// hand: the dock's minimum is 1, and Update() ignores a 0 written into a
+	// managed filter's settings) means no delay: pass the video straight
+	// through, with no ring and no codec. Before v0.6.0 it built a 1-slot
+	// ring, encoded every frame into it and never drew anything (black output
+	// at full CPU cost).
 	if (configuredDelaySeconds_.load() == 0) {
 		if (ring_) {
 			LogPerfWindow("delay set to 0");
@@ -1703,6 +1759,10 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 				 &VideoDelayFilter::GetEffectiveDelaySecondsProc, filter);
 		proc_handler_add(procHandler, "void get_pipeline_state(in ptr health)",
 				 &VideoDelayFilter::GetPipelineStateProc, filter);
+		proc_handler_add(procHandler, "void set_managed_delay_seconds(in int seconds)",
+				 &VideoDelayFilter::SetManagedDelaySecondsProc, filter);
+		proc_handler_add(procHandler, "void set_managed_min_resolution_height(in int height)",
+				 &VideoDelayFilter::SetManagedMinResolutionHeightProc, filter);
 	}
 
 	return filter;
@@ -1774,8 +1834,22 @@ uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
 	obs_data_t *settings = obs_source_get_settings(filterSource_);
 	if (!settings)
 		return 0;
-	const auto delaySeconds = static_cast<uint32_t>(obs_data_get_int(settings, kSettingDelaySeconds));
-	auto minResolutionHeight = static_cast<uint32_t>(obs_data_get_int(settings, kSettingMinResolutionHeight));
+	uint32_t delaySeconds = 0;
+	uint32_t minResolutionHeight = 0;
+	{
+		// Managed: the dock's values, which the procs applied right away
+		// (whatever the settings say). Otherwise the settings, as Update()
+		// will apply them.
+		std::lock_guard<std::mutex> lock(managedMutex_);
+		if (managed_) {
+			delaySeconds = configuredDelaySeconds_.load();
+			minResolutionHeight = configuredMinResolutionHeight_.load();
+		} else {
+			delaySeconds = static_cast<uint32_t>(obs_data_get_int(settings, kSettingDelaySeconds));
+			minResolutionHeight =
+				static_cast<uint32_t>(obs_data_get_int(settings, kSettingMinResolutionHeight));
+		}
+	}
 	if (minResolutionHeight == 0)
 		minResolutionHeight = kDefaultMinResolutionHeight;
 	const bool capToOutput = obs_data_get_bool(settings, kSettingBufferOutputCap);
@@ -1796,6 +1870,20 @@ void VideoDelayFilter::GetPipelineStateProc(void *data, calldata_t *params)
 		return;
 	std::lock_guard<std::mutex> lock(filter->healthMutex_);
 	*static_cast<PipelineHealth *>(out) = filter->health_;
+}
+
+void VideoDelayFilter::SetManagedDelaySecondsProc(void *data, calldata_t *params)
+{
+	const long long seconds = calldata_int(params, "seconds");
+	static_cast<VideoDelayFilter *>(data)->SetManagedSetting(
+		kSettingDelaySeconds, static_cast<uint32_t>(std::clamp<long long>(seconds, 0, UINT32_MAX)));
+}
+
+void VideoDelayFilter::SetManagedMinResolutionHeightProc(void *data, calldata_t *params)
+{
+	const long long height = calldata_int(params, "height");
+	static_cast<VideoDelayFilter *>(data)->SetManagedSetting(
+		kSettingMinResolutionHeight, static_cast<uint32_t>(std::clamp<long long>(height, 0, UINT32_MAX)));
 }
 
 void VideoDelayFilter::UpdateCb(void *data, obs_data_t *settings)
@@ -1830,28 +1918,15 @@ uint32_t VideoDelayFilter::GetHeightCb(void *data)
 
 obs_properties_t *VideoDelayFilter::GetProperties(void * /*data*/)
 {
+	// No delay or quality fields: the dock manages this filter. Editing them
+	// here (0-60, while the dock allows 1-60) let the filter delay by another
+	// value than the dock showed and audio used, or pass the video through
+	// undelayed while the dock said the delay was on. Update() ignores such
+	// values anyway once the dock has pushed its own (see SetManagedSetting()).
+	// buffer_output_cap and codec_workers are deliberately not listed either
+	// (see kSettingBufferOutputCap and kSettingCodecWorkers).
 	obs_properties_t *props = obs_properties_create();
-	obs_property_t *prop =
-		obs_properties_add_int(props, kSettingDelaySeconds, "Delay (segundos)", 0, kUiMaxDelaySeconds, 1);
-	obs_property_set_long_description(
-		prop, "Segundos de retraso pedidos (0 = sin retraso: el video pasa tal cual). Se respeta la calidad "
-		      "minima (ver mas abajo) por encima del tiempo -- si no caben enteros en el presupuesto de RAM "
-		      "(calculado segun la memoria de tu PC) a esa calidad, el tiempo real de buffer se acorta en su "
-		      "lugar (ver el log de OBS).");
-
-	obs_property_t *qualityProp = obs_properties_add_list(props, kSettingMinResolutionHeight, "Calidad minima",
-							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(qualityProp, "480p", 480);
-	obs_property_list_add_int(qualityProp, "720p", 720);
-	obs_property_list_add_int(qualityProp, "1080p", 1080);
-	obs_property_set_long_description(
-		qualityProp, "Suelo para la reduccion por RAM: antes que bajar de esta resolucion, el tramo delayed "
-			     "guarda menos segundos de los pedidos. Pero el buffer nunca supera la resolucion de "
-			     "salida de OBS: con una salida de 720p se guarda a 720p aunque el minimo sea 1080p. "
-			     "Un valor mas alto guarda menos tiempo real con el mismo presupuesto de RAM.");
-
-	// buffer_output_cap and codec_workers are deliberately not listed (see
-	// kSettingBufferOutputCap and kSettingCodecWorkers).
+	obs_properties_add_text(props, kPropertyManagedInfo, Str("Filter.VideoDelay.Managed"), OBS_TEXT_INFO);
 	return props;
 }
 

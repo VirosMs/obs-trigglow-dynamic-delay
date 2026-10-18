@@ -29,7 +29,9 @@ namespace {
 constexpr const char *kComponent = "audio-delay-filter";
 constexpr const char *kFilterId = "trigglow_audio_delay_filter";
 constexpr const char *kSettingDelaySeconds = "delay_seconds";
-constexpr int kUiMaxDelaySeconds = 60;
+// The one entry of the filter's properties: a note that the dock manages it.
+// Never a stored setting.
+constexpr const char *kPropertyManagedInfo = "trigglow_managed_info";
 
 // Extra headroom on top of configuredDelaySeconds_ worth of frames, so a
 // write can never catch up to a read mid-copy. Cheap (raw PCM, no VRAM
@@ -241,13 +243,30 @@ obs_audio_data *AudioDelayFilter::FilterAudio(obs_audio_data *audio)
 	return &output_;
 }
 
+void AudioDelayFilter::ApplyDelaySeconds(uint32_t seconds)
+{
+	if (seconds == configuredDelaySeconds_.load())
+		return;
+	configuredDelaySeconds_.store(seconds);
+	TRIGGLOW_LOG_INFO(kComponent, "delay set to %us on \"%s\"", seconds, obs_source_get_name(filterSource_));
+}
+
 void AudioDelayFilter::Update(obs_data_t *settings)
 {
-	auto seconds = static_cast<uint32_t>(obs_data_get_int(settings, kSettingDelaySeconds));
-	if (seconds != configuredDelaySeconds_.load()) {
-		configuredDelaySeconds_.store(seconds);
-		TRIGGLOW_LOG_INFO(kComponent, "delay set to %us on \"%s\"", seconds,
-				  obs_source_get_name(filterSource_));
+	{
+		// The dock's delay once it has pushed one (SetManagedDelaySecondsProc):
+		// any other value in the settings came from elsewhere and is ignored.
+		std::lock_guard<std::mutex> lock(managedMutex_);
+		const auto seconds = static_cast<uint32_t>(obs_data_get_int(settings, kSettingDelaySeconds));
+		if (!managed_) {
+			ApplyDelaySeconds(seconds);
+		} else if (seconds != configuredDelaySeconds_.load() && !warnedForeignSettings_) {
+			warnedForeignSettings_ = true;
+			TRIGGLOW_LOG_WARN(kComponent,
+					  "\"%s\": delay_seconds=%u set outside the Trigglow dock -- ignored, the dock "
+					  "manages this filter (%us)",
+					  obs_source_get_name(filterSource_), seconds, configuredDelaySeconds_.load());
+		}
 	}
 
 	int64_t token = obs_data_get_int(settings, kSettingResetToken);
@@ -266,12 +285,32 @@ void *AudioDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 {
 	auto *filter = new AudioDelayFilter(source);
 	filter->Update(settings);
+	if (proc_handler_t *procHandler = obs_source_get_proc_handler(source))
+		proc_handler_add(procHandler, "void set_managed_delay_seconds(in int seconds)",
+				 &AudioDelayFilter::SetManagedDelaySecondsProc, filter);
 	return filter;
 }
 
 void AudioDelayFilter::Destroy(void *data)
 {
 	delete static_cast<AudioDelayFilter *>(data);
+}
+
+void AudioDelayFilter::SetManagedDelaySecondsProc(void *data, calldata_t *params)
+{
+	auto *filter = static_cast<AudioDelayFilter *>(data);
+	const auto seconds =
+		static_cast<uint32_t>(std::clamp<long long>(calldata_int(params, "seconds"), 0, UINT32_MAX));
+	std::lock_guard<std::mutex> lock(filter->managedMutex_);
+	filter->managed_ = true;
+	filter->warnedForeignSettings_ = false; // One WARN per push of the dock's value, at most.
+	filter->ApplyDelaySeconds(seconds);
+	// The settings say the same (saved with the collection, compared with by
+	// Update()), under the mutex like VideoDelayFilter::SetManagedSetting().
+	if (obs_data_t *settings = obs_source_get_settings(filter->filterSource_)) {
+		obs_data_set_int(settings, kSettingDelaySeconds, seconds);
+		obs_data_release(settings);
+	}
 }
 
 void AudioDelayFilter::UpdateCb(void *data, obs_data_t *settings)
@@ -286,8 +325,11 @@ obs_audio_data *AudioDelayFilter::FilterAudioCb(void *data, obs_audio_data *audi
 
 obs_properties_t *AudioDelayFilter::GetProperties(void * /*data*/)
 {
+	// No delay field: the dock manages this filter and keeps it on the video's
+	// delay (a value set here put audio out of step with the video, and
+	// Update() ignores it anyway once the dock has pushed its own).
 	obs_properties_t *props = obs_properties_create();
-	obs_properties_add_int(props, kSettingDelaySeconds, "Delay (segundos)", 0, kUiMaxDelaySeconds, 1);
+	obs_properties_add_text(props, kPropertyManagedInfo, Str("Filter.AudioDelay.Managed"), OBS_TEXT_INFO);
 	return props;
 }
 

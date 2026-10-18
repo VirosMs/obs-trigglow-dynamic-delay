@@ -207,6 +207,14 @@ private:
 	~VideoDelayFilter();
 
 	void Update(obs_data_t *settings);
+	// Set configuredDelaySeconds_ / configuredMinResolutionHeight_, logging a
+	// real change. Under managedMutex_.
+	void ApplyDelaySeconds(uint32_t seconds);
+	void ApplyMinResolutionHeight(uint32_t heightPixels);
+	// The set_managed_* procs: the dock's value for `key` (kSettingDelaySeconds
+	// or kSettingMinResolutionHeight), applied right away and written into the
+	// filter's settings; from then on Update() ignores any other value there.
+	void SetManagedSetting(const char *key, uint32_t value);
 	void Tick(float secondsSinceLastTick);
 	void Render();
 	obs_audio_data *FilterAudio(obs_audio_data *audio);
@@ -328,6 +336,19 @@ private:
 	// dock can poll it without ever blocking on a lagging render.
 	static void GetPipelineStateProc(void *data, calldata_t *params);
 
+	// "set_managed_delay_seconds(in int seconds)" and
+	// "set_managed_min_resolution_height(in int height)" proc handlers: how
+	// ObsFrontendBridge pushes the dock's delay and quality floor (every
+	// Enable(), and on a change while the delay runs). They make this filter
+	// "managed": its delay and floor are the dock's from then on, whatever its
+	// settings say -- OBS's Defaults button, an older properties dialog or
+	// obs-websocket can no longer make it delay by another value, or pass the
+	// video through undelayed (0 s) while the dock says the delay is on.
+	// Called on the caller's thread (the UI): the values apply at once, like
+	// PlannedEffectiveDelaySeconds() reads them.
+	static void SetManagedDelaySecondsProc(void *data, calldata_t *params);
+	static void SetManagedMinResolutionHeightProc(void *data, calldata_t *params);
+
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	// Written by Update() (UI thread), read by Render() (graphics thread).
 	std::atomic<uint32_t> configuredDelaySeconds_{0};
@@ -348,6 +369,15 @@ private:
 	// decode on the graphics thread (no codec threads), like v0.5.1. Only
 	// ever set from the plugin settings file, through ObsFrontendBridge.
 	std::atomic<bool> configuredCodecWorkers_{true};
+	// Managed by the dock (set_managed_* procs, see SetManagedSetting()):
+	// Update() keeps configuredDelaySeconds_ and configuredMinResolutionHeight_
+	// instead of applying the settings' values, and logs one WARN per push if
+	// they differ. managedMutex_ guards these two flags and keeps a proc's
+	// value and its write into the settings together against Update() (graphics
+	// thread) and PlannedEffectiveDelaySeconds() (UI).
+	mutable std::mutex managedMutex_;
+	bool managed_ = false;
+	bool warnedForeignSettings_ = false;
 
 	// --- The current delay cycle (graphics thread) ---
 	std::shared_ptr<FrameRing> ring_;

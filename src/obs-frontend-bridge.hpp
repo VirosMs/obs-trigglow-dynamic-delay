@@ -18,8 +18,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -225,16 +227,22 @@ public:
 	// kBufferRestartedSignal (FrontendEvent::BufferRestarted) and keeps a weak
 	// reference to it until it's disabled again: from then on the bridge
 	// reaches this filter through that reference, not by name, so a live
-	// scene renamed while the delay is on doesn't lose it (disabling included).
+	// scene renamed while the delay is on doesn't lose it (disabling
+	// included). While it's on, the filter is guarded: switched off from
+	// outside the dock, it's switched back on (DelayFilterEnableSignal()).
 	bool SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const;
 
-	// Pushes `seconds` into the already-attached filter's configured delay.
-	// No-op (returns false) if EnsureBufferWrapperScene hasn't run yet.
+	// Pushes `seconds` into the already-attached filter's configured delay,
+	// through its set_managed_delay_seconds proc: the filter then keeps the
+	// dock's value whatever else writes its settings (see
+	// VideoDelayFilter::SetManagedDelaySecondsProc). No-op (returns false) if
+	// EnsureBufferWrapperScene hasn't run yet.
 	bool SetBufferFilterDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const;
 
 	// Pushes `heightPixels` into the already-attached filter's minimum
-	// capture resolution floor (see VideoDelayFilter::EnsureRingSized).
-	// No-op (returns false) if EnsureBufferWrapperScene hasn't run yet.
+	// capture resolution floor (see VideoDelayFilter::EnsureRingSized), the
+	// same managed way. No-op (returns false) if EnsureBufferWrapperScene
+	// hasn't run yet.
 	bool SetBufferFilterMinResolutionHeight(const std::string &liveSceneName, uint32_t heightPixels) const;
 
 	// Pushes the hidden buffer_output_cap setting into the already-attached
@@ -341,11 +349,16 @@ public:
 	// Enables/disables every AudioDelayFilter attached under liveSceneName
 	// by EnsureAudioDelayFilters(). Returns false if liveSceneName doesn't
 	// resolve to a real scene (not an error if it simply has no audio
-	// children -- that's a normal, silent no-op).
+	// children -- that's a normal, silent no-op). Like the video filter, the
+	// filters switched on are kept as weak references and guarded until
+	// they're switched off again (by those references, so a renamed live
+	// scene doesn't leave its audio delayed).
 	bool SetAudioDelayFiltersEnabled(const std::string &liveSceneName, bool enabled) const;
 
 	// Pushes `seconds` into every AudioDelayFilter attached under
-	// liveSceneName. Same not-an-error semantics as SetAudioDelayFiltersEnabled.
+	// liveSceneName (the ones switched on, while the delay is on), through
+	// their set_managed_delay_seconds proc. Same not-an-error semantics as
+	// SetAudioDelayFiltersEnabled.
 	bool SetAudioDelayFiltersDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const;
 
 	// Nothing calls obs_source_video_render() on a source that isn't part of
@@ -422,8 +435,28 @@ private:
 	OBSSourceAutoRelease ActiveBufferFilter() const;
 	// ActiveBufferFilter() while the delay is on, else FindBufferFilter().
 	OBSSourceAutoRelease BufferFilterFor(const std::string &liveSceneName) const;
-	// Drops activeBufferFilter_.
+	// Drops activeBufferFilter_, unguarding the filter if it still exists.
 	void ForgetActiveBufferFilter() const;
+
+	// The audio filters SetAudioDelayFiltersEnabled(true) switched on, while
+	// the delay is on (activeAudioFilters_); else the ones found under
+	// liveSceneName.
+	std::vector<OBSSourceAutoRelease> AudioFiltersFor(const std::string &liveSceneName) const;
+	// Drops activeAudioFilters_, unguarding each filter that still exists.
+	void ForgetActiveAudioFilters() const;
+
+	// "enable" signal handler, connected to the delay filters while the delay
+	// keeps them on (ConnectGuard()): a guarded filter switched off from
+	// outside the dock -- its eye in OBS's Filters dialog, obs-websocket,
+	// another plugin -- is switched back on at once, with one WARN per
+	// activation. Off, the video filter lets the live scene through
+	// undelayed while the dock says the delay is on (an audio one, that
+	// source's audio ahead of the video). Any thread.
+	static void DelayFilterEnableSignal(void *param, calldata_t *data);
+	// Whether `filter` is one the delay switched on. Any thread (guardMutex_).
+	bool IsGuardedFilter(obs_source_t *filter) const;
+	void ConnectGuard(obs_source_t *filter) const;
+	void DisconnectGuard(obs_source_t *filter) const;
 
 	// Collects the direct children of `liveSceneName` that advertise
 	// OBS_SOURCE_AUDIO (see EnsureAudioDelayFilters's header comment for
@@ -445,6 +478,16 @@ private:
 	// GetBufferPipelineHealth() logged that the filter went away (once per
 	// activation).
 	mutable bool loggedBufferFilterGone_ = false;
+	// Weak references to the audio delay filters SetAudioDelayFiltersEnabled(true)
+	// switched on, until SetAudioDelayFiltersEnabled(false) (or Shutdown()).
+	mutable std::vector<obs_weak_source_t *> activeAudioFilters_;
+	// activeBufferFilter_ and activeAudioFilters_ are written on the UI thread
+	// under this mutex, which DelayFilterEnableSignal() takes to read them
+	// from whatever thread switched a filter off.
+	mutable std::mutex guardMutex_;
+	// DelayFilterEnableSignal() logged a filter switched back on (once per
+	// activation).
+	mutable std::atomic<bool> warnedFilterSwitchedOff_{false};
 
 	// Owned strong ref to the scene AcquireLiveSceneRendering() is currently
 	// keeping alive, or null if nothing is held. Only one at a time (matches

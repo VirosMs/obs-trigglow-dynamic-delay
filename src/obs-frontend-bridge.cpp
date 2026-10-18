@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 extern "C" {
@@ -83,7 +84,9 @@ void ObsFrontendBridge::Shutdown()
 		liveSceneRenderTarget_ = nullptr;
 	}
 
+	// Unguards them too: the "enable" handler must not outlive this bridge.
 	ForgetActiveBufferFilter();
+	ForgetActiveAudioFilters();
 
 	if (g_eventBridge == this)
 		g_eventBridge = nullptr; // A BufferRestartedTask() still queued finds it gone.
@@ -264,6 +267,20 @@ OBSSourceAutoRelease FindAudioFilterOn(obs_source_t *child)
 {
 	const char *childName = obs_source_get_name(child);
 	return FindFilterByNames(child, autonames::AudioFilterLookupNames(childName ? childName : ""));
+}
+
+// Calls `source`'s "void <proc>(in int <param>)" proc handler with `value`.
+// False if it has no such proc.
+bool CallIntProc(obs_source_t *source, const char *proc, const char *param, long long value)
+{
+	proc_handler_t *handler = obs_source_get_proc_handler(source);
+	if (!handler)
+		return false;
+	calldata_t cd = {};
+	calldata_set_int(&cd, param, value);
+	const bool ok = proc_handler_call(handler, proc, &cd);
+	calldata_free(&cd);
+	return ok;
 }
 
 // Keys SetDelayOverlay() keeps in the badge item's private settings, which OBS
@@ -447,10 +464,96 @@ OBSSourceAutoRelease ObsFrontendBridge::BufferFilterFor(const std::string &liveS
 
 void ObsFrontendBridge::ForgetActiveBufferFilter() const
 {
-	if (activeBufferFilter_)
-		obs_weak_source_release(activeBufferFilter_);
-	activeBufferFilter_ = nullptr;
+	obs_weak_source_t *weak = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(guardMutex_);
+		std::swap(weak, activeBufferFilter_);
+	}
 	loggedBufferFilterGone_ = false;
+	if (!weak)
+		return;
+	if (OBSSourceAutoRelease filter = obs_weak_source_get_source(weak))
+		DisconnectGuard(filter);
+	obs_weak_source_release(weak);
+}
+
+std::vector<OBSSourceAutoRelease> ObsFrontendBridge::AudioFiltersFor(const std::string &liveSceneName) const
+{
+	std::vector<OBSSourceAutoRelease> filters;
+	// UI thread, the list's only writer: no lock needed to read it here.
+	for (obs_weak_source_t *weak : activeAudioFilters_) {
+		if (obs_source_t *filter = obs_weak_source_get_source(weak)) // +1, owned by the vector.
+			filters.emplace_back(filter);
+	}
+	if (!filters.empty())
+		return filters;
+	for (const OBSSourceAutoRelease &child : GetAudioCapableChildren(liveSceneName)) {
+		if (OBSSourceAutoRelease filter = FindAudioFilterOn(child.Get()))
+			filters.push_back(std::move(filter));
+	}
+	return filters;
+}
+
+void ObsFrontendBridge::ForgetActiveAudioFilters() const
+{
+	std::vector<obs_weak_source_t *> weak;
+	{
+		std::lock_guard<std::mutex> lock(guardMutex_);
+		weak.swap(activeAudioFilters_);
+	}
+	for (obs_weak_source_t *ref : weak) {
+		if (OBSSourceAutoRelease filter = obs_weak_source_get_source(ref))
+			DisconnectGuard(filter);
+		obs_weak_source_release(ref);
+	}
+}
+
+bool ObsFrontendBridge::IsGuardedFilter(obs_source_t *filter) const
+{
+	std::lock_guard<std::mutex> lock(guardMutex_);
+	if (activeBufferFilter_ && obs_weak_source_references_source(activeBufferFilter_, filter))
+		return true;
+	return std::any_of(activeAudioFilters_.begin(), activeAudioFilters_.end(), [filter](obs_weak_source_t *weak) {
+		return obs_weak_source_references_source(weak, filter);
+	});
+}
+
+void ObsFrontendBridge::ConnectGuard(obs_source_t *filter) const
+{
+	// Connecting again is a no-op (libobs skips a callback/data pair already
+	// connected).
+	signal_handler_connect(obs_source_get_signal_handler(filter), "enable",
+			       &ObsFrontendBridge::DelayFilterEnableSignal, const_cast<ObsFrontendBridge *>(this));
+}
+
+void ObsFrontendBridge::DisconnectGuard(obs_source_t *filter) const
+{
+	signal_handler_disconnect(obs_source_get_signal_handler(filter), "enable",
+				  &ObsFrontendBridge::DelayFilterEnableSignal, const_cast<ObsFrontendBridge *>(this));
+}
+
+void ObsFrontendBridge::DelayFilterEnableSignal(void *param, calldata_t *data)
+{
+	if (calldata_bool(data, "enabled"))
+		return;
+	const auto *self = static_cast<const ObsFrontendBridge *>(param);
+	auto *filter = static_cast<obs_source_t *>(calldata_ptr(data, "source"));
+	if (!filter || !self->IsGuardedFilter(filter))
+		return;
+	// Back on at once. libobs flips the flag before emitting this signal, so
+	// at most the frame being rendered right now skips the filter. This emits
+	// "enable" again, with enabled = true: ignored above.
+	obs_source_set_enabled(filter, true);
+	if (!self->warnedFilterSwitchedOff_.exchange(true)) {
+		const char *id = obs_source_get_id(filter);
+		const bool video = id && strcmp(id, VideoDelayFilter::Id()) == 0;
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "\"%s\" was switched off outside the Trigglow dock while the delay is on -- switched "
+				  "back on: off, %s. Turn the delay off from the dock instead",
+				  obs_source_get_name(filter),
+				  video ? "the stream would show the live scene without delay"
+					: "this source's audio would play ahead of the video");
+	}
 }
 
 bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneName) const
@@ -598,13 +701,15 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 			ForgetActiveBufferFilter();
 		return false;
 	}
-	obs_source_set_enabled(filter, enabled);
 	if (enabled) {
-		ForgetActiveBufferFilter();
-		activeBufferFilter_ = obs_source_get_weak_source(filter);
-	}
-
-	if (enabled) {
+		obs_source_set_enabled(filter, true);
+		ForgetActiveBufferFilter(); // The previous cycle's, normally released already.
+		{
+			std::lock_guard<std::mutex> lock(guardMutex_);
+			activeBufferFilter_ = obs_source_get_weak_source(filter);
+		}
+		warnedFilterSwitchedOff_ = false;
+		ConnectGuard(filter);
 		// A hard resize while the delay is on (delay change, OBS video reset)
 		// empties the ring: BufferModeController shows the loading scene until
 		// it refills. Connecting again on every Enable is a no-op (libobs skips
@@ -612,6 +717,12 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 		signal_handler_connect(obs_source_get_signal_handler(filter), VideoDelayFilter::kBufferRestartedSignal,
 				       &ObsFrontendBridge::BufferRestartedSignal,
 				       const_cast<ObsFrontendBridge *>(this));
+	} else {
+		// Unguarded before it's switched off, or DelayFilterEnableSignal()
+		// would switch it straight back on.
+		ForgetActiveBufferFilter();
+		DisconnectGuard(filter);
+		obs_source_set_enabled(filter, false);
 	}
 
 	if (!enabled) {
@@ -632,7 +743,6 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 					  "RAM ring may not have been freed");
 		}
 		calldata_free(&cd);
-		ForgetActiveBufferFilter();
 	}
 
 	TRIGGLOW_LOG_INFO(kComponent, "SetBufferFilterEnabled(%s) applied to filter %p", enabled ? "true" : "false",
@@ -648,6 +758,12 @@ bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveScene
 				  seconds);
 		return false;
 	}
+	// The managed value first (applies at once, see the header); the update
+	// after it carries the same value, and still runs the filter's Update()
+	// (which starts each cycle's diagnostics afresh).
+	if (!CallIntProc(filter, "set_managed_delay_seconds", "seconds", seconds))
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterDelaySeconds(%us): set_managed_delay_seconds proc failed",
+				  seconds);
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_int(settings, "delay_seconds", seconds);
 	obs_source_update(filter, settings);
@@ -740,8 +856,14 @@ bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &li
 				  heightPixels);
 		return false;
 	}
-	// obs_source_update() merges onto the filter's existing settings
-	// (obs_data_apply), so this doesn't disturb delay_seconds.
+	// Managed, like SetBufferFilterDelaySeconds(). obs_source_update() merges
+	// onto the filter's existing settings (obs_data_apply), so this doesn't
+	// disturb delay_seconds.
+	if (!CallIntProc(filter, "set_managed_min_resolution_height", "height", heightPixels))
+		TRIGGLOW_LOG_WARN(
+			kComponent,
+			"SetBufferFilterMinResolutionHeight(%u): set_managed_min_resolution_height proc failed",
+			heightPixels);
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_int(settings, "min_resolution_height", heightPixels);
 	obs_source_update(filter, settings);
@@ -1113,26 +1235,40 @@ bool ObsFrontendBridge::EnsureAudioDelayFilters(const std::string &liveSceneName
 
 bool ObsFrontendBridge::SetAudioDelayFiltersEnabled(const std::string &liveSceneName, bool enabled) const
 {
-	auto children = GetAudioCapableChildren(liveSceneName);
-	bool foundAny = false;
+	// Switching on: the filters under the live scene (a previous cycle's list
+	// is normally released already). Switching off: the ones switched on,
+	// wherever they are now, unguarded before they're switched off (or
+	// DelayFilterEnableSignal() would switch them straight back on).
+	if (enabled)
+		ForgetActiveAudioFilters();
+	const std::vector<OBSSourceAutoRelease> filters = AudioFiltersFor(liveSceneName);
+	if (!enabled)
+		ForgetActiveAudioFilters();
+	const bool foundAny = !filters.empty();
 
-	for (const OBSSourceAutoRelease &childRef : children) {
-		obs_source_t *child = childRef.Get();
-		OBSSourceAutoRelease filter = FindAudioFilterOn(child);
-		if (!filter)
+	for (const OBSSourceAutoRelease &filterRef : filters) {
+		obs_source_t *filter = filterRef.Get();
+		if (!enabled) {
+			DisconnectGuard(filter);
+			obs_source_set_enabled(filter, false);
 			continue;
-		if (enabled) {
-			// The ring still holds whatever this source sent before the
-			// last Disable; flush it so the new Filling window starts
-			// clean instead of replaying old audio.
-			obs_data_t *settings = obs_source_get_settings(filter);
-			obs_data_set_int(settings, "reset_token", obs_data_get_int(settings, "reset_token") + 1);
-			obs_source_update(filter, settings);
-			obs_data_release(settings);
 		}
-		obs_source_set_enabled(filter, enabled);
-		foundAny = true;
+		// The ring still holds whatever this source sent before the last
+		// Disable; flush it so the new Filling window starts clean instead of
+		// replaying old audio.
+		obs_data_t *settings = obs_source_get_settings(filter);
+		obs_data_set_int(settings, "reset_token", obs_data_get_int(settings, "reset_token") + 1);
+		obs_source_update(filter, settings);
+		obs_data_release(settings);
+		obs_source_set_enabled(filter, true);
+		{
+			std::lock_guard<std::mutex> lock(guardMutex_);
+			activeAudioFilters_.push_back(obs_source_get_weak_source(filter));
+		}
+		ConnectGuard(filter);
 	}
+	if (enabled)
+		warnedFilterSwitchedOff_ = false;
 
 	TRIGGLOW_LOG_INFO(kComponent, "audio delay: SetAudioDelayFiltersEnabled(%s) applied to %s",
 			  enabled ? "true" : "false", foundAny ? "at least one filter" : "no filters (none found)");
@@ -1141,22 +1277,18 @@ bool ObsFrontendBridge::SetAudioDelayFiltersEnabled(const std::string &liveScene
 
 bool ObsFrontendBridge::SetAudioDelayFiltersDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const
 {
-	auto children = GetAudioCapableChildren(liveSceneName);
-	bool foundAny = false;
-
-	for (const OBSSourceAutoRelease &childRef : children) {
-		obs_source_t *child = childRef.Get();
-		OBSSourceAutoRelease filter = FindAudioFilterOn(child);
-		if (!filter)
-			continue;
+	const std::vector<OBSSourceAutoRelease> filters = AudioFiltersFor(liveSceneName);
+	for (const OBSSourceAutoRelease &filter : filters) {
+		// Managed first, like the video filter's delay (see the header).
+		if (!CallIntProc(filter, "set_managed_delay_seconds", "seconds", seconds))
+			TRIGGLOW_LOG_WARN(kComponent, "audio delay: set_managed_delay_seconds proc failed on \"%s\"",
+					  obs_source_get_name(filter));
 		obs_data_t *settings = obs_data_create();
 		obs_data_set_int(settings, "delay_seconds", seconds);
 		obs_source_update(filter, settings);
 		obs_data_release(settings);
-		foundAny = true;
 	}
-
-	return foundAny;
+	return !filters.empty();
 }
 
 bool ObsFrontendBridge::AcquireLiveSceneRendering(const std::string &liveSceneName)
