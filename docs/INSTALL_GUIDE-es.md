@@ -11,10 +11,10 @@ desactualizados.
 
 ## 1. Descarga
 
-Consigue `obs-trigglow-dynamic-delay-0.3.2-windows-x64-setup.exe` desde la
+Consigue `obs-trigglow-dynamic-delay-0.6.0-windows-x64-setup.exe` desde la
 [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). ¿Prefieres
 instalarlo a mano? El `.zip` de esa misma release solo trae los archivos del plugin — ver
-"Installing the compiled plugin in OBS" en `README-es.md`.
+"Instalar el plugin" en `README-es.md`.
 
 ## 2. Windows SmartScreen: por qué aparece y cómo continuar
 
