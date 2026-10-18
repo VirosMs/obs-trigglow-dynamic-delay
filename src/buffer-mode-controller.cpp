@@ -298,6 +298,8 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 		bridge_.DisableAllDelayFilters();
 	if (event == FrontendEvent::FinishedLoading && onSceneListRefresh_)
 		onSceneListRefresh_();
+	if (event == FrontendEvent::ThemeChanged && onThemeChanged_)
+		onThemeChanged_();
 	// A new output's encoders may encode above the delay buffer. No-op unless
 	// the delay is Filling/Active (see WarnAboutEncodersAboveBuffer).
 	if (event == FrontendEvent::StreamingStarted || event == FrontendEvent::RecordingStarted ||

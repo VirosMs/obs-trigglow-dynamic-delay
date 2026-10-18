@@ -52,6 +52,17 @@ class AuthManager : public QObject {
 	Q_OBJECT
 
 public:
+	// Why the last sign-in attempt (or the stored session) failed, so the dock
+	// can say so instead of silently going back to "Sign in". Cleared by
+	// StartLogin(), CancelLogin(), Logout() and a successful sign-in.
+	enum class LoginError {
+		None,
+		Network,      // trigglow.com unreachable, or an HTTP/JSON error starting the sign-in.
+		Expired,      // The one-time link expired, was already used, or the 5-minute wait ran out.
+		Browser,      // The system browser didn't open: the dock offers the link to copy (still waiting).
+		SessionEnded, // The server revoked the stored session (HTTP 401).
+	};
+
 	explicit AuthManager(QObject *parent = nullptr);
 	~AuthManager() override;
 
@@ -68,7 +79,13 @@ public:
 	// True only while StartLogin() is actively waiting on the browser/poll
 	// loop -- the dock uses this to show "waiting for browser..." instead of
 	// the plain "sign in" button.
-	bool IsLoggingIn() const { return pollTimer_ != nullptr; }
+	// Also true between StartLogin() and the server's answer, so a second
+	// click can't start a second sign-in.
+	bool IsLoggingIn() const { return startingLogin_ || pollTimer_ != nullptr; }
+	LoginError LastError() const { return lastError_; }
+	// The one-time sign-in page, while waiting for it to be confirmed (empty
+	// otherwise). Offered as "Copy link" when the browser didn't open.
+	std::string PendingUrl() const { return pendingUrl_; }
 	std::string DisplayName() const { return displayName_; }
 	// Empty if the account has no email on file (some OAuth-only sign-ins) or
 	// this hasn't been fetched/loaded yet -- callers must handle that the same
@@ -85,6 +102,9 @@ public:
 	// already in progress or the user is already logged in (call Logout()
 	// first to switch accounts).
 	void StartLogin();
+	// Stops waiting for the browser (the dock's "Cancel"). A server answer
+	// still in flight for this attempt is ignored when it arrives.
+	void CancelLogin();
 
 	void Logout();
 
@@ -127,7 +147,13 @@ private:
 	std::string displayName_;
 	std::string email_;
 	std::string pendingDeviceCode_;
+	std::string pendingUrl_;
 	int pollAttemptsLeft_ = 0;
+	bool startingLogin_ = false;
+	// Bumped by StartLogin()/CancelLogin(): replies tagged with an older value
+	// belong to an abandoned attempt.
+	int loginAttempt_ = 0;
+	LoginError lastError_ = LoginError::None;
 
 	StatusChangedCallback onStatusChanged_;
 };

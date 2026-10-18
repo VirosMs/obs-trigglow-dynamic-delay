@@ -107,7 +107,23 @@ void AuthManager::StartLogin()
 {
 	if (IsLoggedIn() || IsLoggingIn())
 		return;
+	++loginAttempt_;
+	startingLogin_ = true;
+	lastError_ = LoginError::None;
+	NotifyChanged(); // The dock shows "waiting" (with Cancel) right away.
 	RequestDeviceCode();
+}
+
+void AuthManager::CancelLogin()
+{
+	if (!IsLoggingIn())
+		return;
+	++loginAttempt_;
+	startingLogin_ = false;
+	lastError_ = LoginError::None;
+	StopPolling();
+	TRIGGLOW_LOG_INFO(kComponent, "sign-in cancelled from the dock");
+	NotifyChanged();
 }
 
 void AuthManager::Logout()
@@ -115,6 +131,7 @@ void AuthManager::Logout()
 	token_.clear();
 	displayName_.clear();
 	email_.clear();
+	lastError_ = LoginError::None;
 	ClearPersistedToken();
 	StopPolling();
 	TRIGGLOW_LOG_INFO(kComponent, "logged out");
@@ -139,20 +156,33 @@ void AuthManager::RunHttp(std::function<HttpResult()> request, std::function<voi
 
 void AuthManager::RequestDeviceCode()
 {
+	const int attempt = loginAttempt_;
 	RunHttp([]() { return HttpsPostJson(kApiHost, L"/auth/plugin/start", "{}"); },
-		[this](const HttpResult &result) {
+		[this, attempt](const HttpResult &result) {
+			if (attempt != loginAttempt_)
+				return; // Cancelled (or restarted) while this was in flight.
+			startingLogin_ = false;
+			// Every failure below used to go to the log only, leaving the
+			// Sign in button looking like it did nothing.
+			auto fail = [this] {
+				lastError_ = LoginError::Network;
+				NotifyChanged();
+			};
 			if (!result.ok) {
 				TRIGGLOW_LOG_WARN(kComponent, "failed to start login: %s", result.error.c_str());
+				fail();
 				return;
 			}
 			if (result.statusCode < 200 || result.statusCode >= 300) {
 				TRIGGLOW_LOG_WARN(kComponent, "login start returned HTTP %d", result.statusCode);
+				fail();
 				return;
 			}
 
 			obs_data_t *data = obs_data_create_from_json(result.body.c_str());
 			if (!data) {
 				TRIGGLOW_LOG_WARN(kComponent, "login start returned invalid JSON");
+				fail();
 				return;
 			}
 			const char *deviceCode = obs_data_get_string(data, "deviceCode");
@@ -161,15 +191,19 @@ void AuthManager::RequestDeviceCode()
 				TRIGGLOW_LOG_WARN(kComponent,
 						  "login start response missing deviceCode/verificationUrl");
 				obs_data_release(data);
+				fail();
 				return;
 			}
 
 			pendingDeviceCode_ = deviceCode;
+			pendingUrl_ = verificationUrl;
 			TRIGGLOW_LOG_INFO(kComponent, "opening browser at %s", verificationUrl);
 			bool opened = QDesktopServices::openUrl(QUrl(QString::fromUtf8(verificationUrl)));
 			TRIGGLOW_LOG_INFO(kComponent, "QDesktopServices::openUrl returned %s",
 					  opened ? "true" : "false");
 			obs_data_release(data);
+			// Keep waiting either way: the user can open the copied link.
+			lastError_ = opened ? LoginError::None : LoginError::Browser;
 
 			pollAttemptsLeft_ = kMaxPollAttempts;
 			pollTimer_ = new QTimer(this);
@@ -189,13 +223,17 @@ void AuthManager::PollOnce()
 	if (--pollAttemptsLeft_ <= 0) {
 		TRIGGLOW_LOG_INFO(kComponent, "login wait timed out (5 min) -- try Sign in again");
 		StopPolling();
+		lastError_ = LoginError::Expired;
 		NotifyChanged();
 		return;
 	}
 
+	const int attempt = loginAttempt_;
 	std::wstring path = L"/auth/plugin/poll?code=" + Utf8ToWide(pendingDeviceCode_);
 	RunHttp([path]() { return HttpsGet(kApiHost, path); },
-		[this](const HttpResult &result) {
+		[this, attempt](const HttpResult &result) {
+			if (attempt != loginAttempt_ || !IsLoggingIn())
+				return; // Cancelled, or already resolved by an earlier tick.
 			if (!result.ok)
 				return; // Transient network hiccup -- just wait for the next tick.
 
@@ -208,6 +246,7 @@ void AuthManager::PollOnce()
 				const char *tokenStr = obs_data_get_string(data, "token");
 				if (tokenStr && *tokenStr) {
 					token_ = tokenStr;
+					lastError_ = LoginError::None;
 					StopPolling();
 					PersistToken();
 					TRIGGLOW_LOG_INFO(kComponent, "login completed");
@@ -219,6 +258,7 @@ void AuthManager::PollOnce()
 				// the dock's Sign in button lets the user start over.
 				TRIGGLOW_LOG_WARN(kComponent, "login link code expired or already used");
 				StopPolling();
+				lastError_ = LoginError::Expired;
 				NotifyChanged();
 			}
 			// "pending": nothing to do, next timer tick tries again.
@@ -234,6 +274,7 @@ void AuthManager::StopPolling()
 		pollTimer_ = nullptr;
 	}
 	pendingDeviceCode_.clear();
+	pendingUrl_.clear();
 }
 
 void AuthManager::ValidateStoredToken()
@@ -255,6 +296,7 @@ void AuthManager::ValidateStoredToken()
 					token_.clear();
 					displayName_.clear();
 					email_.clear();
+					lastError_ = LoginError::SessionEnded;
 					ClearPersistedToken();
 					NotifyChanged();
 				}

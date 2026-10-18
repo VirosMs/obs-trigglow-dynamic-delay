@@ -188,6 +188,12 @@ public:
 		onSceneListRefresh_ = std::move(callback);
 	}
 
+	// Fires when OBS switches theme or font size
+	// (OBS_FRONTEND_EVENT_THEME_CHANGED): the dock recomputes its colors and
+	// fonts from the new palette. Here only because the frontend bridge's
+	// single event handler is this controller.
+	void SetThemeChangedCallback(std::function<void()> callback) { onThemeChanged_ = std::move(callback); }
+
 private:
 	void SetState(BufferModeState state, std::string message = {});
 	void NotifyStatusChanged();
@@ -248,6 +254,7 @@ private:
 	bool liveSceneRenderingHeld_ = false;
 	BufferStatusChangedCallback onStatusChanged_;
 	SceneListRefreshCallback onSceneListRefresh_;
+	std::function<void()> onThemeChanged_;
 	std::function<bool()> isAuthorized_;
 };
 

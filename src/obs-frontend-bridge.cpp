@@ -1161,6 +1161,9 @@ void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, voi
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		mapped = FrontendEvent::FinishedLoading;
 		break;
+	case OBS_FRONTEND_EVENT_THEME_CHANGED:
+		mapped = FrontendEvent::ThemeChanged;
+		break;
 	default:
 		return; // Don't spam the handler with events we don't act on.
 	}

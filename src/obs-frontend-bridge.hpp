@@ -78,6 +78,7 @@ enum class FrontendEvent {
 	RecordingStarted,
 	ReplayBufferStarted,
 	FinishedLoading,
+	ThemeChanged, // OBS switched theme (or its font size): the dock restyles itself.
 	Other,
 };
 
