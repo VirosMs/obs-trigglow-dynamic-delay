@@ -134,6 +134,10 @@ void TrigglowDelayDock::BuildUi()
 	outer->setContentsMargins(0, 0, 0, 0);
 	auto *scroll = new QScrollArea(this);
 	scroll->setObjectName(QStringLiteral("tgDockScroll"));
+	// Out of the tab order: as a focus stop it was the dock's first one and
+	// showed no focus at all. Keyboard users still scroll it: QScrollArea
+	// brings each focused child into view.
+	scroll->setFocusPolicy(Qt::NoFocus);
 	scroll->setWidgetResizable(true);
 	scroll->setFrameShape(QFrame::NoFrame);
 	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);

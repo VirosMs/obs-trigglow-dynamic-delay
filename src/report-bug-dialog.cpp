@@ -52,6 +52,15 @@ constexpr const char *kComponent = "report-bug-dialog";
 constexpr const wchar_t *kApiHost = L"api.trigglow.com"; // Matches auth-manager.cpp's kApiHost.
 constexpr const char *kSupportWebOrigin = "https://www.trigglow.com";
 
+// Widths (logical px). The dialog opens at kDefaultWidth and can shrink to
+// kMinimumWidth; Name | Email stack below kTwoColumnWidth, and the browser
+// note moves above the buttons below kFooterRowWidth (it would wrap word by
+// word next to them).
+constexpr int kMinimumWidth = 340;
+constexpr int kDefaultWidth = 460;
+constexpr int kTwoColumnWidth = 400;
+constexpr int kFooterRowWidth = 440;
+
 // Str() (i18n.hpp) returns const char*/UTF-8 -- every user-facing string in
 // this file goes through this tiny wrapper instead of a bare
 // QString::fromUtf8(Str(...)) at each call site.
@@ -293,8 +302,15 @@ void ReportBugDialog::BuildUi()
 	emailEdit_->setAccessibleDescription(T("ReportDialog.EmailHelp"));
 	nameError_ = MakeFieldError(this);
 	emailError_ = MakeFieldError(this);
+	// The email's help goes under the email field (it used to sit under both
+	// columns, i.e. under Name); while the email shows an error, the error
+	// takes its place (ShowFieldError/ClearErrors).
+	emailHelp_ = new QLabel(T("ReportDialog.EmailHelp"), this);
+	emailHelp_->setProperty("tgRole", QStringLiteral("hint"));
+	emailHelp_->setWordWrap(true);
 
-	// Name | Email in two columns from 400 px, stacked below (resizeEvent).
+	// Name | Email in two columns from kTwoColumnWidth, stacked below
+	// (resizeEvent).
 	identityRow_ = new QBoxLayout(QBoxLayout::LeftToRight);
 	identityRow_->setSpacing(12);
 	{
@@ -309,15 +325,12 @@ void ReportBugDialog::BuildUi()
 		emailColumn->addWidget(MakeFieldLabel(T("ReportDialog.EmailLabel"), emailEdit_, this));
 		emailColumn->addWidget(emailEdit_);
 		emailColumn->addWidget(emailError_->parentWidget());
+		emailColumn->addWidget(emailHelp_);
 		emailColumn->addStretch(1);
 		identityRow_->addLayout(nameColumn, 1);
 		identityRow_->addLayout(emailColumn, 1);
 	}
 	body->addLayout(identityRow_);
-	auto *emailHelp = new QLabel(T("ReportDialog.EmailHelp"), this);
-	emailHelp->setProperty("tgRole", QStringLiteral("hint"));
-	emailHelp->setWordWrap(true);
-	body->addWidget(emailHelp);
 
 	body->addSpacing(8);
 	messageEdit_ = new QPlainTextEdit(this);
@@ -372,9 +385,11 @@ void ReportBugDialog::BuildUi()
 	footerLine->setProperty("tgDivider", QStringLiteral("true"));
 	footerLine->setFixedHeight(1);
 	root->addWidget(footerLine);
-	auto *buttonRow = new QHBoxLayout();
-	buttonRow->setContentsMargins(18, 12, 18, 14);
-	buttonRow->setSpacing(8);
+	// The note and the buttons side by side from kFooterRowWidth; below it the
+	// note goes on its own line above the buttons (resizeEvent).
+	footerRow_ = new QBoxLayout(QBoxLayout::LeftToRight);
+	footerRow_->setContentsMargins(18, 12, 18, 14);
+	footerRow_->setSpacing(8);
 	opensBrowserIcon_ = new QLabel(this);
 	opensBrowserIcon_->setFixedSize(14, 14);
 	auto *opensBrowser = new QLabel(T("ReportDialog.OpensBrowser"), this);
@@ -387,11 +402,18 @@ void ReportBugDialog::BuildUi()
 	submitButton_ = new QPushButton(T("ReportDialog.Submit"), this);
 	submitButton_->setProperty("tgVariant", QStringLiteral("primary"));
 	submitButton_->setDefault(true);
-	buttonRow->addWidget(opensBrowserIcon_, 0, Qt::AlignVCenter);
-	buttonRow->addWidget(opensBrowser, 1);
-	buttonRow->addWidget(cancelButton_);
-	buttonRow->addWidget(submitButton_);
-	root->addLayout(buttonRow);
+	auto *noteRow = new QHBoxLayout();
+	noteRow->setSpacing(8);
+	noteRow->addWidget(opensBrowserIcon_, 0, Qt::AlignVCenter);
+	noteRow->addWidget(opensBrowser, 1);
+	auto *buttons = new QHBoxLayout();
+	buttons->setSpacing(8);
+	buttons->addStretch(1);
+	buttons->addWidget(cancelButton_);
+	buttons->addWidget(submitButton_);
+	footerRow_->addLayout(noteRow, 1);
+	footerRow_->addLayout(buttons, 0);
+	root->addLayout(footerRow_);
 
 	connect(cancelButton_, &QPushButton::clicked, this, &QDialog::reject);
 	connect(submitButton_, &QPushButton::clicked, this, [this] { OnSubmitClicked(); });
@@ -405,8 +427,22 @@ void ReportBugDialog::BuildUi()
 	TrackEmpty(emailEdit_, true);
 	TrackEmpty(messageEdit_, true);
 
-	setMinimumWidth(420);
+	// Narrow enough for large OBS font sizes and small screens, where the
+	// rows reflow (resizeEvent); it still opens at a comfortable width.
+	setMinimumWidth(kMinimumWidth);
 	ApplyTheme();
+	ApplyWidthLayout(kDefaultWidth);
+	resize(kDefaultWidth,
+	       layout()->hasHeightForWidth() ? layout()->totalHeightForWidth(kDefaultWidth) : sizeHint().height());
+}
+
+void ReportBugDialog::ApplyWidthLayout(int width)
+{
+	if (identityRow_)
+		identityRow_->setDirection(width >= kTwoColumnWidth ? QBoxLayout::LeftToRight
+								    : QBoxLayout::TopToBottom);
+	if (footerRow_)
+		footerRow_->setDirection(width >= kFooterRowWidth ? QBoxLayout::LeftToRight : QBoxLayout::TopToBottom);
 }
 
 void ReportBugDialog::ApplyTheme()
@@ -441,9 +477,7 @@ void ReportBugDialog::ApplyTheme()
 void ReportBugDialog::resizeEvent(QResizeEvent *event)
 {
 	QDialog::resizeEvent(event);
-	if (identityRow_)
-		identityRow_->setDirection(event->size().width() >= 400 ? QBoxLayout::LeftToRight
-									: QBoxLayout::TopToBottom);
+	ApplyWidthLayout(event->size().width());
 }
 
 void ReportBugDialog::ShowFieldError(QWidget *field, QLabel *errorLabel, const QString &message)
@@ -451,6 +485,8 @@ void ReportBugDialog::ShowFieldError(QWidget *field, QLabel *errorLabel, const Q
 	ui::SetStyleProperty(field, "tgInvalid", QStringLiteral("true"));
 	errorLabel->setText(message);
 	errorLabel->parentWidget()->setVisible(true);
+	if (errorLabel == emailError_)
+		emailHelp_->setVisible(false); // The error takes the help's place.
 	field->setFocus();
 	if (QAccessible::isActive()) {
 		QAccessibleEvent event(errorLabel, QAccessible::Alert);
@@ -464,6 +500,7 @@ void ReportBugDialog::ClearErrors()
 		ui::SetStyleProperty(field, "tgInvalid", QStringLiteral("false"));
 	for (QLabel *label : {nameError_, emailError_, messageError_})
 		label->parentWidget()->setVisible(false);
+	emailHelp_->setVisible(true);
 	errorBanner_->setVisible(false);
 }
 

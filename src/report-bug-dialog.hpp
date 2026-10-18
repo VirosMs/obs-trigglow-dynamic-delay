@@ -65,6 +65,10 @@ protected:
 
 private:
 	void BuildUi();
+	// Name | Email in two columns, and the browser note beside the buttons,
+	// when `width` has room for them; stacked otherwise (see the widths in
+	// report-bug-dialog.cpp).
+	void ApplyWidthLayout(int width);
 	// Same tokens/fonts/icons as the dock (ui-theme.hpp), so the dialog looks
 	// the same whether or not it inherits the dock's style sheet.
 	void ApplyTheme();
@@ -98,7 +102,9 @@ private:
 	QLabel *nameError_ = nullptr;
 	QLabel *emailError_ = nullptr;
 	QLabel *messageError_ = nullptr;
+	QLabel *emailHelp_ = nullptr;       // Under the email field; the email's error takes its place.
 	QBoxLayout *identityRow_ = nullptr; // Name | Email side by side, stacked when narrow.
+	QBoxLayout *footerRow_ = nullptr;   // Browser note | buttons; the note above them when narrow.
 	QFrame *errorBanner_ = nullptr;
 	QLabel *errorBannerIcon_ = nullptr;
 	QLabel *statusLabel_ = nullptr; // Text of errorBanner_.
