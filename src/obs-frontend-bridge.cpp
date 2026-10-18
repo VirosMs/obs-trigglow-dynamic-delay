@@ -555,24 +555,59 @@ void ObsFrontendBridge::DisableAllDelayFilters() const
 	// while the delay was Active leaves them enabled in the saved collection:
 	// the next start would delay the scene permanently with the plugin
 	// showing Inactive. Called once the collection has finished loading.
-	struct Ctx {
-		int disabled = 0;
-	} ctx;
-	obs_enum_sources(
-		[](void *param, obs_source_t *source) -> bool {
-			const char *id = obs_source_get_id(source);
-			if (id &&
-			    (strcmp(id, VideoDelayFilter::Id()) == 0 || strcmp(id, AudioDelayFilter::Id()) == 0) &&
-			    obs_source_enabled(source)) {
-				obs_source_set_enabled(source, false);
-				++static_cast<Ctx *>(param)->disabled;
-			}
-			return true;
-		},
-		&ctx);
-	if (ctx.disabled > 0)
+	//
+	// Filters are never returned by obs_enum_sources() (inputs and groups
+	// only), so they are reached through every source that can carry one
+	// (libobs 31.1.1, see the header): inputs and groups (obs_enum_sources),
+	// the main canvas's scenes, where the video filter lives
+	// (obs_enum_scenes, which skips groups), and the global audio sources on
+	// the output channels (obs_get_output_source). A source reached twice
+	// (a global audio input is also an input) is harmless: its filters are
+	// already off the second time.
+	//
+	// Three passes so nothing runs under a libobs lock: obs_source_set_enabled()
+	// emits the "enable" signal, and its handlers must be free to take the
+	// sources or filter mutexes themselves.
+	std::vector<obs_source_t *> parents; // Strong refs.
+	auto collectParent = [](void *param, obs_source_t *source) -> bool {
+		if (obs_source_t *ref = obs_source_get_ref(source))
+			static_cast<std::vector<obs_source_t *> *>(param)->push_back(ref);
+		return true;
+	};
+	obs_enum_sources(collectParent, &parents);
+	obs_enum_scenes(collectParent, &parents);
+	for (uint32_t channel = 0; channel < MAX_CHANNELS; ++channel) {
+		if (obs_source_t *source = obs_get_output_source(channel)) // Already +1.
+			parents.push_back(source);
+	}
+
+	std::vector<obs_source_t *> filters; // Strong refs.
+	for (obs_source_t *parent : parents) {
+		obs_source_enum_filters(
+			parent,
+			[](obs_source_t *, obs_source_t *filter, void *param) {
+				const char *id = obs_source_get_id(filter);
+				if (!id || (strcmp(id, VideoDelayFilter::Id()) != 0 &&
+					    strcmp(id, AudioDelayFilter::Id()) != 0))
+					return;
+				if (obs_source_t *ref = obs_source_get_ref(filter))
+					static_cast<std::vector<obs_source_t *> *>(param)->push_back(ref);
+			},
+			&filters);
+		obs_source_release(parent);
+	}
+
+	int disabled = 0;
+	for (obs_source_t *filter : filters) {
+		if (obs_source_enabled(filter)) {
+			obs_source_set_enabled(filter, false);
+			++disabled;
+		}
+		obs_source_release(filter);
+	}
+	if (disabled > 0)
 		TRIGGLOW_LOG_INFO(kComponent, "switched off %d delay filter(s) left enabled by a previous session",
-				  ctx.disabled);
+				  disabled);
 }
 
 bool ObsFrontendBridge::SetDelayOverlay(bool visible, const std::string &text, uint32_t corner) const

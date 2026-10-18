@@ -47,6 +47,17 @@ extern "C" {
 //   - obs_frontend_get_scenes() / obs_frontend_source_list_free()
 //   - obs_frontend_get_current_scene() / obs_frontend_set_current_scene()
 //   - obs_source_get_name() / obs_source_release()
+// Re-verified 2026-10-18 against the libobs 31.1.1 sources this plugin builds
+// with (.deps/obs-studio-31.1.1), for DisableAllDelayFilters() and
+// ListActiveMainCanvasVideoEncoders():
+//   - obs_enum_sources(): non-private inputs AND groups, never filters (obs.c)
+//   - obs_enum_scenes(): the main canvas's scenes only, no groups (obs.c,
+//     obs_canvas_enum_scenes + obs_source_is_scene)
+//   - obs_get_output_source(): +1 ref (obs_view_get_source), release it
+//   - obs_source_enum_filters(): calls back under the parent's filter_mutex
+//   - obs_enum_outputs(): calls back under obs->data.outputs_mutex
+//   - obs_output_get_video_encoder2() / obs_encoder_get_width/height() /
+//     obs_encoder_parent_video(): plain reads, no locks, no refs
 namespace trigglow {
 
 // Mirrors the subset of obs_frontend_event we care about, so callers outside
@@ -220,8 +231,9 @@ public:
 	bool SetDelayOverlay(bool visible, const std::string &text, uint32_t corner = 0) const;
 	// corner: 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right of the canvas.
 
-	// Switches off every Trigglow delay filter in the scene collection (see the
-	// definition for why). Safe to call whenever the delay is Inactive.
+	// Switches off every Trigglow delay filter (video and audio) attached to
+	// any input, group, scene of the main canvas or global audio source (see
+	// the definition for why). Safe to call whenever the delay is Inactive.
 	void DisableAllDelayFilters() const;
 
 	// Switches Program to the wrapper scene created by EnsureBufferWrapperScene.
