@@ -39,8 +39,38 @@ struct UpdateCheckResult {
 	bool checked = false;
 	bool updateAvailable = false;
 	std::string latestVersion; // e.g. "0.4.0" (leading 'v' already stripped). Empty if !checked.
-	std::string releaseUrl;    // GitHub release page to open on click. Empty if !checked.
+	// GitHub release page to open on click: always one of this repo's release
+	// pages (see IsOwnReleasePageUrl). Empty if !checked.
+	std::string releaseUrl;
 };
+
+// This repo's release pages, the only URLs the update notice ever opens.
+inline constexpr const char *kOwnReleasePagePrefix = "https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/";
+inline constexpr const char *kOwnLatestReleasePage =
+	"https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest";
+
+// True only for kOwnReleasePagePrefix followed by a plain path ([A-Za-z0-9._-]
+// segments separated by single '/', no ".."): html_url comes from the
+// network, so another host or repo, another scheme, a query, a fragment,
+// percent-escapes, whitespace or control characters are all rejected.
+inline bool IsOwnReleasePageUrl(const std::string &url)
+{
+	const std::string prefix = kOwnReleasePagePrefix;
+	if (url.size() <= prefix.size() || url.compare(0, prefix.size(), prefix) != 0)
+		return false;
+	char previous = '/';
+	for (size_t i = prefix.size(); i < url.size(); ++i) {
+		const char c = url[i];
+		const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+				   c == '.' || c == '-' || c == '_';
+		if (!plain && c != '/')
+			return false;
+		if (c == '/' && previous == '/')
+			return false;
+		previous = c;
+	}
+	return url.find("..", prefix.size()) == std::string::npos;
+}
 
 // BLOCKING -- callers must not run this on the UI thread, same contract as
 // every call in win-http.hpp (this is built directly on top of HttpsGet).

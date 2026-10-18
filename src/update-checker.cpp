@@ -97,7 +97,17 @@ UpdateCheckResult CheckForUpdate(const std::string &currentVersion)
 
 	result.checked = true;
 	result.latestVersion = latest;
-	result.releaseUrl = htmlUrl ? htmlUrl : "";
+	// Only this repo's release pages are ever opened; anything else in the
+	// response falls back to the fixed latest-release page.
+	if (htmlUrl && IsOwnReleasePageUrl(htmlUrl)) {
+		result.releaseUrl = htmlUrl;
+	} else {
+		if (htmlUrl && *htmlUrl)
+			TRIGGLOW_LOG_WARN(kComponent,
+					  "update check: html_url is not one of this repo's release pages -- "
+					  "linking the latest-release page instead");
+		result.releaseUrl = kOwnLatestReleasePage;
+	}
 	result.updateAvailable = IsNewer(latest, currentVersion);
 
 	obs_data_release(data);
