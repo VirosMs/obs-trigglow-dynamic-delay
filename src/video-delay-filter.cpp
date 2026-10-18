@@ -32,6 +32,13 @@ extern "C" {
 #include <util/platform.h> // os_gettime_ns()
 }
 
+#ifdef TRIGGLOW_HAVE_FFMPEG
+extern "C" {
+#include <libavutil/error.h> // av_strerror()
+#include <libavutil/opt.h>   // av_opt_set(), for the MJPEG encoder's "huffman" option
+}
+#endif
+
 namespace trigglow {
 
 namespace {
@@ -705,13 +712,25 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 	// MJPEG (we use AV_CODEC_FLAG_QSCALE, which skips its single-thread
 	// exception), and frame threads hand packets back 1-2 calls late --
 	// receive_packet() returns EAGAIN in the same tick, which this path treats
-	// as a failed encode and stores the frame raw, so RAM would balloon. With
-	// more than one slice FFmpeg also switches to its default Huffman tables
-	// on its own; "huffman" is deliberately left untouched.
+	// as a failed encode and stores the frame raw, so RAM would balloon.
+	//
+	// huffman=default (v0.5.1): the standard JPEG Huffman tables instead of
+	// FFmpeg's default "optimal" ones, which cost a second pass over every
+	// frame to build per-frame tables. With more than one slice FFmpeg already
+	// falls back to the standard tables on its own; setting it explicitly also
+	// covers the single-threaded encoder (CPUs with fewer than 8 logical
+	// cores, and the single-threaded reopen below): 10-17% less encode time
+	// there (p50-p95, 1440p) for ~3% bigger packets, measured with the
+	// vendored n9.0.2. Huffman coding is lossless, so the decoded frames are
+	// identical (same PSNR). The tables are still written into every packet
+	// (DHT), so the decoder needs nothing special. A failure is logged and
+	// harmless (FFmpeg then keeps its own choice).
+	int huffmanResult = 0;
 	auto openEncoder = [&](int threads) -> bool {
 		encoderCtx_ = avcodec_alloc_context3(encoder);
 		if (!encoderCtx_)
 			return false;
+		huffmanResult = av_opt_set(encoderCtx_->priv_data, "huffman", "default", 0);
 		encoderCtx_->width = static_cast<int>(bufferWidth_);
 		encoderCtx_->height = static_cast<int>(bufferHeight_);
 		// Modern replacement for the deprecated AV_PIX_FMT_YUVJ420P: plain 4:2:0
@@ -817,12 +836,18 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 		return;
 	}
 
-	TRIGGLOW_LOG_INFO(kComponent,
-			  "MJPEG encoder/decoder open at %ux%u (quality qscale=%d, encoder threads=%d of %d requested "
-			  "for %u logical CPUs, active_thread_type=%d, decoder threads=%d)",
-			  bufferWidth_, bufferHeight_, kMjpegQuality, encoderCtx_->thread_count, sliceThreads,
-			  std::thread::hardware_concurrency(), encoderCtx_->active_thread_type,
-			  decoderCtx_->thread_count);
+	char huffman[96] = "default";
+	if (huffmanResult < 0) {
+		char error[64] = "";
+		av_strerror(huffmanResult, error, sizeof(error));
+		std::snprintf(huffman, sizeof(huffman), "FFmpeg's choice, setting default failed: %s", error);
+	}
+	TRIGGLOW_LOG_INFO(
+		kComponent,
+		"MJPEG encoder/decoder open at %ux%u (quality qscale=%d, huffman=%s, encoder threads=%d of %d "
+		"requested for %u logical CPUs, active_thread_type=%d, decoder threads=%d)",
+		bufferWidth_, bufferHeight_, kMjpegQuality, huffman, encoderCtx_->thread_count, sliceThreads,
+		std::thread::hardware_concurrency(), encoderCtx_->active_thread_type, decoderCtx_->thread_count);
 }
 
 void VideoDelayFilter::ReleaseCodecContexts()
