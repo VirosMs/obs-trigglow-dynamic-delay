@@ -52,7 +52,8 @@ constexpr const char *kSettingMinResolutionHeight = "min_resolution_height";
 constexpr const char *kSettingBufferOutputCap = "buffer_output_cap";
 // Hidden v0.6.0 kill switch, same mechanism as buffer_output_cap (pushed by
 // ObsFrontendBridge::SetBufferFilterCodecWorkers() on every Enable()): false
-// runs the MJPEG encode/decode on the graphics thread, no worker threads.
+// runs the MJPEG encode/decode on the graphics thread, no codec worker threads
+// (the pipeline's reaper thread still frees memory off it).
 constexpr const char *kSettingCodecWorkers = "codec_workers";
 
 // RAM budget for the ring buffer. Even stored as NV12/I420 (1.5 bytes/pixel)
@@ -562,12 +563,13 @@ void VideoDelayFilter::InvalidatePlaybackCache()
 
 void VideoDelayFilter::StopCycle(bool releaseCodecs)
 {
-	// Threaded: the pipeline hands its reference to the ring to a codec
-	// worker, so dropping ours below never frees it here (design B.6: the
-	// graphics thread never frees gigabytes nor waits for a worker). Sync
-	// path: there is no worker, the ring is freed right here, like v0.5.1.
+	// Our reference goes to the pipeline's reaper thread along with its own
+	// and the queued jobs': none is dropped here, so the ring (and its arena,
+	// hundreds of MB) is never freed on the graphics thread, whichever
+	// reference turns out to be the last (design B.6: G never frees gigabytes
+	// nor waits for a worker; with codec_workers=false too).
 	if (pipeline_)
-		pipeline_->Detach(releaseCodecs);
+		pipeline_->Detach(releaseCodecs, std::move(ring_));
 	ring_.reset();
 	for (auto &slot : stagingSlots_)
 		slot.pending = false;
@@ -1685,18 +1687,17 @@ void VideoDelayFilter::ReleaseBuffersTask(void *param)
 	// Last partial telemetry window of this cycle (needs the ring for its
 	// memory figures, so before StopCycle()); the next cycle starts a fresh one.
 	filter->LogPerfWindow("filter disabled");
-	const bool threaded = filter->pipeline_ && filter->pipeline_->Threaded();
-	// Codecs closed (by the threads that own them) and every GPU object freed
-	// while the delay is off (perf2 #4: ~100MB of RAM and ~37MB of VRAM at
-	// 1440p); reopening them on the next Enable costs about a millisecond.
+	// Codecs closed (by the threads that own them), the ring and the RawFrame
+	// pool handed to the reaper thread, and every GPU object freed while the
+	// delay is off (perf2 #4: ~100MB of RAM and ~37MB of VRAM at 1440p);
+	// reopening them on the next Enable costs about a millisecond.
 	filter->StopCycle(true);
 	filter->ReleaseSizedGpuObjects();
 	filter->bufferWidth_ = 0;
 	filter->bufferHeight_ = 0;
 	filter->PublishHealth(false);
-	TRIGGLOW_LOG_INFO(kComponent,
-			  "released the delay buffer (filter disabled): %s, codecs closed, GPU objects freed",
-			  threaded ? "ring handed to a codec worker to free" : "ring freed");
+	TRIGGLOW_LOG_INFO(kComponent, "released the delay buffer (filter disabled): ring and frame pool handed to "
+				      "the reaper thread to free, codecs closed, GPU objects freed");
 }
 
 namespace {

@@ -75,7 +75,8 @@ extern "C" {
 // policy.hpp): more encode threads, then a lower capture resolution (never
 // below the user's quality floor), then half the capture frame rate. The
 // hidden "codec_workers" setting (false) is the kill switch back to doing the
-// codec work on the graphics thread (same ring, no threads).
+// codec work on the graphics thread (same ring, no codec threads; memory is
+// still freed on the pipeline's reaper thread).
 //
 // Memory is the hard constraint, not CPU: EnsureRingSized() picks a buffer
 // budget from the machine's total system RAM (src/hardware-info.hpp) and
@@ -212,12 +213,12 @@ private:
 	// target resolution, delay, quality floor and frame rate. No-op if the
 	// current ring already matches. A real change -- OBS video settings, delay
 	// or quality changed, or the kill switch flipped -- is a "hard resize": the
-	// old ring goes to a worker to be freed and a new one fills from empty.
+	// old ring goes to the reaper thread to be freed and a new one fills from empty.
 	// Graphics thread only (it can destroy resolution-sized GPU objects).
 	void EnsureRingSized(uint32_t width, uint32_t height);
 	// Ends the current cycle: the pipeline drops queued work and decoded
-	// frames and hands the ring to its reaper (codec workers) -- or frees it
-	// right here on the sync path. Graphics thread only; never waits on a worker.
+	// frames and hands the ring (ours included) to its reaper thread, which
+	// frees it. Graphics thread only; never waits on a worker, never frees it here.
 	void StopCycle(bool releaseCodecs);
 	void ReleaseGpuObjects();      // Frees the ENTIRE GPU pool, effect included -- destructor only.
 	void ReleaseSizedGpuObjects(); // Frees the resolution-sized objects (resize, Disable).
@@ -281,9 +282,10 @@ private:
 	// practice the Qt dock's button-click thread), but the ring, the pipeline
 	// and the GPU objects belong to the graphics thread, so it hops onto that
 	// thread via obs_queue_task. Since v0.6.0 the task only DETACHES the ring
-	// (a codec worker frees its RAM a moment later), closes the codecs (each
-	// worker closes its own) and frees the GPU objects (perf2 #4): wait=true
-	// now means "released from the filter", not "RAM already returned".
+	// and the RawFrame pool (the pipeline's reaper thread frees their RAM a
+	// moment later), closes the codecs (each worker closes its own) and frees
+	// the GPU objects (perf2 #4): wait=true now means "released from the
+	// filter", not "RAM already returned".
 	static void ReleaseBuffersProc(void *data, calldata_t *params);
 	static void ReleaseBuffersTask(void *param);
 
@@ -326,7 +328,7 @@ private:
 	// from the plugin settings file, through ObsFrontendBridge.
 	std::atomic<bool> configuredOutputCap_{true};
 	// Hidden "codec_workers" setting (v0.6.0 kill switch): false = encode and
-	// decode on the graphics thread (no worker threads), like v0.5.1. Only
+	// decode on the graphics thread (no codec threads), like v0.5.1. Only
 	// ever set from the plugin settings file, through ObsFrontendBridge.
 	std::atomic<bool> configuredCodecWorkers_{true};
 

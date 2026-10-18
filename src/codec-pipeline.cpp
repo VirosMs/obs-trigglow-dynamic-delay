@@ -50,6 +50,17 @@ public:
 	bool Decode(const uint8_t * /*packet*/, size_t /*bytes*/, DecodedImage & /*out*/) override { return false; }
 	void Release() override {}
 };
+
+// A RawFrame's storage as a reference the reaper can drop. The frame keeps no
+// storage (capacity 0): AcquireRawFrame()/Attach() allocate it again.
+std::shared_ptr<void> TakeStorage(RawFrame &frame)
+{
+	std::shared_ptr<uint8_t> storage(frame.storage.release(), std::default_delete<uint8_t[]>());
+	frame.capacity = 0;
+	for (auto &plane : frame.plane)
+		plane = nullptr;
+	return storage;
+}
 } // namespace
 
 size_t I420FrameBytes(uint32_t width, uint32_t height)
@@ -144,10 +155,73 @@ void CodecPipeline::Log(PipelineLogLevel level, const char *fmt, ...)
 	options_.log(level, line);
 }
 
+bool CodecPipeline::EnsureReaperLocked()
+{
+	if (reapThread_.joinable())
+		return true;
+	if (reaperFailed_ || stop_)
+		return false;
+	try {
+		reapThread_ = std::thread(&CodecPipeline::ReapLoop, this);
+	} catch (const std::system_error &error) {
+		reaperFailed_ = true;
+		Log(PipelineLogLevel::Warning,
+		    "could not start the buffer reaper thread (%s) -- freeing old buffers on the calling thread instead",
+		    error.what());
+		return false;
+	}
+	return true;
+}
+
+void CodecPipeline::ReapLocked(std::shared_ptr<void> object, std::vector<std::shared_ptr<void>> &fallback)
+{
+	if (!object)
+		return;
+	if (reapThread_.joinable()) {
+		reap_.push_back(std::move(object));
+		reapCv_.notify_one();
+	} else {
+		fallback.push_back(std::move(object));
+	}
+}
+
+void CodecPipeline::ReturnRawFrameLocked(RawFrame *frame, std::vector<std::shared_ptr<void>> &fallback)
+{
+	if (!frame)
+		return;
+	// Disabled: the pool keeps its frames but not their storage (~22 MB at 1440p).
+	if (rawPoolReleased_ && frame->storage)
+		ReapLocked(TakeStorage(*frame), fallback);
+	freeRaw_.push_back(frame);
+}
+
+void CodecPipeline::RequestTrim(const std::shared_ptr<FrameRing> &ring)
+{
+	if (!ring)
+		return;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (reapThread_.joinable()) {
+			if (std::find(trim_.begin(), trim_.end(), ring) == trim_.end())
+				trim_.push_back(ring);
+			reapCv_.notify_one();
+			return;
+		}
+	}
+	ring->Arena().Trim(); // No reaper thread: inline, like before.
+}
+
 void CodecPipeline::EnsureThreadsLocked()
 {
 	if (!options_.threaded || threadsFailed_ || stop_)
 		return;
+	if (!EnsureReaperLocked()) {
+		// The workers hand every ring they let go of to the reaper: no
+		// workers without one.
+		threadsFailed_ = true;
+		Log(PipelineLogLevel::Warning, "encoding and decoding on the graphics thread instead");
+		return;
+	}
 	try {
 		if (!decodeThread_.joinable())
 			decodeThread_ = std::thread(&CodecPipeline::DecodeLoop, this);
@@ -169,62 +243,83 @@ void CodecPipeline::Attach(std::shared_ptr<FrameRing> ring, uint32_t maxWidth, u
 			   uint64_t captureIntervalNs)
 {
 	Detach(false);
+	std::vector<RawFrame *> resize;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		ring_ = std::move(ring);
 		captureIntervalNs_ = std::max<uint64_t>(1, captureIntervalNs);
+		rawPoolReleased_ = false;
 		EnsureThreadsLocked();
-	}
-	// Size the RawFrames up front for the largest geometry this cycle can use,
-	// so the graphics thread doesn't allocate them mid-capture. Only frames
-	// sitting in the pool: ones still out (stale jobs) grow on their next use.
-	const size_t need = I420FrameBytes(maxWidth, maxHeight);
-	std::vector<RawFrame *> resize;
-	{
-		std::lock_guard<std::mutex> lock(mutex_);
+		EnsureReaperLocked(); // Sync mode too: memory is never freed on the graphics thread.
 		resize = freeRaw_;
 		freeRaw_.clear();
 	}
+	// Size the RawFrames up front for the largest geometry this cycle can use,
+	// so the graphics thread doesn't allocate them mid-capture (allocating is
+	// cheap: no page is touched). Only frames sitting in the pool: ones still
+	// out (stale jobs) grow on their next use. Smaller storage they had goes
+	// to the reaper.
+	const size_t need = I420FrameBytes(maxWidth, maxHeight);
+	std::vector<std::shared_ptr<void>> old;
 	for (RawFrame *frame : resize) {
 		if (frame->capacity < need) {
+			if (frame->storage)
+				old.push_back(TakeStorage(*frame));
 			frame->storage.reset(new (std::nothrow) uint8_t[need]);
 			frame->capacity = frame->storage ? need : 0;
 		}
 	}
+	std::vector<std::shared_ptr<void>> fallback;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		freeRaw_.insert(freeRaw_.end(), resize.begin(), resize.end());
+		for (auto &storage : old)
+			ReapLocked(std::move(storage), fallback);
 	}
 	encodeCv_.notify_all();
 	decodeCv_.notify_all();
+	// `fallback` (only without a reaper thread) is freed here.
 }
 
-void CodecPipeline::Detach(bool releaseCodecs)
+void CodecPipeline::Detach(bool releaseCodecs, std::shared_ptr<FrameRing> retiredRing)
 {
-	std::deque<EncodeJob> dropped;
-	std::vector<DecodedImage> images;
-	std::shared_ptr<FrameRing> inlineRing;
+	// Only without a reaper thread (it couldn't be started): freed on the
+	// caller once the lock is released, like v0.5.1 did.
+	std::vector<std::shared_ptr<void>> fallback;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		++epoch_;
-		if (ring_) {
-			// Threaded: worker 0 drops this reference, so the ring (and its
-			// arena) is freed off the graphics thread. Jobs below and any job
-			// in flight hold their own references; whichever is last frees it,
-			// and that's always a worker.
-			if (Threaded())
-				reap_.push_back(std::move(ring_));
-			else
-				inlineRing = std::move(ring_);
-			ring_.reset();
+		EnsureReaperLocked();
+		// Every reference the caller and the pipeline hold goes to the reaper
+		// -- the caller's, ours, the queued jobs' -- none is dropped here: if a
+		// worker had already let go of its own, the one dropped here would be
+		// the last, and the graphics thread would free the whole arena (QA:
+		// 31-47 ms, in 273 of 1200 cycles). A job in flight (an encode or a
+		// decode) keeps its own; that worker hands it over when it's done.
+		ReapLocked(std::move(retiredRing), fallback);
+		ReapLocked(std::move(ring_), fallback);
+		ring_.reset();
+		if (releaseCodecs) {
+			++releaseSerial_;
+			// Disable: the RawFrame storage goes too (frames still out drop
+			// theirs when they come back, see ReturnRawFrameLocked()).
+			rawPoolReleased_ = true;
+			for (RawFrame *frame : freeRaw_) {
+				if (frame->storage)
+					ReapLocked(TakeStorage(*frame), fallback);
+			}
 		}
-		dropped.swap(queue_);
-		for (EncodeJob &job : dropped)
-			freeRaw_.push_back(job.frame);
+		for (EncodeJob &job : queue_) {
+			ReapLocked(std::move(job.ring), fallback);
+			ReturnRawFrameLocked(job.frame, fallback);
+		}
+		queue_.clear();
 		for (DecodedEntry &entry : decoded_) {
 			if (entry.state == DecodedEntry::State::Ready) {
+				// Back to the decoder's buffer pool -- or freed, once the
+				// decoder closed its context: the reaper does either.
 				entry.state = DecodedEntry::State::Free;
-				images.push_back(std::move(entry.image));
+				ReapLocked(std::move(entry.image.owner), fallback);
 				entry.image = DecodedImage{};
 			}
 			// Decoding: the decoder sees the new epoch and frees it.
@@ -232,20 +327,14 @@ void CodecPipeline::Detach(bool releaseCodecs)
 		targetNs_ = 0;
 		lastShownNs_ = 0;
 		++wakeSerial_;
-		if (releaseCodecs)
-			++releaseSerial_;
 	}
 	encodeCv_.notify_all();
 	decodeCv_.notify_all();
-	// `dropped` and `images` are destroyed here: ring references that can't be
-	// the last (reap_ holds one) and decoded frames going back to the
-	// decoder's own buffer pool.
 	if (releaseCodecs && inlineCodec_) {
 		inlineCodec_->Release();
 		inlineScratch_ = std::vector<uint8_t>();
 	}
 	inlineFailedNs_ = 0;
-	// Sync mode only: the ring is freed right here on the caller, like v0.5.1.
 }
 
 void CodecPipeline::SetCaptureInterval(uint64_t captureIntervalNs)
@@ -289,12 +378,22 @@ RawFrame *CodecPipeline::AcquireRawFrame(uint32_t width, uint32_t height)
 	}
 	const size_t need = I420FrameBytes(width, height);
 	if (frame->capacity < need) {
+		// Came back from a stale job of a smaller cycle, or emptied by
+		// Disable: grows here. Old storage goes to the reaper.
+		std::shared_ptr<void> old = frame->storage ? TakeStorage(*frame) : nullptr;
 		frame->storage.reset(new (std::nothrow) uint8_t[need]);
 		frame->capacity = frame->storage ? need : 0;
-		if (!frame->storage) {
-			ReleaseRawFrame(frame);
-			return nullptr;
+		std::vector<std::shared_ptr<void>> fallback;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			ReapLocked(std::move(old), fallback);
+			if (!frame->storage) {
+				ReturnRawFrameLocked(frame, fallback);
+				frame = nullptr;
+			}
 		}
+		if (!frame)
+			return nullptr;
 	}
 	frame->width = width;
 	frame->height = height;
@@ -311,8 +410,9 @@ void CodecPipeline::ReleaseRawFrame(RawFrame *frame)
 {
 	if (!frame)
 		return;
+	std::vector<std::shared_ptr<void>> fallback; // Declared first: freed after the lock is released.
 	std::lock_guard<std::mutex> lock(mutex_);
-	freeRaw_.push_back(frame);
+	ReturnRawFrameLocked(frame, fallback);
 }
 
 void CodecPipeline::NoteBackpressureDrop()
@@ -400,9 +500,11 @@ void CodecPipeline::EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t 
 			ring.Arena().Free(allocation);
 	}
 	const uint64_t endNs = options_.clockNs();
-	// Gives emptied blocks beyond the spare quota back to the OS (only when the
-	// window shrank, e.g. after a lower-resolution rung): never on G when threaded.
-	ring.Arena().Trim();
+	// Emptied blocks beyond the spare quota (the window shrank, e.g. after a
+	// lower-resolution rung) go back to the OS on the reaper: never on G (sync
+	// mode included), nor on an encoder.
+	if (ring.Arena().TrimWanted())
+		RequestTrim(job.ring);
 
 	{
 		std::lock_guard<std::mutex> lock(statsMutex_);
@@ -592,21 +694,14 @@ void CodecPipeline::EncodeLoop(uint32_t worker)
 	bool codecUsed = false;
 	std::unique_lock<std::mutex> lock(mutex_);
 	uint64_t handledRelease = releaseSerial_;
+	std::vector<std::shared_ptr<void>> fallback; // Stays empty: workers only run with a reaper.
 	for (;;) {
 		encodeCv_.wait(lock, [&] {
-			return stop_ || releaseSerial_ != handledRelease || (worker == 0 && !reap_.empty()) ||
-			       (worker < contexts_ && !queue_.empty()) || (worker >= contexts_ && codecUsed);
+			return stop_ || releaseSerial_ != handledRelease || (worker < contexts_ && !queue_.empty()) ||
+			       (worker >= contexts_ && codecUsed);
 		});
 		if (stop_)
 			break;
-		if (worker == 0 && !reap_.empty()) {
-			std::vector<std::shared_ptr<FrameRing>> doomed;
-			doomed.swap(reap_);
-			lock.unlock();
-			doomed.clear(); // The old ring's arena is freed here, unless a job still holds it.
-			lock.lock();
-			continue;
-		}
 		if (releaseSerial_ != handledRelease || (worker >= contexts_ && codecUsed)) {
 			// Disable, or this context is no longer needed: close it (on the
 			// thread that opened it). Reopened lazily by the next job.
@@ -629,12 +724,22 @@ void CodecPipeline::EncodeLoop(uint32_t worker)
 			codec = options_.codecFactory();
 		EncodeOne(*codec, job, slices, worker);
 		codecUsed = true;
-		RawFrame *frame = job.frame;
-		job.ring.reset(); // Outside the lock: may be the last reference to a reaped ring.
 		lock.lock();
-		freeRaw_.push_back(frame);
+		// Still the pipeline's ring: ring_ holds it too, so this is never the
+		// last reference. Detached meanwhile: it may be, and freeing an arena
+		// takes tens of ms -- the reaper does that, not the next encode.
+		if (job.ring == ring_)
+			job.ring.reset();
+		else
+			ReapLocked(std::move(job.ring), fallback);
+		ReturnRawFrameLocked(job.frame, fallback);
 		++wakeSerial_;
 		decodeCv_.notify_one();
+		if (!fallback.empty()) {
+			lock.unlock();
+			fallback.clear();
+			lock.lock();
+		}
 	}
 	lock.unlock();
 	if (codec)
@@ -733,9 +838,20 @@ void CodecPipeline::DecodeLoop()
 			if (late)
 				++window_.decodeJumps;
 		}
-		ring.reset(); // Outside the lock: may be the last reference to a reaped ring.
-
 		lock.lock();
+		// Never the last reference while it's still the pipeline's ring;
+		// detached meanwhile, the reaper takes it (see EncodeLoop()).
+		if (ring == ring_) {
+			ring.reset();
+		} else {
+			std::vector<std::shared_ptr<void>> fallback;
+			ReapLocked(std::move(ring), fallback);
+			if (!fallback.empty()) {
+				lock.unlock();
+				fallback.clear();
+				lock.lock();
+			}
+		}
 		if (!found) {
 			entry->state = DecodedEntry::State::Free;
 			// Nothing decodable yet: sleep until G publishes a new target, an
@@ -758,6 +874,29 @@ void CodecPipeline::DecodeLoop()
 	lock.unlock();
 	if (codec)
 		codec->Release();
+}
+
+void CodecPipeline::ReapLoop()
+{
+	if (options_.nameThread)
+		options_.nameThread("trigglow-reap");
+	std::unique_lock<std::mutex> lock(mutex_);
+	for (;;) {
+		reapCv_.wait(lock, [&] { return stop_ || !reap_.empty() || !trim_.empty(); });
+		if (reap_.empty() && trim_.empty())
+			break; // Stopping, with nothing left to free.
+		std::vector<std::shared_ptr<FrameRing>> trim;
+		trim.swap(trim_);
+		std::vector<std::shared_ptr<void>> doomed;
+		doomed.swap(reap_);
+		lock.unlock();
+		for (const auto &ring : trim)
+			ring->Arena().Trim();
+		// The frees (and the OS calls behind them) happen here, on this thread.
+		trim.clear();
+		doomed.clear();
+		lock.lock();
+	}
 }
 
 void CodecPipeline::TakeWindowStats(WindowStats &out)
@@ -815,16 +954,23 @@ void CodecPipeline::Shutdown()
 	encodeThreads_.clear();
 	if (decodeThread_.joinable())
 		decodeThread_.join();
+	// Last: it frees whatever the workers handed it on their way out.
+	reapCv_.notify_all();
+	if (reapThread_.joinable())
+		reapThread_.join();
 
+	// The rest is freed on this thread (OBS's destruction thread).
 	std::deque<EncodeJob> dropped;
-	std::vector<std::shared_ptr<FrameRing>> rings;
+	std::vector<std::shared_ptr<void>> doomed;
+	std::vector<std::shared_ptr<FrameRing>> trimmed;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		dropped.swap(queue_);
 		for (EncodeJob &job : dropped)
 			freeRaw_.push_back(job.frame);
-		rings.swap(reap_);
-		rings.push_back(std::move(ring_));
+		doomed.swap(reap_);
+		trimmed.swap(trim_);
+		doomed.push_back(std::move(ring_));
 		ring_.reset();
 		for (DecodedEntry &entry : decoded_) {
 			entry.state = DecodedEntry::State::Free;

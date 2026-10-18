@@ -136,9 +136,12 @@ void TestOversizedAndTrim()
 	std::memset(big.data, 0x5A, 200 * kKiB);
 	FrameArena::Allocation small = arena.Allocate(1 * kKiB);
 	CHECK(small.block != big.block); // Never shares the dedicated block.
+	CHECK(!arena.TrimWanted());
 	arena.Free(big);
 	CHECK_EQ(arena.GetStats().spareBlocks, 0u); // Oversized blocks never become spares...
-	arena.Trim();                               // ...Trim() gives them back.
+	CHECK(arena.TrimWanted());
+	arena.Trim(); // ...Trim() gives them back.
+	CHECK(!arena.TrimWanted());
 	CHECK_EQ(arena.GetStats().committedBytes, 64u * kKiB);
 	CHECK_EQ(arena.GetStats().releasedBlocks, 1u);
 
@@ -151,8 +154,10 @@ void TestOversizedAndTrim()
 		arena.Free(a);
 	const uint32_t spares = arena.GetStats().spareBlocks;
 	CHECK(spares >= 5u);
+	CHECK(arena.TrimWanted()); // More spares than the one kept.
 	arena.Trim();
 	CHECK_EQ(arena.GetStats().spareBlocks, 1u);
+	CHECK(!arena.TrimWanted());
 	// Released ids are reused.
 	for (int i = 0; i < 20; ++i)
 		fills.push_back(arena.Allocate(32 * kKiB));

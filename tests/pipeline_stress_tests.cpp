@@ -27,9 +27,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // Hard checks (any violation fails): a shown frame is never younger than the
 // playback target (the delay never shrinks), shown capture times only ever
 // increase, every frame's content matches its timestamp, nothing deadlocks
-// (watchdog), and the arena never leaks. Soft check: the frame shown is the
-// exact one due for >= 90% of due frames (CI machines are noisy; a quiet one
-// gets ~100%).
+// (watchdog), the arena never leaks, every ring is eventually freed and none
+// is ever freed on the simulated graphics thread (the reaper thread does it,
+// whichever reference is the last). Soft check: the frame shown is the exact
+// one due for >= 90% of due frames (CI machines are noisy; a quiet one gets
+// ~100%).
 
 #include "check.hpp"
 #include "codec-pipeline.hpp"
@@ -60,6 +62,13 @@ std::atomic<uint64_t> g_tornFrames{0};
 std::atomic<uint64_t> g_badPackets{0};
 std::atomic<uint64_t> g_encodes{0};
 std::atomic<uint64_t> g_decodes{0};
+
+// Ring lifetimes: which thread frees each one (the simulated graphics thread
+// must never be the one).
+std::thread::id g_graphicsThread;
+std::atomic<uint64_t> g_ringsCreated{0};
+std::atomic<uint64_t> g_ringsFreed{0};
+std::atomic<uint64_t> g_ringsFreedOnGraphics{0};
 
 constexpr uint32_t kMagic = 0x54524947; // "TRIG"
 
@@ -220,12 +229,22 @@ std::shared_ptr<FrameRing> MakeRing(const Scenario &s, uint64_t captureIntervalN
 	arena.blockBytes = 64 * 1024;
 	arena.maxSpareBlocks = 2;
 	const size_t slots = static_cast<size_t>(s.delayNs / captureIntervalNs) + 16;
-	return std::make_shared<FrameRing>(slots, arena);
+	++g_ringsCreated;
+	return std::shared_ptr<FrameRing>(new FrameRing(slots, arena), [](FrameRing *ring) {
+		++g_ringsFreed;
+		if (std::this_thread::get_id() == g_graphicsThread)
+			++g_ringsFreedOnGraphics;
+		delete ring;
+	});
 }
 
 RunStats RunScenario(const Scenario &s)
 {
 	testcheck::g_currentTest = s.name;
+	g_graphicsThread = std::this_thread::get_id();
+	g_ringsFreedOnGraphics = 0;
+	const uint64_t ringsCreatedBefore = g_ringsCreated.load();
+	const uint64_t ringsFreedBefore = g_ringsFreed.load();
 	CodecPipeline::Options options;
 	options.threaded = s.threaded;
 	options.clockNs = &NowNs;
@@ -329,8 +348,9 @@ RunStats RunScenario(const Scenario &s)
 		// --- chaos ---
 		if (s.chaos) {
 			if (chance(400)) {
-				// Disable/re-enable or a hard resize: a whole new ring.
-				pipeline->Detach(chance(2));
+				// Disable/re-enable or a hard resize: a whole new ring. Our
+				// reference goes along, like VideoDelayFilter::StopCycle().
+				pipeline->Detach(chance(2), std::move(ring));
 				ring = MakeRing(s, captureIntervalNs);
 				staging.clear();
 				lastShown = 0;
@@ -359,22 +379,27 @@ RunStats RunScenario(const Scenario &s)
 		while (NowNs() < nextTick)
 			std::this_thread::yield();
 	}
-	// Tear down with work still in flight.
+	// Tear down with work still in flight (on OBS's destruction thread, where
+	// freeing is fine: only count what was freed before).
+	const uint64_t freedOnGraphics = g_ringsFreedOnGraphics.load();
 	pipeline->Shutdown();
 	const FrameArena::Stats arenaStats = ring->Arena().GetStats();
 	CHECK(arenaStats.liveBytes <= ring->SlotCount() * (I420FrameBytes(64, 32) + 64));
 	ring.reset();
 	pipeline.reset();
+	CHECK_EQ(freedOnGraphics, 0u);
+	CHECK_EQ(g_ringsFreed.load() - ringsFreedBefore, g_ringsCreated.load() - ringsCreatedBefore);
 
 	std::printf(
 		"  %s: displayed %llu, due %llu, exact %.2f%%, resets %llu, backpressure %llu, reserve "
-		"failures %llu, encodes %llu, decodes %llu\n",
+		"failures %llu, encodes %llu, decodes %llu, rings freed on the graphics thread %llu\n",
 		s.name, static_cast<unsigned long long>(stats.displayed),
 		static_cast<unsigned long long>(stats.dueFrames),
 		stats.dueFrames ? 100.0 * static_cast<double>(stats.exact) / static_cast<double>(stats.dueFrames) : 0.0,
 		static_cast<unsigned long long>(stats.resets), static_cast<unsigned long long>(stats.backpressure),
 		static_cast<unsigned long long>(stats.reserveFailures),
-		static_cast<unsigned long long>(g_encodes.load()), static_cast<unsigned long long>(g_decodes.load()));
+		static_cast<unsigned long long>(g_encodes.load()), static_cast<unsigned long long>(g_decodes.load()),
+		static_cast<unsigned long long>(freedOnGraphics));
 	CHECK(stats.displayed > 0);
 	CHECK_EQ(stats.younger, 0u);
 	CHECK_EQ(stats.notIncreasing, 0u);

@@ -51,18 +51,25 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     target G publishes (target = now - delay is predictable from the clock;
 //     when it falls behind it jumps straight to the frame due now), into a
 //     pool of lookahead + 2 decoded frames.
-//   Reaper: the ring G lets go of (Disable, hard resize) is handed to encode
-//     worker 0, so its gigabytes are freed off G.
+//   Reaper (1, "trigglow-reap"): frees what must never be freed on G nor hold
+//     up an encode -- a detached ring and its arena (600-770 MB at 1440p, tens
+//     of ms to give back), the RawFrame storage after Disable, decoded frames
+//     dropped by a detach -- and runs the arena's Trim() (the only call that
+//     returns blocks to the OS). G and the workers only ever move such
+//     references into its queue; a worker drops a ring reference itself only
+//     while the pipeline still holds the same ring (so never the last one).
 //
 // Synchronization: mutex_ guards the job queue, the RawFrame pool, the decoded
-// pool, the ring pointer and the published target; statsMutex_ guards the
-// telemetry. Neither is ever held during a copy, an encode or a decode, and
-// they're never nested with each other or with the ring's own mutex.
+// pool, the ring pointer, the published target and the reaper's queues;
+// statsMutex_ guards the telemetry. Neither is ever held during a copy, an
+// encode, a decode or a free, and they're never nested with each other or with
+// the ring's own mutex.
 //
 // Sync mode (Options::threaded == false, the hidden codec_workers=false kill
-// switch): no threads at all. SubmitEncode() and AcquireForDisplay() run the
+// switch): no codec threads. SubmitEncode() and AcquireForDisplay() run the
 // codec inline on the caller (the graphics thread), like v0.5.1 did, on the
-// same ring/arena.
+// same ring/arena. The reaper still frees memory off the graphics thread (if
+// it can't be started, memory is freed inline, like v0.5.1).
 namespace trigglow {
 
 // One I420 frame (Y full size, U and V at half width and height).
@@ -192,10 +199,14 @@ public:
 	// detached first (codecs kept). RawFrames are sized for up to maxWidth x
 	// maxHeight. Spawns the workers the first time (threaded mode).
 	void Attach(std::shared_ptr<FrameRing> ring, uint32_t maxWidth, uint32_t maxHeight, uint64_t captureIntervalNs);
-	// Ends the cycle: drops queued jobs and decoded frames, hands the ring to
-	// the reaper (threaded) and, with releaseCodecs, has every worker close its
-	// codec contexts (Disable). Never waits for a worker.
-	void Detach(bool releaseCodecs);
+	// Ends the cycle: drops queued jobs and decoded frames and hands the ring
+	// to the reaper. With releaseCodecs (Disable) every worker closes its codec
+	// contexts and the RawFrame pool's storage is freed too (the next Attach()
+	// allocates it again). Pass the caller's own reference to the ring as
+	// `retiredRing` instead of dropping it: then no reference the caller held
+	// can be the last one, and the ring is always freed on the reaper. Never
+	// waits for a worker.
+	void Detach(bool releaseCodecs, std::shared_ptr<FrameRing> retiredRing = nullptr);
 	// Capture cadence (1/fps, or 2/fps at the 30fps degradation rung).
 	void SetCaptureInterval(uint64_t captureIntervalNs);
 	// Encode contexts (1..kMaxEncodeContexts, threaded only) and slice threads
@@ -232,9 +243,10 @@ public:
 	uint32_t ActiveEncodeContexts() const;
 	uint32_t SlicesPerContext() const;
 
-	// Stops and joins every worker (each closes its own codec). Destruction
-	// thread only, never the graphics thread: a join can wait for one frame's
-	// encode or decode. Idempotent.
+	// Stops and joins every worker (each closes its own codec) and the reaper
+	// (after it frees what's queued). Destruction thread only, never the
+	// graphics thread: a join can wait for one frame's encode or decode, or a
+	// ring being freed. Idempotent.
 	void Shutdown();
 
 private:
@@ -254,7 +266,16 @@ private:
 
 	void EncodeLoop(uint32_t worker);
 	void DecodeLoop();
-	void EnsureThreadsLocked(); // Spawns missing workers (threaded mode).
+	void ReapLoop();
+	void EnsureThreadsLocked(); // Spawns the reaper, then missing workers (threaded mode).
+	bool EnsureReaperLocked();  // Spawns the reaper if needed; false if it can't run.
+	// Under mutex_: queues `object` for the reaper. Without a reaper thread it
+	// goes to `fallback` instead, which the caller drops once it unlocks.
+	void ReapLocked(std::shared_ptr<void> object, std::vector<std::shared_ptr<void>> &fallback);
+	// Under mutex_: back to the pool; after Disable its storage goes to the reaper.
+	void ReturnRawFrameLocked(RawFrame *frame, std::vector<std::shared_ptr<void>> &fallback);
+	// Has the reaper Trim() the ring's arena (inline without a reaper). No lock held.
+	void RequestTrim(const std::shared_ptr<FrameRing> &ring);
 	// Encodes one job on the calling thread; doesn't touch the RawFrame pool.
 	void EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t slices, uint32_t stage);
 	// Copies the pinned slot's payload, unpins it, then decodes it (or unpacks a
@@ -274,7 +295,9 @@ private:
 	std::vector<RawFrame *> freeRaw_;
 	std::vector<DecodedEntry> decoded_;
 	std::shared_ptr<FrameRing> ring_;
-	std::vector<std::shared_ptr<FrameRing>> reap_;
+	// The reaper's queues: references to drop, and rings whose arena to Trim().
+	std::vector<std::shared_ptr<void>> reap_;
+	std::vector<std::shared_ptr<FrameRing>> trim_;
 	uint64_t epoch_ = 1;
 	uint64_t releaseSerial_ = 0; // ++ when every worker must close its codec.
 	uint32_t contexts_ = 1;
@@ -287,9 +310,13 @@ private:
 	// never lost.
 	uint64_t wakeSerial_ = 0;
 	bool stop_ = false;
-	bool threadsFailed_ = false; // Couldn't spawn a worker: everything runs inline from then on.
+	bool threadsFailed_ = false;   // Couldn't spawn a worker: everything runs inline from then on.
+	bool reaperFailed_ = false;    // Couldn't spawn the reaper: memory is freed inline from then on.
+	bool rawPoolReleased_ = false; // Detach(true) freed the RawFrame storage; Attach() brings it back.
 	std::vector<std::thread> encodeThreads_;
 	std::thread decodeThread_;
+	std::thread reapThread_;
+	std::condition_variable reapCv_;
 
 	// Sync mode / fallback: graphics thread only.
 	std::unique_ptr<VideoCodec> inlineCodec_;

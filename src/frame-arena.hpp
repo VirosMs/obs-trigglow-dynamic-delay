@@ -89,8 +89,11 @@ public:
 	// Returns the allocation and resets the handle. O(1); never calls the OS.
 	void Free(Allocation &allocation);
 	// Releases empty blocks beyond maxSpareBlocks (and empty oversized ones) to
-	// the OS. The only call that frees memory: keep it off the graphics thread.
+	// the OS. The only call that frees memory: keep it off the graphics thread
+	// (CodecPipeline has its reaper thread do it).
 	void Trim();
+	// Whether Trim() would release anything right now. O(1), never calls the OS.
+	bool TrimWanted() const;
 
 	Stats GetStats() const;
 	const Config &GetConfig() const { return config_; }
@@ -116,6 +119,7 @@ private:
 	std::vector<uint32_t> spare_;  // Empty standard blocks, reusable.
 	std::vector<uint32_t> vacant_; // Ids in blocks_ with no memory (released), reusable.
 	uint32_t current_ = kNoBlock;  // Block being bump-allocated.
+	uint32_t emptyOversized_ = 0;  // Oversized blocks with no live allocation (Trim() releases them).
 	Stats stats_;
 };
 

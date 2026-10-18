@@ -81,8 +81,10 @@ void FrameArena::RetireIfEmptyLocked(uint32_t id)
 	if (block.live != 0 || id == current_ || block.spare || !block.memory)
 		return;
 	block.used = 0;
-	if (block.oversized)
-		return; // Trim() gives it back to the OS; never reused for small payloads.
+	if (block.oversized) {
+		++emptyOversized_; // Trim() gives it back to the OS; never reused for small payloads.
+		return;
+	}
 	block.spare = true;
 	spare_.push_back(id);
 	++stats_.spareBlocks;
@@ -183,13 +185,21 @@ void FrameArena::Trim()
 			--stats_.spareBlocks;
 			releaseBlock(id);
 		}
-		for (uint32_t id = 0; id < blocks_.size(); ++id) {
+		for (uint32_t id = 0; emptyOversized_ > 0 && id < blocks_.size(); ++id) {
 			const Block &block = blocks_[id];
-			if (block.memory && block.oversized && block.live == 0)
+			if (block.memory && block.oversized && block.live == 0) {
 				releaseBlock(id);
+				--emptyOversized_;
+			}
 		}
 	}
 	// `release` goes out of scope here: the OS calls happen without the lock.
+}
+
+bool FrameArena::TrimWanted() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return spare_.size() > config_.maxSpareBlocks || emptyOversized_ > 0;
 }
 
 FrameArena::Stats FrameArena::GetStats() const
