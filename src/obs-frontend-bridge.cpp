@@ -41,6 +41,10 @@ constexpr const char *kComponent = "frontend-bridge";
 // flag, defined in libobs/obs.h. We mirror it here so callers don't need to
 // include obs.h just to pass this bit through.
 constexpr uint32_t kObsOutputDelayPreserve = 1u << 0;
+
+// The bridge BufferRestartedTask() may still deliver events to: set by Init(),
+// cleared by Shutdown(), both on the UI thread like the task itself.
+const trigglow::ObsFrontendBridge *g_eventBridge = nullptr;
 } // namespace
 
 namespace trigglow {
@@ -59,6 +63,7 @@ void ObsFrontendBridge::Init(FrontendEventHandler handler)
 	handler_ = std::move(handler);
 	obs_frontend_add_event_callback(&ObsFrontendBridge::FrontendEventCallback, this);
 	initialized_ = true;
+	g_eventBridge = this;
 }
 
 void ObsFrontendBridge::Shutdown()
@@ -78,6 +83,8 @@ void ObsFrontendBridge::Shutdown()
 		liveSceneRenderTarget_ = nullptr;
 	}
 
+	if (g_eventBridge == this)
+		g_eventBridge = nullptr; // A BufferRestartedTask() still queued finds it gone.
 	if (!initialized_)
 		return;
 	obs_frontend_remove_event_callback(&ObsFrontendBridge::FrontendEventCallback, this);
@@ -564,6 +571,16 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 	}
 	obs_source_set_enabled(filter, enabled);
 
+	if (enabled) {
+		// A hard resize while the delay is on (delay change, OBS video reset)
+		// empties the ring: BufferModeController shows the loading scene until
+		// it refills. Connecting again on every Enable is a no-op (libobs skips
+		// a callback/data pair already connected).
+		signal_handler_connect(obs_source_get_signal_handler(filter), VideoDelayFilter::kBufferRestartedSignal,
+				       &ObsFrontendBridge::BufferRestartedSignal,
+				       const_cast<ObsFrontendBridge *>(this));
+	}
+
 	if (!enabled) {
 		// OBS bypasses a disabled filter's video_render entirely (that's
 		// the whole point of disabling it here on Disable()) -- meaning
@@ -620,6 +637,56 @@ bool ObsFrontendBridge::SetBufferFilterOutputCap(const std::string &liveSceneNam
 	return true;
 }
 
+bool ObsFrontendBridge::SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const
+{
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterCodecWorkers(%s): FindBufferFilter returned null, no-op",
+				  codecWorkers ? "true" : "false");
+		return false;
+	}
+	// Merged onto the filter's existing settings, like the setters around.
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "codec_workers", codecWorkers);
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
+bool ObsFrontendBridge::GetBufferPipelineHealth(const std::string &liveSceneName, PipelineHealth &out) const
+{
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	if (!filter)
+		return false;
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return false;
+	PipelineHealth health;
+	calldata_t cd = {};
+	calldata_set_ptr(&cd, "health", &health);
+	const bool ok = proc_handler_call(procHandler, "get_pipeline_state", &cd);
+	calldata_free(&cd);
+	if (ok)
+		out = health;
+	return ok;
+}
+
+void ObsFrontendBridge::BufferRestartedSignal(void *param, calldata_t * /*data*/)
+{
+	// Graphics thread (VideoDelayFilter::EnsureRingSized()); the controller
+	// lives on the UI thread. Never waits: the graphics thread can't block on
+	// the UI.
+	obs_queue_task(OBS_TASK_UI, &ObsFrontendBridge::BufferRestartedTask, param, false);
+}
+
+void ObsFrontendBridge::BufferRestartedTask(void *param)
+{
+	auto *self = static_cast<ObsFrontendBridge *>(param);
+	if (self != g_eventBridge || !self->handler_)
+		return; // Shut down after the signal was queued.
+	self->handler_(FrontendEvent::BufferRestarted);
+}
+
 bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &liveSceneName,
 							   uint32_t heightPixels) const
 {
@@ -641,8 +708,8 @@ bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &li
 
 uint32_t ObsFrontendBridge::GetVideoEffectiveDelaySeconds(const std::string &liveSceneName) const
 {
-	// Held until this function returns: the proc call blocks on a graphics
-	// task that uses the filter's private data.
+	// Held until this function returns: the proc reads the filter's private
+	// data (on this thread, from its current settings).
 	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
 	if (!filter)
 		return 0;

@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 #include "encoder-check.hpp"      // encodercheck::Scope, for ListActiveVideoEncoders()
+#include "pipeline-health.hpp"    // PipelineHealth, for GetBufferPipelineHealth()
 #include "video-delay-filter.hpp" // VideoDelayFilter::BufferFitEstimate, for EstimateBufferFit()
 
 #include <obs.hpp> // OBSSourceAutoRelease: libobs's own RAII wrapper for owned source references
@@ -71,6 +72,10 @@ namespace trigglow {
 // Mirrors the subset of obs_frontend_event we care about, so callers outside
 // this file never need to include obs-frontend-api.h themselves.
 enum class FrontendEvent {
+	// Not an obs_frontend_event: the video delay filter emptied its ring while
+	// the delay was on (VideoDelayFilter::kBufferRestartedSignal), delivered
+	// on the UI thread like the rest.
+	BufferRestarted,
 	StreamingStarting,
 	StreamingStarted,
 	StreamingStopping,
@@ -213,7 +218,8 @@ public:
 
 	// Enables/disables the buffer filter attached by EnsureBufferWrapperScene.
 	// No-op (returns false) if that hasn't been called successfully yet for
-	// the current live scene.
+	// the current live scene. Enabling also subscribes to the filter's
+	// kBufferRestartedSignal (FrontendEvent::BufferRestarted).
 	bool SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const;
 
 	// Pushes `seconds` into the already-attached filter's configured delay.
@@ -231,6 +237,18 @@ public:
 	// it on every Enable(), like the delay and the quality floor. No-op
 	// (returns false) if EnsureBufferWrapperScene hasn't run yet.
 	bool SetBufferFilterOutputCap(const std::string &liveSceneName, bool capToOutput) const;
+
+	// Pushes the hidden codec_workers setting (v0.6.0 kill switch) into the
+	// already-attached filter: false = MJPEG encode/decode on the graphics
+	// thread, no worker threads. Same rules as SetBufferFilterOutputCap().
+	bool SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const;
+
+	// Copies the video filter's pipeline health (degradation rung, buffered
+	// size, encode threads, drop/repeat rates -- see pipeline-health.hpp) into
+	// `out`. Never hops to the graphics thread (the filter's proc only copies
+	// a struct under a small mutex), so it's safe to poll from the UI. False
+	// (out untouched) if the filter doesn't exist.
+	bool GetBufferPipelineHealth(const std::string &liveSceneName, PipelineHealth &out) const;
 
 	// What the video filter is ACTUALLY delaying by right now, in seconds --
 	// can be less than its configured delay if the RAM budget didn't fit the
@@ -371,6 +389,12 @@ private:
 	// liveSceneRenderSource_ into liveSceneRenderTarget_ (never the real
 	// Program output) — see AcquireLiveSceneRendering's comment.
 	static void RenderLiveSceneCallback(void *param, uint32_t cx, uint32_t cy);
+
+	// VideoDelayFilter::kBufferRestartedSignal handler (graphics thread):
+	// queues BufferRestartedTask() on the UI thread, which hands handler_
+	// FrontendEvent::BufferRestarted -- unless this bridge shut down meanwhile.
+	static void BufferRestartedSignal(void *param, calldata_t *data);
+	static void BufferRestartedTask(void *param);
 
 	// Locates the video-delay filter previously attached to `liveSceneName`'s
 	// source by EnsureBufferWrapperScene, if the wrapper scene, its

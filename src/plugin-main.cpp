@@ -151,28 +151,28 @@ QString SetAsideInvalidSettingsFile(const QString &path)
 	return {};
 }
 
-// "buffer_output_cap" is a hidden support switch with no UI anywhere (see
-// BufferModeController::LoadSettings): only a literal JSON false turns the
-// cap off. Absent (or JSON null, which libobs drops on load) or true keeps it
-// on, and so does any other type ("false" as a string, 0...), with a WARN:
-// a typo must never quietly change how the buffer is sized.
-bool ReadBufferOutputCap(obs_data_t *data, const char *path)
+// "buffer_output_cap" and (v0.6.0) "codec_workers" are hidden support
+// switches with no UI anywhere (see BufferModeController::LoadSettings): only
+// a literal JSON false turns one off. Absent (or JSON null, which libobs
+// drops on load) or true keeps it on, and so does any other type ("false" as
+// a string, 0...), with a WARN: a typo must never quietly change how the
+// buffer works. `what` names the feature for that WARN.
+bool ReadHiddenSwitch(obs_data_t *data, const char *key, const char *what, const char *path)
 {
-	obs_data_item_t *item = obs_data_item_byname(data, "buffer_output_cap");
+	obs_data_item_t *item = obs_data_item_byname(data, key);
 	if (!item)
 		return true;
-	bool cap = true;
+	bool on = true;
 	if (obs_data_item_gettype(item) == OBS_DATA_BOOLEAN) {
-		cap = obs_data_item_get_bool(item);
+		on = obs_data_item_get_bool(item);
 	} else {
 		TRIGGLOW_LOG_WARN(kComponent,
-				  "\"buffer_output_cap\" in %s is not a JSON boolean -- keeping the "
-				  "output-resolution cap on. Only a literal false (no quotes) turns it off; this "
-				  "value is dropped from the file when OBS closes",
-				  path);
+				  "\"%s\" in %s is not a JSON boolean -- keeping %s on. Only a literal false (no "
+				  "quotes) turns it off; this value is dropped from the file when OBS closes",
+				  key, path, what);
 	}
 	obs_data_item_release(&item);
-	return cap;
+	return on;
 }
 
 // False when the settings file exists but can't be parsed AND couldn't be set
@@ -221,16 +221,24 @@ bool LoadBufferSettings(trigglow::BufferModeController &controller)
 	bool showOverlay = obs_data_has_user_value(data, "show_overlay") ? obs_data_get_bool(data, "show_overlay")
 									 : true;
 	// false brings back v0.5.0's buffer sizing. Read only here, at load.
-	const bool bufferOutputCap = ReadBufferOutputCap(data, pathUtf8.constData());
+	const bool bufferOutputCap =
+		ReadHiddenSwitch(data, "buffer_output_cap", "the output-resolution cap", pathUtf8.constData());
+	// v0.6.0 kill switch: false runs the MJPEG encode/decode on OBS's
+	// graphics thread again (no codec worker threads). Read only here, at load.
+	const bool codecWorkers =
+		ReadHiddenSwitch(data, "codec_workers", "the codec worker threads", pathUtf8.constData());
 
 	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
 				loadingScene ? loadingScene : "", showOverlay,
-				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")), bufferOutputCap);
+				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")), bufferOutputCap,
+				codecWorkers);
 
 	TRIGGLOW_LOG_INFO(kComponent,
-			  "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\", output_cap=%s)",
+			  "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\", output_cap=%s, "
+			  "codec_workers=%s)",
 			  delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
-			  loadingScene ? loadingScene : "", bufferOutputCap ? "on" : "off");
+			  loadingScene ? loadingScene : "", bufferOutputCap ? "on" : "off",
+			  codecWorkers ? "on" : "off");
 	obs_data_release(data);
 	return true;
 }
@@ -260,6 +268,8 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 	// Only when off: everyone else's file stays exactly as before.
 	if (!snapshot.bufferOutputCap)
 		obs_data_set_bool(data, "buffer_output_cap", false);
+	if (!snapshot.codecWorkers)
+		obs_data_set_bool(data, "codec_workers", false);
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 

@@ -1,6 +1,8 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*).
-# No libobs, no Qt, no FFmpeg, no test framework. Two ways to build them:
+# src/encoder-check.*, and since v0.6.0 src/ui-tokens.*, src/auto-names.*,
+# src/overlay-layout.*, src/frame-arena.*, src/frame-ring.*,
+# src/degradation-policy.* and a stress test of src/codec-pipeline.*). No
+# libobs, no Qt, no FFmpeg, no test framework. Two ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
 #      cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
@@ -68,3 +70,58 @@ add_executable(overlay_layout_tests overlay_layout_tests.cpp "${_src}/overlay-la
 target_include_directories(overlay_layout_tests PRIVATE "${_src}")
 set_target_properties(overlay_layout_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME overlay_layout_tests COMMAND overlay_layout_tests)
+
+# v0.6.0 codec workers: the payload arena, the ring's slot state machine, the
+# degradation policy and a concurrency stress test of ring + arena + pipeline
+# with a fake codec (threads, no FFmpeg).
+find_package(Threads REQUIRED)
+
+add_executable(frame_arena_tests frame_arena_tests.cpp check.hpp "${_src}/frame-arena.cpp" "${_src}/frame-arena.hpp")
+target_include_directories(frame_arena_tests PRIVATE "${_src}")
+target_link_libraries(frame_arena_tests PRIVATE Threads::Threads)
+set_target_properties(frame_arena_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME frame_arena_tests COMMAND frame_arena_tests)
+
+add_executable(
+  frame_ring_tests
+  frame_ring_tests.cpp
+  check.hpp
+  "${_src}/frame-ring.cpp"
+  "${_src}/frame-ring.hpp"
+  "${_src}/frame-arena.cpp"
+  "${_src}/frame-arena.hpp"
+)
+target_include_directories(frame_ring_tests PRIVATE "${_src}")
+set_target_properties(frame_ring_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME frame_ring_tests COMMAND frame_ring_tests)
+
+add_executable(
+  degradation_policy_tests
+  degradation_policy_tests.cpp
+  check.hpp
+  "${_src}/degradation-policy.cpp"
+  "${_src}/degradation-policy.hpp"
+  "${_src}/buffer-fit.cpp"
+  "${_src}/buffer-fit.hpp"
+)
+target_include_directories(degradation_policy_tests PRIVATE "${_src}")
+set_target_properties(degradation_policy_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME degradation_policy_tests COMMAND degradation_policy_tests)
+
+add_executable(
+  pipeline_stress_tests
+  pipeline_stress_tests.cpp
+  check.hpp
+  "${_src}/codec-pipeline.cpp"
+  "${_src}/codec-pipeline.hpp"
+  "${_src}/frame-ring.cpp"
+  "${_src}/frame-ring.hpp"
+  "${_src}/frame-arena.cpp"
+  "${_src}/frame-arena.hpp"
+  "${_src}/perf-stats.cpp"
+  "${_src}/perf-stats.hpp"
+)
+target_include_directories(pipeline_stress_tests PRIVATE "${_src}")
+target_link_libraries(pipeline_stress_tests PRIVATE Threads::Threads)
+set_target_properties(pipeline_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME pipeline_stress_tests COMMAND pipeline_stress_tests)

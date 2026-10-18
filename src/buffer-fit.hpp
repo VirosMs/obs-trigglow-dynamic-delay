@@ -27,6 +27,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // and VideoDelayFilter::EstimateBufferFit() (the dock's prediction) both call
 // Compute() with the same Input, so what the dock predicts is what happens.
 //
+// Every width it returns is a multiple of kWidthAlignment (8), so each I420
+// plane row is a multiple of 4 bytes (Y: width, U and V: width / 2). OpenGL
+// needs that (v0.6.0): libobs-opengl's gs_stagesurface_map() and
+// gs_texture_set_image() assume rows of exactly width bytes, while
+// glReadPixels()/glTexSubImage2D() pad every row to GL_PACK/UNPACK_ALIGNMENT
+// (4) -- any other plane width would shear the delayed picture on Linux and
+// macOS. Heights only need to be even (one chroma row per two luma rows).
+//
 // Rules (v0.5.1, docs: buffer pipeline design A.1/A.6):
 //   - Never buffer more pixels than OBS's main mix outputs. Anything above the
 //     output resolution is thrown away by OBS's own output rescale anyway, but
@@ -43,8 +51,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     plugin setting) drops the output cap and sizes like v0.5.0 did:
 //     source resolution, only reduced for RAM, never below minResolutionHeight.
 //     Not bit-identical to v0.5.0, though: the exact fps and the quarter
-//     second of slack rounded up give one more slot at 25/30/50fps, and when
-//     RAM runs short the row walk below can land up to 2px away from it.
+//     second of slack rounded up give one more slot at 25/30/50fps, when
+//     RAM runs short the row walk below can land up to 2px away from it, and
+//     since v0.6.0 widths are multiples of 8 (up to 7px narrower than the
+//     source when it isn't).
 namespace trigglow::bufferfit {
 
 struct Input {
@@ -65,9 +75,12 @@ struct Input {
 	bool capToOutput = true;
 };
 
+// Buffer widths are multiples of this (see the header comment).
+constexpr uint32_t kWidthAlignment = 8;
+
 struct Result {
-	uint32_t bufferWidth = 0; // Always even and >= 2 (NV12 chroma subsampling). 0 only for invalid input.
-	uint32_t bufferHeight = 0;
+	uint32_t bufferWidth = 0;     // A multiple of kWidthAlignment, >= 8. 0 only for invalid input.
+	uint32_t bufferHeight = 0;    // Always even and >= 2 (I420 chroma subsampling).
 	uint64_t actualFrames = 0;    // Ring slots that fit the budget (<= desiredFrames, >= 1).
 	uint64_t desiredFrames = 0;   // Slots the full delay needs (delay*fps + ~0.25s slack + 1).
 	double scale = 1.0;           // Final scale relative to the source.
@@ -75,6 +88,12 @@ struct Result {
 	bool cappedByOutput = false;  // capScale < 1
 	bool reducedByRam = false;    // scale < capScale
 	bool fitsFullDuration = true; // actualFrames >= desiredFrames
+	// v0.6.0 (design A.4): the delay video AND audio use, in whole seconds.
+	// delaySeconds when the ring fits; otherwise the ring's span minus the
+	// quarter second of slack, floored to whole seconds (without the slack if
+	// that would leave 0). Before, video used the fractional span and audio
+	// its floor: up to ~1 s apart when RAM trimmed the ring.
+	uint32_t effectiveDelaySeconds = 0;
 };
 
 Result Compute(const Input &in);
@@ -83,8 +102,16 @@ Result Compute(const Input &in);
 double OutputCapScale(const Input &in);
 // llround, clamp to [2, orig], then forced even. The floor of 2 (one NV12
 // chroma sample) wins over the orig ceiling: orig 0 or 1 gives 2, never 0.
+// For heights; widths use AlignedWidth().
 uint32_t EvenDim(uint32_t orig, double scale);
+// llround, clamp to orig, then the nearest multiple of kWidthAlignment that
+// isn't above orig (rounded down when rounding up would pass it). The floor of
+// kWidthAlignment wins over the orig ceiling, like EvenDim()'s floor of 2:
+// a source narrower than 8 pixels gets an 8-pixel buffer (the capture stretches it).
+uint32_t AlignedWidth(uint32_t orig, double scale);
 uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen);
+// The quarter second of slack DesiredFrames() includes: ceil(fps / 4), 0 for a 0s delay.
+uint64_t SlackFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen);
 uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen); // 1e9 * den / num; 0 if num == 0.
 uint64_t Nv12FrameBytes(uint32_t width, uint32_t height);   // width * height * 3 / 2.
 

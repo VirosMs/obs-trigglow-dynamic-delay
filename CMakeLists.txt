@@ -55,6 +55,7 @@ if(OS_WINDOWS)
     PRIVATE "${_ffmpeg_root}/lib/avcodec.lib" "${_ffmpeg_root}/lib/avutil.lib"
   )
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_FFMPEG)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/mjpeg-codec.cpp src/mjpeg-codec.hpp)
 
   # Same DESTINATION set_target_properties_plugin() (cmake/windows/helpers.cmake)
   # uses for the plugin binary itself -- these need to land right next to it,
@@ -86,7 +87,12 @@ elseif(OS_LINUX)
   pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE PkgConfig::FFMPEG)
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_FFMPEG)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/mjpeg-codec.cpp src/mjpeg-codec.hpp)
 endif()
+
+# v0.6.0: the MJPEG encode/decode runs on worker threads (src/codec-pipeline.*).
+find_package(Threads REQUIRED)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
 
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
@@ -143,6 +149,17 @@ target_sources(
     src/video-delay-filter.hpp
     src/buffer-fit.cpp
     src/buffer-fit.hpp
+    src/codec-pipeline.cpp
+    src/codec-pipeline.hpp
+    src/degradation-policy.cpp
+    src/degradation-policy.hpp
+    src/frame-arena.cpp
+    src/frame-arena.hpp
+    src/frame-ring.cpp
+    src/frame-ring.hpp
+    src/perf-stats.cpp
+    src/perf-stats.hpp
+    src/pipeline-health.hpp
     src/encoder-check.cpp
     src/encoder-check.hpp
     src/audio-delay-filter.cpp
@@ -182,8 +199,9 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STAND
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*).
-# Off by default so plugin packaging is unchanged:
+# src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*,
+# src/frame-arena.*, src/frame-ring.*, src/degradation-policy.*) and a stress
+# test of src/codec-pipeline.*. Off by default so plugin packaging is unchanged:
 #   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
 #   cmake --build <dir> --config RelWithDebInfo
 #   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
