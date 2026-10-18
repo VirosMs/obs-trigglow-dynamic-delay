@@ -114,6 +114,17 @@ private:
 	void OnStatusChanged(const BufferModeStatus &status);
 	void RefreshFromStatus(const BufferModeStatus &status);
 
+	// Degradation notice (v0.6.0): asks BufferModeController::GetPipelineHealth()
+	// (cheap, never blocks on the graphics thread) whether the buffer runs
+	// below full quality, and shows, updates or hides the notice under the
+	// status card's detail. Runs every second on healthTimer_ while the delay
+	// is Filling or Active (the only states with a buffer) and on every
+	// status change; anywhere else the notice is hidden and nothing is polled.
+	void RefreshPipelineHealth(const BufferModeStatus &status);
+	// The status card's accessible name: state, detail and, while shown, the
+	// degradation notice.
+	void UpdateStatusAccessibleName();
+
 	// Wired to authManager_'s own status-changed callback (same pattern as
 	// bufferController_'s), so the account row and the Enable button's
 	// visual disabled state update the moment login completes/expires --
@@ -200,6 +211,18 @@ private:
 	QProgressBar *fillBar_ = nullptr;
 	QLabel *fillProgressLabel_ = nullptr;
 	QLabel *fillRemainingLabel_ = nullptr;
+	// "Status: Delay on. Viewers see..." without the degradation notice.
+	QString statusAccessibleName_;
+	// Degradation notice (see RefreshPipelineHealth()): a hairline, the
+	// sliders icon and title in the warning tone, what was lowered and why
+	// (the delay itself never changes), and the repeat/drop rates when > 0.
+	QWidget *healthNotice_ = nullptr;
+	QLabel *healthIcon_ = nullptr;
+	QLabel *healthTitle_ = nullptr;
+	QLabel *healthBody_ = nullptr;
+	QLabel *healthStats_ = nullptr;
+	QTimer *healthTimer_ = nullptr;
+	bool healthShown_ = false;
 	SceneComboBox *liveSceneCombo_ = nullptr;
 	SceneComboBox *loadingSceneCombo_ = nullptr;
 	QSpinBox *secondsSpin_ = nullptr;

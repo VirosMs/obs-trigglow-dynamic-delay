@@ -85,6 +85,43 @@ QLabel *MakeIconLabel(QWidget *parent, int size)
 	label->setAlignment(Qt::AlignCenter);
 	return label;
 }
+
+// The seconds viewers really get: the effective delay (whole seconds, the same
+// for audio and video) once the controller knows it, never above the
+// configured one.
+uint32_t AppliedDelaySeconds(const BufferModeStatus &status)
+{
+	return status.effectiveDelaySeconds > 0 ? std::min(status.effectiveDelaySeconds, status.delaySeconds)
+						: status.delaySeconds;
+}
+
+// "60", "30" or "29,97": whole rates without decimals.
+QString FormatFps(const QLocale &locale, double fps)
+{
+	const double whole = std::round(fps);
+	return std::abs(fps - whole) < 0.01 ? locale.toString(static_cast<int>(whole)) : locale.toString(fps, 'f', 2);
+}
+
+// Per-minute rates: one decimal below 10 ("2,4"), none above ("37").
+QString FormatRate(const QLocale &locale, double perMinute)
+{
+	return locale.toString(perMinute, 'f', perMinute < 10.0 ? 1 : 0);
+}
+
+const char *HealthCauseKey(PipelineLoad cause)
+{
+	switch (cause) {
+	case PipelineLoad::Graphics:
+		return "Dock.Health.Cause.Graphics";
+	case PipelineLoad::Encode:
+		return "Dock.Health.Cause.Encode";
+	case PipelineLoad::Decode:
+		return "Dock.Health.Cause.Decode";
+	case PipelineLoad::None:
+		break;
+	}
+	return "Dock.Health.Cause.Other";
+}
 } // namespace
 
 TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, AuthManager &authManager, QWidget *parent)
@@ -259,6 +296,41 @@ void TrigglowDelayDock::BuildUi()
 		fillLayout->addLayout(fillTexts);
 		fillRow_->setVisible(false);
 		body->addWidget(fillRow_);
+
+		// Degradation notice (RefreshPipelineHealth): below everything the
+		// state says, after a hairline, so the headline and the seconds chip
+		// stay what the card is about -- the delay itself is intact. Amber
+		// only on the icon and the title; the explanation is plain muted text.
+		healthNotice_ = new QWidget(statusCard_);
+		auto *healthLayout = new QVBoxLayout(healthNotice_);
+		healthLayout->setContentsMargins(0, 8, 0, 0);
+		healthLayout->setSpacing(4);
+		auto *healthDivider = new QFrame(healthNotice_);
+		healthDivider->setProperty("tgDivider", QStringLiteral("true"));
+		healthDivider->setFixedHeight(1);
+		healthLayout->addWidget(healthDivider);
+		healthLayout->addSpacing(4);
+		auto *healthTitleRow = new QHBoxLayout();
+		healthTitleRow->setSpacing(6);
+		healthIcon_ = MakeIconLabel(healthNotice_, kInlineIconSize);
+		healthTitle_ = new QLabel(T("Dock.Health.Title"), healthNotice_);
+		healthTitle_->setWordWrap(true);
+		SetRole(healthTitle_, "strong", ui::FontRole::Strong);
+		healthTitle_->setProperty("tgTone", QStringLiteral("warning"));
+		healthTitleRow->addWidget(healthIcon_, 0, Qt::AlignVCenter);
+		healthTitleRow->addWidget(healthTitle_, 1);
+		healthLayout->addLayout(healthTitleRow);
+		healthBody_ = new QLabel(healthNotice_);
+		healthBody_->setWordWrap(true);
+		SetRole(healthBody_, "muted");
+		healthLayout->addWidget(healthBody_);
+		healthStats_ = new QLabel(healthNotice_);
+		healthStats_->setWordWrap(true);
+		SetRole(healthStats_, "hint", ui::FontRole::Hint);
+		healthStats_->setVisible(false);
+		healthLayout->addWidget(healthStats_);
+		healthNotice_->setVisible(false);
+		body->addWidget(healthNotice_);
 		cardLayout->addLayout(body);
 	}
 	root->addWidget(statusCard_);
@@ -673,6 +745,11 @@ void TrigglowDelayDock::BuildUi()
 
 	fillProgressTimer_ = new QTimer(this);
 	connect(fillProgressTimer_, &QTimer::timeout, this, [this] { UpdateFillProgress(); });
+
+	// Started and stopped by RefreshFromStatus() (Filling/Active only).
+	healthTimer_ = new QTimer(this);
+	healthTimer_->setInterval(1000);
+	connect(healthTimer_, &QTimer::timeout, this, [this] { RefreshPipelineHealth(bufferController_.GetStatus()); });
 }
 
 void TrigglowDelayDock::ApplyTheme(bool force)
@@ -783,6 +860,7 @@ void TrigglowDelayDock::ApplyStaticIcons()
 	SetIcon(updateIcon_, ui::IconId::Download, QStringLiteral("warning"), kAccountIconSize);
 	SetIcon(updateExternalIcon_, ui::IconId::ExternalLink, QStringLiteral("muted"), kInlineIconSize);
 	SetIcon(delayLockedIcon_, ui::IconId::Lock, QStringLiteral("muted"), kInlineIconSize);
+	SetIcon(healthIcon_, ui::IconId::Sliders, QStringLiteral("warning"), kInlineIconSize);
 	SetButtonIcon(enableButton_, ui::IconId::Shield, ui::ToQColor(t.onGradient));
 	SetButtonIcon(disableButton_, ui::IconId::X, ui::ToQColor(t.dangerButtonText));
 	// Right to left: the icon follows the text, so the gap goes on its left.
@@ -869,9 +947,7 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 		// What viewers really get -- the same seconds the live overlay shows.
 		// The RAM budget can trim the configured delay (60 s asked, 35 s fit):
 		// then the chip reads "35 / 60 s" in amber and the detail says why.
-		const uint32_t applied = status.effectiveDelaySeconds > 0
-						 ? std::min(status.effectiveDelaySeconds, status.delaySeconds)
-						 : status.delaySeconds;
+		const uint32_t applied = AppliedDelaySeconds(status);
 		const bool trimmed = applied < status.delaySeconds;
 		headline = T("Dock.Status.Active");
 		detail = trimmed ? T("Dock.Status.Active.DetailTrimmed").arg(applied).arg(status.delaySeconds)
@@ -904,10 +980,17 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	detailLabel_->setText(detail);
 	detailLabel_->setVisible(!detail.isEmpty());
 	fillRow_->setVisible(status.state == BufferModeState::Filling);
-	statusCard_->setAccessibleName(QStringLiteral("%1: %2. %3").arg(T("Dock.Status.Eyebrow"), headline, detail));
+
+	const bool busy = status.state == BufferModeState::Filling || status.state == BufferModeState::Active;
+	// Degradation notice: polled only while there is a buffer to ask about.
+	if (busy && !healthTimer_->isActive())
+		healthTimer_->start();
+	else if (!busy)
+		healthTimer_->stop();
+	statusAccessibleName_ = QStringLiteral("%1: %2. %3").arg(T("Dock.Status.Eyebrow"), headline, detail);
+	RefreshPipelineHealth(status); // Also sets the card's accessible name.
 	AnnounceStatus(status.state);
 
-	bool busy = status.state == BufferModeState::Filling || status.state == BufferModeState::Active;
 	liveSceneCombo_->setEnabled(!busy);
 	loadingSceneCombo_->setEnabled(!busy);
 	// Locked while the delay runs, like the quality (a disabled control is
@@ -1002,6 +1085,78 @@ void TrigglowDelayDock::AnnounceStatus(BufferModeState state)
 	QAccessibleEvent event(statusCard_,
 			       state == BufferModeState::Error ? QAccessible::Alert : QAccessible::NameChanged);
 	QAccessible::updateAccessibility(&event);
+}
+
+void TrigglowDelayDock::RefreshPipelineHealth(const BufferModeStatus &status)
+{
+	const bool busy = status.state == BufferModeState::Filling || status.state == BufferModeState::Active;
+	PipelineHealth health;
+	if (busy)
+		health = bufferController_.GetPipelineHealth();
+	const bool show = busy && health.running && health.Degraded();
+
+	if (show) {
+		// What was lowered (resolution, capture rate or both), why, and that
+		// the delay is untouched: the rungs never shorten it.
+		const QLocale locale = UiLocale();
+		const QString cause = T(HealthCauseKey(health.cause));
+		const QString seconds = QString::number(AppliedDelaySeconds(status));
+		const bool smaller = health.fullWidth > 0 && health.fullHeight > 0 &&
+				     (health.width < health.fullWidth || health.height < health.fullHeight);
+		const bool slower = health.captureFps > 0.0 && health.captureFps < health.outputFps - 0.01;
+		const QString width = QString::number(health.width);
+		const QString height = QString::number(health.height);
+		const QString fullWidth = QString::number(health.fullWidth);
+		const QString fullHeight = QString::number(health.fullHeight);
+		const QString fps = FormatFps(locale, health.captureFps);
+		const QString fullFps = FormatFps(locale, health.outputFps);
+		QString text;
+		if (smaller && slower)
+			text = T("Dock.Health.Both")
+				       .arg(width, height, fps, fullWidth, fullHeight, fullFps, cause, seconds);
+		else if (smaller)
+			text = T("Dock.Health.Resolution").arg(width, height, fullWidth, fullHeight, cause, seconds);
+		else if (slower)
+			text = T("Dock.Health.FrameRate").arg(fps, fullFps, cause, seconds);
+		else
+			text = T("Dock.Health.Other").arg(cause, seconds);
+		healthBody_->setText(text);
+
+		// The fine print, only with a rate above 0 (one decimal shows 0.05).
+		const bool repeated = health.repeatedPerMinute >= 0.05;
+		const bool dropped = health.droppedPerMinute >= 0.05;
+		const QString repeatedRate = FormatRate(locale, health.repeatedPerMinute);
+		const QString droppedRate = FormatRate(locale, health.droppedPerMinute);
+		if (repeated && dropped)
+			healthStats_->setText(T("Dock.Health.RepeatedDropped").arg(repeatedRate, droppedRate));
+		else if (repeated)
+			healthStats_->setText(T("Dock.Health.Repeated").arg(repeatedRate));
+		else if (dropped)
+			healthStats_->setText(T("Dock.Health.Dropped").arg(droppedRate));
+		healthStats_->setVisible(repeated || dropped);
+	}
+
+	if (show != healthShown_) {
+		healthShown_ = show;
+		healthNotice_->setVisible(show);
+		UpdateStatusAccessibleName();
+		// Screen readers hear it appear and go, not every once-a-second poll.
+		if (QAccessible::isActive()) {
+			QAccessibleEvent event(statusCard_, QAccessible::NameChanged);
+			QAccessible::updateAccessibility(&event);
+		}
+	} else {
+		UpdateStatusAccessibleName();
+	}
+}
+
+void TrigglowDelayDock::UpdateStatusAccessibleName()
+{
+	QString name = statusAccessibleName_;
+	if (healthShown_)
+		name += QStringLiteral(" %1. %2").arg(healthTitle_->text(), healthBody_->text());
+	if (statusCard_->accessibleName() != name)
+		statusCard_->setAccessibleName(name);
 }
 
 void TrigglowDelayDock::resizeEvent(QResizeEvent *event)

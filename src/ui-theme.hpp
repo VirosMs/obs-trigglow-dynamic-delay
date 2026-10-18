@@ -112,6 +112,7 @@ enum class IconId {
 	Lock,
 	Paperclip,
 	Shield,
+	Sliders, // Something was adjusted for the user: the degradation notice.
 	User,
 	X,
 };

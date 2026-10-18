@@ -193,6 +193,8 @@ const char *IconFile(IconId id)
 		return ":/trigglow/icons/paperclip.svg";
 	case IconId::Shield:
 		return ":/trigglow/icons/shield.svg";
+	case IconId::Sliders:
+		return ":/trigglow/icons/sliders.svg";
 	case IconId::User:
 		return ":/trigglow/icons/user.svg";
 	case IconId::X:
