@@ -26,22 +26,23 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // The live "DELAY 30 s" overlay as ONE image the plugin paints itself with
 // QPainter: ink plate, brand rule, Dynamic Delay mark, the bundled Archivo
-// (or the system UI font when it isn't bundled) and, under it, the small
-// "By Trigglow" signature in the bundled Geist Mono. It replaces v0.5.x's badge
+// (or the system UI font when it isn't bundled) and, under the plate, outside
+// it, the small "By Trigglow" signature in the bundled Geist Mono. It replaces v0.5.x's badge
 // PNG + separate GDI+/FreeType text source, which used Segoe UI (Windows only),
 // needed magic offsets to line the two up, and couldn't be centered outside
 // Windows. Same pixels on Windows, macOS and Linux, and one OBS source to move.
 //
-// Geometry: overlay-layout.hpp (500x180 PNG, 2.5x the 200x72 design).
+// Geometry: overlay-layout.hpp (500x180 PNG, 2.5x the 200x72 design: the
+// 200x58 plate, then the signature line on transparent pixels).
 // Threading: QPainter text rendering on a QImage is only done on the Qt UI
 // thread here -- which is where every BufferModeController call runs (dock,
 // hotkeys via OBS_TASK_UI, frontend events) -- never on OBS's graphics thread.
 namespace trigglow::ui {
 
 // Paints the badge. `label` is drawn uppercase ("DELAY"), `value` as given
-// ("30 s"), `signature` as given on a second, smaller line ("By Trigglow";
-// nothing when empty). Shrinks each line to fit if a fallback font runs wider
-// than the bundled ones.
+// ("30 s"), `signature` as given in small type under the plate, below the mark
+// ("By Trigglow"; nothing when empty). Shrinks each text to fit if a fallback
+// font runs wider than the bundled ones.
 QImage RenderDelayBadge(const QString &label, const QString &value, const QString &signature);
 
 // Writes one PNG per seconds value into a folder (the plugin's config folder,

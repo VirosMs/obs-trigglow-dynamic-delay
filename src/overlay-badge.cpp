@@ -22,7 +22,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ui-theme.hpp"
 
 #include <algorithm>
-#include <cmath>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -33,6 +32,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFontMetricsF>
 #include <QLinearGradient>
 #include <QPainter>
+#include <QPainterPath>
 #include <QSaveFile>
 #include <QThread>
 
@@ -88,22 +88,23 @@ QImage RenderDelayBadge(const QString &label, const QString &value, const QStrin
 	p.setRenderHint(QPainter::Antialiasing);
 	p.setRenderHint(QPainter::TextAntialiasing);
 	p.setRenderHint(QPainter::SmoothPixmapTransform);
-	// Everything below is in design units (the 1x, 200x72 badge).
+	// Everything below is in design units (the 1x, 200x72 image: the 200x58
+	// plate, then the signature line).
 	p.scale(kRenderScale, kRenderScale);
 	constexpr qreal kW = kDesignWidth;
-	constexpr qreal kH = kDesignHeight;
+	constexpr qreal kPlateH = kPlateHeight;
 
 	// 1 px dark ring: separates the plate from bright footage (snow, sky, menus).
 	p.setPen(QPen(WithAlpha(Qt::black, 0.55), 1.0));
 	p.setBrush(Qt::NoBrush);
-	p.drawRect(QRectF(0.5, 0.5, kW - 1.0, kH - 1.0));
+	p.drawRect(QRectF(0.5, 0.5, kW - 1.0, kPlateH - 1.0));
 
 	// Plate: ink at 92 % keeps the mist text above 15:1 on any footage.
-	p.fillRect(QRectF(1.0, 1.0, kW - 2.0, kH - 2.0), WithAlpha(kInk, 0.92));
+	p.fillRect(QRectF(1.0, 1.0, kW - 2.0, kPlateH - 2.0), WithAlpha(kInk, 0.92));
 
 	// Inner hairline (--color-pulse-line).
 	p.setPen(QPen(WithAlpha(kMist, 0.18), 1.0));
-	p.drawRect(QRectF(1.5, 1.5, kW - 3.0, kH - 3.0));
+	p.drawRect(QRectF(1.5, 1.5, kW - 3.0, kPlateH - 3.0));
 
 	// Brand rule (gradient-brand, 90 degrees).
 	QLinearGradient brand(QPointF(1.0, 0.0), QPointF(kW - 1.0, 0.0));
@@ -111,24 +112,19 @@ QImage RenderDelayBadge(const QString &label, const QString &value, const QStrin
 	brand.setColorAt(1.0, kMagenta);
 	p.fillRect(QRectF(1.0, 1.0, kW - 2.0, 3.0), brand);
 
-	// The mark, the separator and the text block are centered on the plate
-	// below the rule.
-	constexpr qreal kCenterY = (4.0 + (kH - 1.0)) / 2.0;
-
-	// Dynamic Delay mark, on whole pixels of the 2.5x PNG.
+	// Dynamic Delay mark. Its ink starts 1 px into its 32 px box.
+	constexpr qreal kMarkLeft = 10.0;
+	constexpr qreal kMarkInkLeft = kMarkLeft + 1.0;
 	const QImage mark(QStringLiteral(":/trigglow/overlay/dynamic-delay-mark.png"));
-	if (!mark.isNull()) {
-		const qreal markTop = std::round((kCenterY - 16.0) * kRenderScale) / kRenderScale;
-		p.drawImage(QRectF(10.0, markTop, 32.0, 32.0), mark);
-	}
+	if (!mark.isNull())
+		p.drawImage(QRectF(kMarkLeft, 14.0, 32.0, 32.0), mark);
 
-	// Separator, as tall as the two lines of text.
+	// Separator.
 	p.setPen(QPen(WithAlpha(kMist, 0.16), 1.0));
-	p.drawLine(QPointF(50.5, kCenterY - 18.0), QPointF(50.5, kCenterY + 18.0));
+	p.drawLine(QPointF(50.5, 16.0), QPointF(50.5, 46.0));
 
-	// Line 1: "DELAY" in cyan (10.5:1 on the plate), "30 s" in mist, 7 px
-	// apart, on one baseline. Scaled down together if a fallback font is wider
-	// than Archivo.
+	// "DELAY" in cyan (10.5:1 on the plate), "30 s" in mist, 7 px apart, on one
+	// baseline. Scaled down together if a fallback font is wider than Archivo.
 	const BrandFonts &fonts = Fonts();
 	const QString labelFamily = fonts.display;
 	const QString valueFamily = fonts.displayBold.isEmpty() ? fonts.display : fonts.displayBold;
@@ -145,6 +141,7 @@ QImage RenderDelayBadge(const QString &label, const QString &value, const QStrin
 	}
 	constexpr qreal kTextLeft = 60.0;
 	constexpr qreal kTextRight = 190.0;
+	constexpr qreal kBaseline = 39.5;
 	constexpr qreal kGap = 7.0;
 
 	qreal factor = 1.0;
@@ -166,48 +163,45 @@ QImage RenderDelayBadge(const QString &label, const QString &value, const QStrin
 		factor *= 0.95;
 	}
 
-	// Line 2: the "By Trigglow" signature in Geist Mono 500, the dock's face
-	// for labels and figures, so it reads as a credit and not as part of the
-	// delay; kSignaturePixelSize is 10 px on a 720p stream. Mist at 62 % stays
-	// above 6.1:1 on the plate over any footage (AA for small text) and
-	// quieter than "30 s". Drawn as given, not uppercased: it's a name.
-	const QString signatureText = signature.trimmed();
-	const QString signatureFamily = fonts.mono.isEmpty() ? fonts.display : fonts.mono;
-	const int signatureWeight = fonts.mono.isEmpty() && !fonts.display.isEmpty() ? 600 : 500;
-	constexpr qreal kLineGap = 7.0; // From the "30 s" baseline to the signature's cap height.
-	QFont signatureFont;
-	qreal signatureLeft = kTextLeft;
-	qreal signatureFactor = 1.0;
-	for (int attempt = 0; attempt < 12 && !signatureText.isEmpty(); ++attempt) {
-		signatureFont = BadgeFont(signatureFamily, signatureWeight, kSignaturePixelSize * signatureFactor);
-		// Optically flush with "DELAY": both first letters' ink starts at the
-		// same x, whatever their side bearings.
-		const qreal labelBearing = labelText.isEmpty() ? 0.0
-							       : QFontMetricsF(labelFont).leftBearing(labelText.at(0));
-		signatureLeft =
-			kTextLeft + labelBearing - QFontMetricsF(signatureFont).leftBearing(signatureText.at(0));
-		if (signatureLeft + QFontMetricsF(signatureFont).horizontalAdvance(signatureText) <= kTextRight)
-			break;
-		signatureFactor *= 0.95;
-	}
-
-	// The block -- from the cap height of "30 s" to the signature's baseline --
-	// is centered like the mark; without a signature, line 1 alone is.
-	const qreal valueCap = QFontMetricsF(valueFont).capHeight();
-	const qreal signatureCap = signatureText.isEmpty() ? 0.0 : QFontMetricsF(signatureFont).capHeight();
-	const qreal blockHeight = valueCap + (signatureText.isEmpty() ? 0.0 : kLineGap + signatureCap);
-	const qreal baseline = kCenterY - blockHeight / 2.0 + valueCap;
-
 	p.setFont(labelFont);
 	p.setPen(kCyan);
-	p.drawText(QPointF(kTextLeft, baseline), labelText);
+	p.drawText(QPointF(kTextLeft, kBaseline), labelText);
 	p.setFont(valueFont);
 	p.setPen(kMist);
-	p.drawText(QPointF(kTextLeft + labelWidth + kGap, baseline), valueText);
+	p.drawText(QPointF(kTextLeft + labelWidth + kGap, kBaseline), valueText);
+
+	// Under the plate, outside it, on transparent pixels: the "By Trigglow"
+	// signature, caption-sized and quiet. Geist Mono 500 (the dock's face for
+	// labels) at kSignaturePixelSize with slight tracking, mist at 75 %, its
+	// ink flush with the mark's, 2.5 px below the plate. It sits on the
+	// footage, so a faint dark halo (two soft strokes, no box) keeps it
+	// readable on snow or a sky and fades out on dark scenes. Drawn as given,
+	// not uppercased: it's a name.
+	const QString signatureText = signature.trimmed();
 	if (!signatureText.isEmpty()) {
-		p.setFont(signatureFont);
-		p.setPen(WithAlpha(kMist, 0.62));
-		p.drawText(QPointF(signatureLeft, baseline + kLineGap + signatureCap), signatureText);
+		const QString family = fonts.mono.isEmpty() ? fonts.display : fonts.mono;
+		const int weight = fonts.mono.isEmpty() && !fonts.display.isEmpty() ? 600 : 500;
+		constexpr qreal kSignatureGap = 2.5; // Plate bottom to the signature's cap height.
+		constexpr qreal kSignatureRight = kW - 2.0;
+		QFont font;
+		qreal left = kMarkInkLeft;
+		qreal shrink = 1.0;
+		for (int attempt = 0; attempt < 12; ++attempt) {
+			font = BadgeFont(family, weight, kSignaturePixelSize * shrink);
+			font.setLetterSpacing(QFont::AbsoluteSpacing, 0.4 * shrink);
+			const QFontMetricsF metrics(font);
+			left = kMarkInkLeft - metrics.leftBearing(signatureText.at(0));
+			if (left + metrics.horizontalAdvance(signatureText) <= kSignatureRight)
+				break;
+			shrink *= 0.95;
+		}
+		const qreal baseline = kPlateH + kSignatureGap + QFontMetricsF(font).capHeight();
+		QPainterPath path;
+		path.addText(QPointF(left, baseline), font, signatureText);
+		p.setBrush(Qt::NoBrush);
+		p.strokePath(path, QPen(WithAlpha(Qt::black, 0.14), 2.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		p.strokePath(path, QPen(WithAlpha(Qt::black, 0.38), 1.3, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		p.fillPath(path, WithAlpha(kMist, 0.75));
 	}
 	p.end();
 	return image;

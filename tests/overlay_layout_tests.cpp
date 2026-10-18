@@ -63,14 +63,16 @@ void TestMargin()
 void TestPlacement1080p()
 {
 	g_currentTest = "1080p placement";
-	// The v0.5.x badge's width, 14 px taller for the "By Trigglow" line: the
-	// 2.5x PNG (500x180) shown at 0.4 = 200x72.
+	// The v0.5.x plate (200x58) plus the 14 px "By Trigglow" line under it,
+	// on transparent pixels: the 2.5x PNG (500x180) shown at 0.4 = 200x72.
 	CHECK(Near(kDesignWidth, 200.0f));
+	CHECK(Near(kPlateHeight, 58.0f));
 	CHECK(Near(kDesignHeight, 72.0f));
 	Placement tl = Place(1920.0f, 1080.0f, 0);
 	CHECK(Near(tl.scale, 0.4f));
 	CHECK(Near(tl.width, 200.0f));
 	CHECK(Near(tl.height, 72.0f));
+	// Top corners: the plate sits at the margin, as before the signature.
 	CHECK(Near(tl.x, 24.0f));
 	CHECK(Near(tl.y, 24.0f));
 
@@ -78,9 +80,11 @@ void TestPlacement1080p()
 	CHECK(Near(tr.x, 1920.0f - 200.0f - 24.0f));
 	CHECK(Near(tr.y, 24.0f));
 
+	// Bottom corners: the whole image, signature included, keeps the margin.
 	Placement bl = Place(1920.0f, 1080.0f, 2);
 	CHECK(Near(bl.x, 24.0f));
 	CHECK(Near(bl.y, 1080.0f - 72.0f - 24.0f));
+	CHECK(Near(bl.y + bl.height, 1080.0f - 24.0f));
 
 	Placement br = Place(1920.0f, 1080.0f, 3);
 	CHECK(Near(br.x, 1920.0f - 200.0f - 24.0f));
@@ -98,10 +102,10 @@ void TestPlacementOtherCanvases()
 	Placement p720 = Place(1280.0f, 720.0f, 3);
 	CHECK(Near(p720.height / 720.0f, 72.0f / 1080.0f, 0.001f));
 	CHECK(Near(p720.height, 48.0f));
-	// The "By Trigglow" line stays legible on the stream: 10 px at 720p, 15
-	// px at 1080p.
-	CHECK(kSignaturePixelSize * kRenderScale * p720.scale >= 9.99f);
-	CHECK(Near(kSignaturePixelSize * kRenderScale * Place(1920.0f, 1080.0f, 0).scale, 15.0f));
+	// The "By Trigglow" line is caption-sized on the stream: 11 px at 1080p,
+	// 7.3 px at 720p.
+	CHECK(Near(kSignaturePixelSize * kRenderScale * Place(1920.0f, 1080.0f, 0).scale, 11.0f));
+	CHECK(Near(kSignaturePixelSize * kRenderScale * p720.scale, 7.33f, 0.01f));
 	CHECK(Near(p720.margin, 16.0f));
 	CHECK(Near(p720.x + p720.width + p720.margin, 1280.0f));
 	CHECK(Near(p720.y + p720.height + p720.margin, 720.0f));
@@ -220,22 +224,23 @@ void TestKeepsTheUsersTransform()
 void TestTallerBadge()
 {
 	g_currentTest = "taller badge";
-	// Placed bottom-right by an earlier 0.6 build: the 58 px plate, and no
+	// Placed bottom-right by an earlier 0.6 build: the 58 px image, and no
 	// design height stored (0).
 	AppliedLayout old = Applied(1920.0f, 1080.0f, 3);
 	old.designHeight = 0.0f;
 	old.y = 1080.0f - 58.0f - 24.0f;
 	const ItemTransform asPlaced = Transform(old.x, old.y, old.scale);
 
-	// Left there: placed again, so the 72 px badge keeps its 24 px margin
-	// instead of sitting 10 px from the bottom edge.
+	// Left there: placed again, so the 72 px image (plate and signature)
+	// keeps its 24 px margin instead of hanging 14 px lower.
 	CHECK(ShouldPlace(old, asPlaced, 1920.0f, 1080.0f, 3));
 	CHECK(Near(Place(1920.0f, 1080.0f, 3).y, 1080.0f - 72.0f - 24.0f));
 	// Moved or scaled by the user: stays where they put it.
 	CHECK(!ShouldPlace(old, Transform(600.0f, 300.0f, old.scale), 1920.0f, 1080.0f, 3));
 	CHECK(!ShouldPlace(old, Transform(old.x, old.y, 0.5f), 1920.0f, 1080.0f, 3));
 
-	// Placed by this build: nothing to do.
+	// Placed by this build, or by a pre-release one whose image was already
+	// 72 px tall (the signature inside the plate): nothing to do.
 	const AppliedLayout current = Applied(1920.0f, 1080.0f, 3);
 	CHECK(!ShouldPlace(current, Transform(current.x, current.y, current.scale), 1920.0f, 1080.0f, 3));
 }
@@ -244,13 +249,14 @@ void TestFileNames()
 {
 	g_currentTest = "file names";
 	// The render version is part of the name: a badge drawn by an older
-	// build (no signature, 58 px plate) is never picked up.
-	CHECK(kRenderVersion == 2);
-	CHECK(BadgeFileName(30) == "delay-badge-r2-30s.png");
-	CHECK(BadgeFileName(5) == "delay-badge-r2-5s.png");
-	CHECK(BadgeFileName(60) == "delay-badge-r2-60s.png");
-	CHECK(BadgeFileName(0) == "delay-badge-r2-1s.png");
-	CHECK(BadgeFileName(600) == "delay-badge-r2-60s.png");
+	// build (no signature, or the signature inside the plate) is never
+	// picked up.
+	CHECK(kRenderVersion == 3);
+	CHECK(BadgeFileName(30) == "delay-badge-r3-30s.png");
+	CHECK(BadgeFileName(5) == "delay-badge-r3-5s.png");
+	CHECK(BadgeFileName(60) == "delay-badge-r3-60s.png");
+	CHECK(BadgeFileName(0) == "delay-badge-r3-1s.png");
+	CHECK(BadgeFileName(600) == "delay-badge-r3-60s.png");
 	CHECK(ClampSeconds(0) == kMinSeconds);
 	CHECK(ClampSeconds(61) == kMaxSeconds);
 	CHECK(ClampSeconds(42) == 42);
@@ -263,7 +269,9 @@ void TestStaleFiles()
 	CHECK(IsStaleBadgeFile("delay-badge-30s.png")); // Unversioned names, before "By Trigglow".
 	CHECK(IsStaleBadgeFile("delay-badge-5s.png"));
 	CHECK(IsStaleBadgeFile("delay-badge-r1-30s.png"));
-	CHECK(IsStaleBadgeFile("delay-badge-r20-30s.png")); // Not "r2-".
+	CHECK(IsStaleBadgeFile("delay-badge-r2-30s.png")); // The signature inside the plate.
+	CHECK(IsStaleBadgeFile("delay-badge-r2-60s.png"));
+	CHECK(IsStaleBadgeFile("delay-badge-r30-30s.png")); // Not "r3-".
 	// Current badges: kept.
 	CHECK(!IsStaleBadgeFile(BadgeFileName(30)));
 	CHECK(!IsStaleBadgeFile(BadgeFileName(1)));

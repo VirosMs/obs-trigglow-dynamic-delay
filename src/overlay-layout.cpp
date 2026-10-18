@@ -93,7 +93,7 @@ bool ShouldPlace(const AppliedLayout &applied, const ItemTransform &current, flo
 		return true; // The dock asked for another corner: that wins over a manual move.
 	const bool canvasChanged = std::fabs(canvasWidth - applied.canvasWidth) >= 0.5f ||
 				   std::fabs(canvasHeight - applied.canvasHeight) >= 0.5f;
-	// A taller badge left where an older build put it would eat into the
+	// A taller image left where an older build put it would eat into the
 	// bottom margin: placed again, unless the user moved or scaled it.
 	const bool badgeResized = std::fabs(applied.designHeight - kDesignHeight) >= 0.5f;
 	return (canvasChanged || badgeResized) && IsUntouched(applied, current);
