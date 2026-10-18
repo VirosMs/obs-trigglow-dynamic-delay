@@ -815,6 +815,7 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	QString rule = QStringLiteral("none");
 	QString tone = QStringLiteral("text");
 	QString chipTone;
+	QString chipText = T("Dock.Status.Seconds").arg(status.delaySeconds);
 	ui::IconId icon = ui::IconId::Circle;
 	QString iconTone = QStringLiteral("muted");
 	switch (status.state) {
@@ -831,14 +832,25 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 		icon = ui::IconId::Clock;
 		iconTone = QStringLiteral("warning");
 		break;
-	case BufferModeState::Active:
+	case BufferModeState::Active: {
+		// What viewers really get -- the same seconds the live overlay shows.
+		// The RAM budget can trim the configured delay (60 s asked, 35 s fit):
+		// then the chip reads "35 / 60 s" in amber and the detail says why.
+		const uint32_t applied = status.effectiveDelaySeconds > 0
+						 ? std::min(status.effectiveDelaySeconds, status.delaySeconds)
+						 : status.delaySeconds;
+		const bool trimmed = applied < status.delaySeconds;
 		headline = T("Dock.Status.Active");
-		detail = T("Dock.Status.Active.Detail").arg(status.delaySeconds);
+		detail = trimmed ? T("Dock.Status.Active.DetailTrimmed").arg(applied).arg(status.delaySeconds)
+				 : T("Dock.Status.Active.Detail").arg(applied);
+		chipText = trimmed ? T("Dock.Status.SecondsOf").arg(applied).arg(status.delaySeconds)
+				   : T("Dock.Status.Seconds").arg(applied);
 		rule = QStringLiteral("active");
-		chipTone = QStringLiteral("accent");
+		chipTone = trimmed ? QStringLiteral("warning") : QStringLiteral("accent");
 		icon = ui::IconId::Shield;
 		iconTone = QStringLiteral("accent");
 		break;
+	}
 	case BufferModeState::Error:
 		headline = T("Dock.Status.Error");
 		rule = QStringLiteral("danger");
@@ -853,7 +865,7 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	SetIcon(statusIcon_, icon, iconTone, kStatusIconSize);
 	statusChip_->setVisible(!chipTone.isEmpty());
 	if (!chipTone.isEmpty()) {
-		statusChip_->setText(T("Dock.Status.Seconds").arg(status.delaySeconds));
+		statusChip_->setText(chipText);
 		ui::SetStyleProperty(statusChip_, "tgTone", chipTone);
 	}
 	detailLabel_->setText(detail);

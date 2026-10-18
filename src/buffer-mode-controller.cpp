@@ -68,7 +68,6 @@ void BufferModeController::SetLoadingScene(std::string sceneName)
 void BufferModeController::SetDelaySeconds(uint32_t seconds)
 {
 	status_.delaySeconds = seconds;
-	NotifyStatusChanged();
 	if (status_.state == BufferModeState::Active) {
 		bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, seconds);
 		// Video's ring resizes lazily on its next Render() call (graphics
@@ -78,6 +77,8 @@ void BufferModeController::SetDelaySeconds(uint32_t seconds)
 		SyncAudioDelayToVideoEffective();
 		UpdateOverlay();
 	}
+	// After the sync: the dock shows the effective seconds it computed.
+	NotifyStatusChanged();
 }
 
 void BufferModeController::SetShowOverlay(bool show)
@@ -97,14 +98,13 @@ void BufferModeController::SetOverlayCorner(uint32_t corner)
 void BufferModeController::UpdateOverlay()
 {
 	bool visible = status_.showOverlay && status_.state == BufferModeState::Active;
-	uint32_t seconds = effectiveDelaySeconds_ > 0 ? effectiveDelaySeconds_ : status_.delaySeconds;
+	uint32_t seconds = status_.effectiveDelaySeconds > 0 ? status_.effectiveDelaySeconds : status_.delaySeconds;
 	bridge_.SetDelayOverlay(visible, seconds, status_.overlayCorner);
 }
 
 void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
 {
 	status_.minResolutionHeight = heightPixels;
-	NotifyStatusChanged();
 	if (status_.state == BufferModeState::Active) {
 		bridge_.SetBufferFilterMinResolutionHeight(status_.liveSceneName, heightPixels);
 		// A quality-floor change can change the ring's RAM fit just as much
@@ -113,6 +113,7 @@ void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
 		SyncAudioDelayToVideoEffective();
 		UpdateOverlay();
 	}
+	NotifyStatusChanged();
 }
 
 void BufferModeController::Enable()
@@ -231,6 +232,7 @@ void BufferModeController::Disable()
 	}
 
 	bridge_.SetDelayOverlay(false, 0);
+	status_.effectiveDelaySeconds = 0;
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, false);
 	if (!sceneBeforeEnable_.empty()) {
@@ -264,6 +266,7 @@ void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResol
 	status_.loadingSceneName = std::move(loadingSceneName);
 	status_.showOverlay = showOverlay;
 	status_.overlayCorner = overlayCorner > 3 ? 0 : overlayCorner;
+	status_.effectiveDelaySeconds = 0;
 	// Deliberately NOT calling Enable() here even if the user left it on
 	// last session — see header comment. Always starts Inactive.
 	SetState(BufferModeState::Inactive);
@@ -382,7 +385,7 @@ void BufferModeController::SyncAudioDelayToVideoEffective()
 				  "shortening audio's delay to match so it doesn't lag behind video",
 				  effectiveSeconds, status_.delaySeconds);
 	}
-	effectiveDelaySeconds_ = targetSeconds;
+	status_.effectiveDelaySeconds = targetSeconds;
 	bridge_.SetAudioDelayFiltersDelaySeconds(status_.liveSceneName, targetSeconds);
 }
 

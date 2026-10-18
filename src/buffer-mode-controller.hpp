@@ -59,6 +59,11 @@ enum class BufferModeState {
 struct BufferModeStatus {
 	BufferModeState state = BufferModeState::Inactive;
 	uint32_t delaySeconds = 5;
+	// Seconds the delay really applies from Filling on: delaySeconds, or fewer
+	// when the video ring couldn't fit them in the RAM budget at the quality
+	// floor (SyncAudioDelayToVideoEffective). What viewers get, so the dock
+	// and the overlay both show this one. 0 while Inactive or in Error.
+	uint32_t effectiveDelaySeconds = 0;
 	// Floor for the RAM reduction of the delayed video's resolution --
 	// VideoDelayFilter never reduces below this for RAM, shortening the ACTUAL
 	// buffered duration instead if delaySeconds doesn't fit the RAM budget at
@@ -213,7 +218,8 @@ private:
 	// and again once the fill window elapses (OnFillTimerElapsed -- by then
 	// the ring IS sized, so this is where the real correction happens), plus
 	// on any later delay/quality change while Active, since either can
-	// change whether shortening is needed.
+	// change whether shortening is needed. Stores the result in
+	// status_.effectiveDelaySeconds; the caller notifies.
 	void SyncAudioDelayToVideoEffective();
 
 	// Shows (Active + enabled in settings) or hides the "Delay Ns" overlay,
@@ -236,8 +242,7 @@ private:
 	// ObsFrontendBridge::ListActiveVideoEncoders() must run.
 	void WarnAboutEncodersAboveBuffer();
 
-	uint32_t effectiveDelaySeconds_ = 0; // Set by SyncAudioDelayToVideoEffective().
-	bool bufferOutputCap_ = true;        // Hidden buffer_output_cap setting, see LoadSettings().
+	bool bufferOutputCap_ = true; // Hidden buffer_output_cap setting, see LoadSettings().
 	// (encoder name, width, height) already warned about this cycle
 	// (WarnAboutEncodersAboveBuffer); cleared by Enable().
 	std::set<std::tuple<std::string, uint32_t, uint32_t>> warnedEncoders_;
