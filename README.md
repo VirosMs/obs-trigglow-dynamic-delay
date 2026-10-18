@@ -6,7 +6,7 @@ Native OBS Studio plugin that delays your stream's **video and audio together**,
 number of seconds, from a button, a native OBS hotkey, or a Stream Deck — **without the streaming
 output ever being touched.** No reconnection, no cut, at any point, for any reason. No external
 app, no web panel, no separate process: everything lives inside the OBS process.
-**Status: MVP / v0.5.1 — Early Access.**
+**Status: MVP / v0.6.0 — Early Access.**
 
 As of v0.3.0, the RAM ring buffer is real MJPEG-compressed on Windows and Linux (vendored FFmpeg),
 with an automatic, safe fallback to uncompressed storage if the codec isn't available — no quality
@@ -43,13 +43,19 @@ Enable/Disable button and a responsive dock, and fixes the video delay drifting 
 the wrapper scene was reused, and the Windows installer missing the Spanish locale. See
 `CHANGELOG.md`.
 
-v0.5.1 fixes OBS showing **"Encoding overloaded"** as soon as the delay was enabled with a canvas
-larger than the output (e.g. 2560x1440 canvas, 1920x1080 output): the buffer is now never stored
-above OBS's output resolution, compression uses several threads, and each delayed frame is decoded
-once however many previews/projectors are open — ~5.2/5.9 ms p50/p95 per frame instead of
-14.3/17.4 ms in that setup. It also adds a `perf check` line to the OBS log for support, and really
-switches off delay filters left on when OBS was closed while Active. A 1440p *output* at 60 fps is
-still pending (planned for v0.6.0). See `CHANGELOG.md` and `docs/TROUBLESHOOTING.md`.
+v0.6.0 fixes OBS showing **"Encoding overloaded"** as soon as the delay was enabled with a canvas
+larger than the output (e.g. 2560x1440 canvas, 1920x1080 output): the buffer is never stored above
+OBS's output resolution, and compression and decompression run on the plugin's own threads instead
+of OBS's graphics thread — at 1440p60 the plugin's work there drops from ~14/17 ms to
+~1.2–1.7/1.6–2.1 ms per frame (p50/p95, offline benchmark), so **a 1440p output at 60 fps is
+supported**. If your computer can't keep up, the plugin lowers the buffer's quality step by step
+(never below your minimum quality, never cutting the delay) and says so in the dock. It also uses
+less RAM (~0.6–0.8 GB instead of ~1.9 GB for 30 s at 1440p60), keeps audio and video on exactly the
+same delay, really switches off delay filters left on when OBS was closed while Active, and brings a
+redesigned dock, report dialog and live overlay aligned with trigglow.com. The objects the plugin
+manages are renamed from "(no tocar)" to "(auto)": update any Stream Deck or obs-websocket action
+that uses the old names. (A v0.5.1 hotfix was prepared but never published; it's part of v0.6.0.)
+See `CHANGELOG.md` and `docs/TROUBLESHOOTING.md`.
 
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried
@@ -58,10 +64,24 @@ first release).
 
 ## Usage requirements
 
-**OBS Studio 31.1.0 or newer.** The v0.3.2 binary is built against the OBS 31.1.1 sources (see
-`buildspec.json`), and it has been verified to load and work correctly on OBS **32.2.2** (OBS's
-plugin compatibility mechanism only rejects plugins built against a version *newer* than the one
-currently running; it has never been tested on versions older than 31.1.1).
+**OBS Studio 31.1.0 or newer.** The v0.6.0 binary is built against the OBS 31.1.1 sources (see
+`buildspec.json`); earlier releases have been verified to load and work correctly on OBS
+**32.2.2** (OBS's plugin compatibility mechanism only rejects plugins built against a version
+*newer* than the one currently running; it has never been tested on versions older than 31.1.1).
+
+**Resolution and frame rate.** Any canvas: the delay buffer follows OBS's **output** resolution
+(`Settings → Video → Output (Scaled) Resolution`) and never goes above it, so a canvas larger than
+the output costs the plugin nothing extra. 1080p and **1440p outputs at up to 60 fps** are
+supported since v0.6.0 (figures in `CHANGELOG.md`, measured offline on an 8-core/16-thread CPU). On
+a machine that can't keep up, the buffer drops to a lower resolution (never below the minimum
+quality you choose) and, last, to half the capture frame rate, instead of overloading OBS or cutting
+the delay; the dock shows an amber notice while that happens.
+
+**Memory.** The buffer's RAM budget is half of your system RAM, between 1 GB and 24 GB (on macOS
+and Linux, where RAM isn't detected yet, a fixed 2 GB). Gameplay compresses about 11–15x, so 30 s at
+1440p60 take roughly 0.6–0.8 GB (offline simulation). If the seconds you ask for don't fit at your
+minimum quality, fewer seconds are buffered (the dock tells you before you enable it). Compression
+needs FFmpeg, bundled on Windows and Linux; on macOS the buffer is stored uncompressed.
 
 ## Build requirements
 
@@ -75,7 +95,7 @@ enable `ENABLE_FRONTEND_API` and `ENABLE_QT` and register the new source files.
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows is the priority platform for v0.3.2** (as requested by product); macOS/Linux build green
+**Windows is the priority platform for v0.6.0** (as requested by product); macOS/Linux build green
 in CI on the template's own build system, but have not been run live in this release.
 
 ## Build (Windows)
@@ -100,7 +120,7 @@ cmake --build --preset macos --config RelWithDebInfo
 
 ## Installing the plugin
 
-**Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.3.2-windows-x64-setup.exe`
+**Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.6.0-windows-x64-setup.exe`
 from the [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)
 and run it — it finds your OBS install automatically and copies the files for you. It isn't code-
 signed yet (Early Access), so Windows SmartScreen will warn you before letting it run. **Full guide
@@ -131,9 +151,11 @@ macOS/Linux don't have a one-click installer yet — manual install is the only 
    output resolution either: with a 720p output the buffer is 720p even with a 1080p minimum). The
    dock shows a live estimate of whether your chosen seconds actually fit in RAM at that quality
    *before* you press Enable — if they don't, it warns that the buffered duration will be shortened
-   instead of lowering the quality further, but never blocks your choice.
-3. Go to `Settings → Hotkeys`, search for "Trigglow", and assign a key to **Toggle Dynamic
-   Delay** (and optionally to Enable/Disable separately).
+   instead of lowering the quality further, but never blocks your choice. These fields are locked
+   while the delay is preparing or on ("Turn the delay off to change it.").
+3. Go to `Settings → Hotkeys`, search for "Trigglow", and assign a key to **Trigglow: Toggle
+   Dynamic Delay** (and optionally to Enable/Disable separately; in Spanish they read "Trigglow:
+   Activar/desactivar Dynamic Delay", "Activar" and "Desactivar").
 4. Press Enable (from the dock button, the hotkey, or Stream Deck). The dock shows **Preparing
    delay** with a progress bar and a live countdown while the buffer fills up to the requested
    delay; once full, it switches automatically to **Delay on** and Program starts showing the
@@ -144,6 +166,11 @@ macOS/Linux don't have a one-click installer yet — manual install is the only 
 
 Pressing Disable frees the RAM buffer immediately and switches back to whatever scene was showing
 before you enabled it.
+
+The plugin manages a few objects in your scene collection by itself: the scene **Trigglow Delay
+Buffer (auto)**, the filters **Trigglow Buffer Mode Delay (auto)** and `Trigglow Audio Delay (auto) -
+<source>`, and the overlay image **Trigglow Delay Badge (auto)**. You can move or resize the overlay
+in OBS and it stays where you put it; don't rename or delete the others.
 
 ## Mapping a Stream Deck button
 
@@ -171,8 +198,18 @@ src/
                                      orchestrates buffer mode — the only owner of state
   obs-frontend-bridge.{hpp,cpp}    → the only layer that touches obs-frontend-api.h + filter/
                                      scene wiring
-  video-delay-filter.{hpp,cpp}     → RAM/NV12 ring buffer for delayed video + its small, fixed
-                                     GPU object pool
+  video-delay-filter.{hpp,cpp}     → the video delay filter: capture, I420 conversion on the GPU,
+                                     readback, playback, its small fixed GPU object pool, and the
+                                     perf check / pipeline check telemetry
+  codec-pipeline.{hpp,cpp}         → encode/decode worker threads and the reaper thread, off OBS's
+                                     graphics thread, stress-tested in tests/
+  mjpeg-codec.{hpp,cpp}            → MJPEG over the vendored FFmpeg, one instance per thread
+  frame-ring.{hpp,cpp}             → ring of slot headers with a state machine, unit-tested
+  frame-arena.{hpp,cpp}            → block arena for the compressed frames, unit-tested
+  degradation-policy.{hpp,cpp}     → pure adaptive degradation (threads, resolution rungs, half
+                                     rate), unit-tested
+  pipeline-health.hpp              → what the dock reads about the buffer's degradation
+  perf-stats.{hpp,cpp}             → fixed-size percentile series for the telemetry
   buffer-fit.{hpp,cpp}             → pure buffer sizing math (output-resolution cap, quality
                                      floor, RAM budget), unit-tested in tests/
   encoder-check.{hpp,cpp}          → pure decision behind the "encoder above the buffer" log
@@ -181,7 +218,8 @@ src/
   hardware-info.{hpp,cpp}          → total system RAM query, used to size the buffer budget
   scene-combo-box.{hpp,cpp}        → dock combo box populated from OBS's own scene list
   settings-ui.{hpp,cpp}            → the Qt dock (live/loading scene, seconds, quality, fit
-                                     estimate, Enable/Disable, live fill countdown, update notice)
+                                     estimate, Enable/Disable, live fill countdown, degradation
+                                     notice, update notice)
   ui-tokens.{hpp,cpp}              → pure color tokens derived from OBS's palette, with the WCAG
                                      AA contract unit-tested in tests/
   ui-theme.{hpp,cpp}               → the UI's single style sheet, bundled brand fonts and
@@ -214,14 +252,17 @@ tests/
   buffer_fit_tests.cpp             → unit tests for buffer-fit (off by default:
                                      -DTRIGGLOW_BUILD_TESTS=ON, then ctest)
   encoder_check_tests.cpp          → unit tests for encoder-check (same)
-  ui_tokens_tests.cpp · auto_names_tests.cpp · overlay_layout_tests.cpp → same, for those modules
+  ui_tokens_tests.cpp · auto_names_tests.cpp · overlay_layout_tests.cpp ·
+  frame_arena_tests.cpp · frame_ring_tests.cpp · degradation_policy_tests.cpp → same, for those
+                                     modules
+  pipeline_stress_tests.cpp        → concurrency stress test of ring + arena + codec pipeline
 tools/fonts/                       → how the bundled font subsets are generated
 docs/
   SPEC.md                  → full technical specification (start here)
   INSTALL_GUIDE.md          → step-by-step install walkthrough with screenshots (SmartScreen,
                              installer wizard, enabling the OBS dock)
   BUILD_VALIDATION.md       → what was actually verified in this release, and what wasn't
-  ROADMAP.md                → v0.3, v0.4, and what's out of scope
+  ROADMAP.md                → what each version shipped, what's next, and what's out of scope
   STREAM_DECK.md             → detailed Stream Deck guide
   FAQ.md · TROUBLESHOOTING.md
 CMakeLists.txt, CMakePresets.json, buildspec.json, cmake/  → the official template's build system
