@@ -92,44 +92,69 @@
   usuario. Ahora incluye ambos. Es el siguiente release después de v0.4.0 (actualmente en
   producción) — lo bastante pequeño como para no esperar a las features no relacionadas de abajo.
 
-## v0.5.1 (entregado — 2026-10-18)
-Hotfix de rendimiento para la sobrecarga al codificar ("Encoding overloaded") en cuanto se activaba
-el delay con un lienzo mayor que la salida (reportado en directo: lienzo 2560x1440, salida
-1920x1080 a 60 fps).
+## v0.6.0 (entregado — 2026-10-18)
+Rendimiento, adaptación y el aspecto de Trigglow. Se preparó un hotfix de rendimiento v0.5.1 que
+nunca se publicó; todo lo que llevaba sale aquí. Lo primero que se reportó en directo: sobrecarga al
+codificar ("Encoding overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida
+1920x1080 a 60 fps.
 - **Buffer limitado a la resolución de salida de OBS.** El ring se dimensionaba a partir del lienzo,
   así que un lienzo 1440p emitido a 1080p se codificaba/decodificaba en MJPEG a 1440p en el hilo
-  gráfico de OBS (14,3/17,4 ms p50/p95 por frame). Ahora ~5,2/5,9 ms. La calidad mínima pasa a ser
-  un suelo de RAM que nunca supera la salida. La aritmética de dimensionado se extrae a
-  `src/buffer-fit.*` con tests unitarios (`-DTRIGGLOW_BUILD_TESTS=ON`).
-- **Codificador MJPEG con hilos por slices** (hasta 4 hilos): 1080p de 8,6/10,4 a 5,2/5,9 ms
-  p50/p95 en el hilo gráfico.
-- **Cada slot del ring se decodifica y sube como mucho una vez** haya las vistas que haya; si un slot
-  no se puede mostrar se mantiene el último frame en vez de dibujar negro.
-- **Intervalo de frame exacto** con ritmos fraccionarios (a 59,94 fps ya no se pierde ~1 frame/s) y
-  aritmética racional para el delay efectivo con el que se sincroniza el audio.
-- **Telemetría `perf check`** cada 10 s en el log de OBS (sustituye a `compression check`), un
-  **aviso para encoders por encima del buffer** y el ajuste oculto de soporte
-  **`buffer_output_cap`**.
-- **Los filtros de delay que quedaban encendidos al cerrar OBS estando Activo ahora se apagan de
-  verdad al cargar** (el intento de v0.5.0 nunca llegaba a los filtros). Sigue sin hacerse al cambiar
-  de colección de escenas sin reiniciar.
+  gráfico de OBS (14,3/17,4 ms p50/p95 por frame). La calidad mínima pasa a ser un suelo de RAM que
+  nunca supera la salida. La aritmética de dimensionado está en `src/buffer-fit.*`, con tests; anchos
+  múltiplos de 8 para la lectura en OpenGL. Ajuste oculto de soporte `buffer_output_cap`, y un aviso
+  en el log para encoders por encima del buffer.
+- **Compresión/descompresión en hilos propios, fuera del hilo gráfico de OBS — salida 1440p60
+  soportada.** Uno o dos hilos de compresión, un hilo de descompresión que trabaja por adelantado, un
+  hilo liberador de memoria, un ring de cabeceras de slot con máquina de estados y una arena por
+  bloques. A 1440p60 el trabajo del plugin en el hilo gráfico pasó de ~14/17 ms a ~1,2–1,7/1,6–2,1 ms
+  por frame (p50/p95, microbenchmark fuera de OBS). Interruptor oculto `codec_workers` para volver al
+  códec en el hilo gráfico.
+- **Degradación automática que nunca corta el delay**: más hilos de compresión, después peldaños de
+  menos resolución hasta la calidad mínima, después la mitad de fps de captura; vuelve a subir con
+  30 s de histéresis; aviso ámbar en el dock con qué se redujo y por qué.
+- **Menos RAM, nada pesado en el hilo gráfico**: sin relleno de ceros, arena por bloques (~1,9 GB →
+  ~0,6–0,8 GB para 30 s a 1440p60 en simulación), memoria liberada en el hilo liberador, códecs y
+  objetos de GPU liberados al desactivar, conversión I420 en la GPU, tablas de Huffman estándar, cada
+  frame decodificado y subido una sola vez.
+- **Un único delay en segundos enteros para vídeo y audio**, también cuando la RAM recorta el ring
+  (antes hasta ~1 s de diferencia); intervalo de frame exacto a 59,94 fps; un reinicio del buffer se
+  rellena detrás de la escena de carga en vez de mostrar negro; 0 s deja pasar el vídeo.
+- **Los filtros de delay que quedaban encendidos al cerrar OBS estando Activo se apagan de verdad**,
+  al arrancar y al cambiar de colección de escenas; corregidas la fuga de referencias del filtro y el
+  destructor sin contexto gráfico; un archivo de ajustes ilegible se aparta como `.invalid`.
+- **Telemetría `perf check` y `pipeline check`** cada 10 s en el log de OBS (sustituye a
+  `compression check`).
+- **Rediseño de la interfaz alineado con trigglow.com**: dock, diálogo de reporte y overlay del
+  directo sobre el tema de OBS, Archivo y Geist Mono empaquetadas (OFL), iconos SVG, contraste WCAG
+  AA y foco de teclado, errores de inicio de sesión visibles, los segundos de delay bloqueados
+  mientras el delay está en marcha. El overlay es una sola imagen generada, igual en todos los
+  sistemas, que conserva la posición y el tamaño que le des.
+- **Nombres "(auto)"** para la escena, los filtros y el overlay que gestiona el plugin, migrados
+  automáticamente.
+- **Build/CI**: FFmpeg fijado a un build de fin de mes de BtbN, 9 suites de tests unitarios en CI en
+  todas las plataformas, `Qt6::Svg`.
 
-## v0.6.0 (siguiente)
-- **Codificación/decodificación en hilos worker, fuera del hilo gráfico de OBS — objetivo
-  1440p60.** La v0.5.1 sigue comprimiendo y descomprimiendo de forma síncrona dentro de `Render()`,
-  así que una *salida* 1440p a 60 fps todavía puede sobrecargar OBS (1440p30 debería ir bien). Llevar
-  ese trabajo a hilos worker es el objetivo principal de esta versión. Todavía sin fecha.
-- **Alinear el audio con el tramo exacto del vídeo** cuando el presupuesto de RAM recorta el ring
-  (hoy el vídeo usa el tramo fraccionario y el audio segundos enteros, hasta ~1 s de diferencia —
-  ver `docs/SPEC-es.md` §3.3).
+## Siguiente (v0.6.x)
+- **Deduplicar las capturas por la hora de frame de OBS** (`obs_get_video_frame_time()`) en vez de
+  por una celda de reloj por intervalo de frame: exactamente una captura por frame de OBS, sin
+  depender de la fase de la celda, para que el jitter del render no meta dos renders en una celda y se
+  pierda un frame real.
+- **Un render target más pequeño para el keep-alive.** Mientras el buffer se llena, mantener la
+  escena en directo renderizando todavía la renderiza en una textura del tamaño del lienzo cuyo
+  contenido nunca se usa (14,7 MB a 1440p, con un clear por frame); bastaría un target diminuto con la
+  misma proyección.
+- **Rediseño del delay a nivel de output** — el siguiente gran paso de arquitectura; ver "Más
+  adelante" abajo para lo que implica y por qué no ha empezado.
+- Verificar la v0.6.0 en directo: salida 1440p60 y la degradación dentro de una sesión real de OBS
+  (las cifras de arriba salen de benchmarks fuera de OBS en CPU y GPU de AMD), y la alineación A/V con
+  un reloj y una palmada.
 - Presets de delay guardados (p. ej. "Delay corto 5s", "Delay largo 30s"), seleccionables desde el
   dock y desde hotkeys adicionales.
 - **Verificación en directo** de macOS/Linux — ambos ya compilan en verde en CI; esto trata de
   ejecutar y confirmar el plugin de verdad en esas plataformas, no de trabajo nuevo de build.
-- Medir el reajuste de RAM de v0.4.0 (`kAssumedCompressionRatio = 5.0`) contra más
-  sesiones/juegos usando el contador de crecimiento por slot (`encodeGrowthCount_`, el campo
-  `growths=` de la línea `perf check` de v0.5.1) antes de plantearse subirlo más — ver el comentario
-  de esa constante en `src/video-delay-filter.cpp`.
+- Revisar `kAssumedCompressionRatio = 5.0` con las cifras de `ratio` y de la arena de la línea
+  `pipeline check` de más sesiones y juegos. Desde la v0.6.0 solo decide cuántos segundos caben en el
+  presupuesto, así que subirlo daría duración, no memoria residente.
 
 ## v0.7.0 (pausado — acotado, sin empezar, 2026-09-08)
 Objetivo: un Replay Buffer "en directo real", propio de Trigglow, guardado con su propio hotkey (el
