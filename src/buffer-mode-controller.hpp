@@ -173,7 +173,8 @@ public:
 	using SceneListRefreshCallback = std::function<void()>;
 
 	// Fires once OBS has actually finished loading the scene collection
-	// (FrontendEvent::FinishedLoading). Exists because of a real bug found
+	// (FrontendEvent::FinishedLoading), and again when the user switches scene
+	// collection (FrontendEvent::SceneCollectionChanged). Exists because of a real bug found
 	// live, 2026-08-27: LoadSettings() correctly restores
 	// liveSceneName/loadingSceneName from disk well before this fires, but
 	// obs_module_load() (and therefore TrigglowDelayDock's construction,

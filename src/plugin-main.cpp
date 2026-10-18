@@ -39,8 +39,10 @@ extern "C" {
 #include "auth-manager.hpp"
 #include "buffer-mode-controller.hpp"
 #include "hotkeys.hpp"
+#include "i18n.hpp"
 #include "logging.hpp"
 #include "obs-frontend-bridge.hpp"
+#include "overlay-badge.hpp"
 #include "settings-ui.hpp"
 #include "ui-theme.hpp"
 #include "video-delay-filter.hpp"
@@ -80,6 +82,10 @@ constexpr const char *kBufferSettingsFile = "buffer-mode-settings.json";
 // that still needs a home.
 struct PluginState {
 	trigglow::ObsFrontendBridge bridge;
+	// Renders the live overlay's PNGs (one per seconds value) into the
+	// plugin's config folder; the bridge asks it through
+	// SetOverlayImageProvider(). Outlives bufferController (declared before it).
+	std::unique_ptr<trigglow::ui::DelayBadgeFiles> badgeFiles;
 	// Constructed before bufferController so Enable() can be wired to gate on
 	// it from the moment it's created (see SetAuthorizationCheck below) --
 	// see docs/ACCOUNT_GATE.md for why this gate exists at all.
@@ -285,8 +291,20 @@ bool obs_module_load(void)
 
 	g_state = new PluginState();
 
-	// Before the dock uses them.
+	// Before the dock and the first overlay image use them.
 	LoadBrandFonts();
+	// Resolved here: obs_current_module() is only valid during obs_module_load().
+	{
+		char *rawDir = obs_module_get_config_path(obs_current_module(), "overlay");
+		g_state->badgeFiles =
+			std::make_unique<trigglow::ui::DelayBadgeFiles>(rawDir ? QString::fromUtf8(rawDir) : QString());
+		bfree(rawDir);
+		g_state->bridge.SetOverlayImageProvider([files = g_state->badgeFiles.get()](uint32_t seconds) {
+			const QString label = QString::fromUtf8(Str("Overlay.Label"));
+			const QString value = QString::fromUtf8(Str("Overlay.Value")).arg(seconds);
+			return files->PathFor(seconds, label, value).toStdString();
+		});
+	}
 
 	g_state->authManager = std::make_unique<trigglow::AuthManager>();
 	g_state->authManager->Init();

@@ -78,6 +78,7 @@ enum class FrontendEvent {
 	RecordingStarted,
 	ReplayBufferStarted,
 	FinishedLoading,
+	SceneCollectionChanged,
 	ThemeChanged, // OBS switched theme (or its font size): the dock restyles itself.
 	Other,
 };
@@ -95,6 +96,10 @@ struct ActiveVideoEncoder {
 };
 
 using FrontendEventHandler = std::function<void(FrontendEvent)>;
+// Path (UTF-8) of the overlay image for a seconds value, or empty if it
+// couldn't be produced. Set by plugin-main.cpp (overlay-badge.hpp renders it
+// with Qt); kept as a callback so this file stays Qt-free.
+using OverlayImageProvider = std::function<std::string(uint32_t seconds)>;
 
 class ObsFrontendBridge {
 public:
@@ -237,15 +242,27 @@ public:
 	// -- see BufferModeController::SyncAudioDelayToVideoEffective.
 	uint32_t GetVideoEffectiveDelaySeconds(const std::string &liveSceneName) const;
 
-	// Shows/hides a small text overlay ("Delay 30s") inside the wrapper scene
-	// -- the scene that is on Program exactly while the delay is Active, so
-	// the overlay never appears anywhere else. The text source is created
-	// once (with a default style and position) and then only toggled/updated,
-	// so a user who restyles or moves it in OBS keeps their changes. `text`
-	// is ignored when `visible` is false. False if the wrapper scene or a
-	// usable text source type doesn't exist.
-	bool SetDelayOverlay(bool visible, const std::string &text, uint32_t corner = 0) const;
-	// corner: 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right of the canvas.
+	// Shows/hides the "DELAY 30 s" overlay inside the wrapper scene -- the
+	// scene that is on Program exactly while the delay is Active, so the
+	// overlay never appears anywhere else. One image source
+	// (autonames::kOverlayBadge) showing the PNG the provider returns for
+	// `seconds`; created once, then repointed, placed in `corner` (0 top-left,
+	// 1 top-right, 2 bottom-left, 3 bottom-right, see overlay-layout.hpp) and
+	// toggled. Removes the overlay sources of earlier versions on sight.
+	// `seconds` is ignored when `visible` is false. False if the wrapper scene
+	// doesn't exist or no image could be produced (the overlay then stays
+	// hidden; the delay itself is unaffected).
+	bool SetDelayOverlay(bool visible, uint32_t seconds, uint32_t corner = 0) const;
+	void SetOverlayImageProvider(OverlayImageProvider provider);
+
+	// Renames the objects v0.5.1 and earlier created with "(no tocar)" /
+	// "(auto, no tocar)" names (wrapper scene, video and audio delay filters,
+	// overlay badge) to their "(auto)" names (auto-names.hpp), in place, and
+	// removes the retired overlay text source. Idempotent; a name already
+	// taken by something else is left alone (every lookup accepts the old
+	// names too). Call on the UI thread, with the delay Inactive, once the
+	// collection has loaded.
+	void MigrateLegacyAutoNames() const;
 
 	// Switches off every Trigglow delay filter (video and audio) attached to
 	// any input, group, scene of the main canvas or global audio source (see
@@ -369,6 +386,7 @@ private:
 	std::vector<OBSSourceAutoRelease> GetAudioCapableChildren(const std::string &liveSceneName) const;
 
 	FrontendEventHandler handler_;
+	OverlayImageProvider overlayImageProvider_;
 	bool initialized_ = false;
 
 	// Owned strong ref to the scene AcquireLiveSceneRendering() is currently

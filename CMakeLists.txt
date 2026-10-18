@@ -164,6 +164,12 @@ target_sources(
     src/update-checker.cpp
     src/update-checker.hpp
     src/i18n.hpp
+    src/auto-names.cpp
+    src/auto-names.hpp
+    src/overlay-layout.cpp
+    src/overlay-layout.hpp
+    src/overlay-badge.cpp
+    src/overlay-badge.hpp
     src/ui-tokens.cpp
     src/ui-tokens.hpp
     src/ui-theme.cpp
@@ -176,7 +182,8 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STAND
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*, src/ui-tokens.*). Off by default so plugin packaging is unchanged:
+# src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*).
+# Off by default so plugin packaging is unchanged:
 #   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
 #   cmake --build <dir> --config RelWithDebInfo
 #   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure

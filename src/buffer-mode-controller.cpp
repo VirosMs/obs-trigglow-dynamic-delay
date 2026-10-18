@@ -97,12 +97,8 @@ void BufferModeController::SetOverlayCorner(uint32_t corner)
 void BufferModeController::UpdateOverlay()
 {
 	bool visible = status_.showOverlay && status_.state == BufferModeState::Active;
-	std::string text;
-	if (visible) {
-		uint32_t seconds = effectiveDelaySeconds_ > 0 ? effectiveDelaySeconds_ : status_.delaySeconds;
-		text = FormatOne(Str("Overlay.Text"), std::to_string(seconds));
-	}
-	bridge_.SetDelayOverlay(visible, text, status_.overlayCorner);
+	uint32_t seconds = effectiveDelaySeconds_ > 0 ? effectiveDelaySeconds_ : status_.delaySeconds;
+	bridge_.SetDelayOverlay(visible, seconds, status_.overlayCorner);
 }
 
 void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
@@ -234,7 +230,7 @@ void BufferModeController::Disable()
 		liveSceneRenderingHeld_ = false;
 	}
 
-	bridge_.SetDelayOverlay(false, {});
+	bridge_.SetDelayOverlay(false, 0);
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, false);
 	if (!sceneBeforeEnable_.empty()) {
@@ -294,9 +290,15 @@ void BufferModeController::NotifyStatusChanged()
 
 void BufferModeController::OnFrontendEvent(FrontendEvent event)
 {
+	const bool collectionLoaded = event == FrontendEvent::FinishedLoading ||
+				      event == FrontendEvent::SceneCollectionChanged;
+	// Collections saved by v0.5.1 and earlier: "(no tocar)" names -> "(auto)".
+	// Only while Inactive, so nothing is renamed under a running delay.
+	if (collectionLoaded && status_.state == BufferModeState::Inactive)
+		bridge_.MigrateLegacyAutoNames();
 	if (event == FrontendEvent::FinishedLoading && status_.state == BufferModeState::Inactive)
 		bridge_.DisableAllDelayFilters();
-	if (event == FrontendEvent::FinishedLoading && onSceneListRefresh_)
+	if (collectionLoaded && onSceneListRefresh_)
 		onSceneListRefresh_();
 	if (event == FrontendEvent::ThemeChanged && onThemeChanged_)
 		onThemeChanged_();

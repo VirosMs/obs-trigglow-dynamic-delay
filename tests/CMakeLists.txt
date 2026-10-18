@@ -1,10 +1,10 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*, src/ui-tokens.*). No libobs, no Qt, no FFmpeg, no test
-# framework. Two ways to build them:
+# src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*).
+# No libobs, no Qt, no FFmpeg, no test framework. Two ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
 #      cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
-#      cmake --build <dir> --target buffer_fit_tests encoder_check_tests --config RelWithDebInfo
+#      cmake --build <dir> --config RelWithDebInfo
 #      ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
 #
 # 2. Standalone, without downloading any OBS dependency (what CI's unit-tests
@@ -55,3 +55,16 @@ add_executable(ui_tokens_tests ui_tokens_tests.cpp "${_src}/ui-tokens.cpp" "${_s
 target_include_directories(ui_tokens_tests PRIVATE "${_src}")
 set_target_properties(ui_tokens_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME ui_tokens_tests COMMAND ui_tokens_tests)
+
+# Names of the objects the plugin manages and their migration from the
+# "(no tocar)" names of v0.5.1 and earlier (src/auto-names.hpp).
+add_executable(auto_names_tests auto_names_tests.cpp "${_src}/auto-names.cpp" "${_src}/auto-names.hpp")
+target_include_directories(auto_names_tests PRIVATE "${_src}")
+set_target_properties(auto_names_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME auto_names_tests COMMAND auto_names_tests)
+
+# Placement of the live overlay badge and its file names (src/overlay-layout.hpp).
+add_executable(overlay_layout_tests overlay_layout_tests.cpp "${_src}/overlay-layout.cpp" "${_src}/overlay-layout.hpp")
+target_include_directories(overlay_layout_tests PRIVATE "${_src}")
+set_target_properties(overlay_layout_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME overlay_layout_tests COMMAND overlay_layout_tests)
