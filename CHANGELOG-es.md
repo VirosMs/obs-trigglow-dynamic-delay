@@ -232,6 +232,11 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   eleva el buffer por encima de la resolución de salida: con una salida de 720p el buffer es 720p
   aunque el mínimo sea 1080p.
 - **La línea de log `compression check` se sustituye por `perf check` y `pipeline check`** (abajo).
+- **Menos datos personales en el log de OBS.** El enlace de inicio de sesión ya no se escribe en el
+  log (lleva el código de inicio de sesión de un solo uso), y las líneas "settings saved" y "copied
+  OBS log" nombran el fichero sin la ruta completa, que incluía tu nombre de usuario de Windows.
+- **El aviso de actualización solo abre las páginas de releases de este repositorio**: cualquier
+  otro enlace en la respuesta de GitHub se sustituye por la página de la última release.
 
 **Cambiado / Dock:**
 - **Aspecto de marca sobre tu tema de OBS.** Tarjetas, campos y fondos siguen el tema activo de OBS
@@ -413,6 +418,8 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   lento), que los runners compartidos y ThreadSanitizer no siempre cumplen. Sus comprobaciones de
   corrección siguen siendo estrictas en todas partes.
 - Versión 0.6.0 en `buildspec.json` y en el script del instalador de Windows.
+- **La DLL de Windows solo registra el nombre de su PDB** (`/PDBALTPATH`), no la ruta absoluta de
+  la máquina de compilación (`cmake/windows/helpers.cmake`).
 
 **Tests** (9 suites, sin OBS; `ctest`):
 - `buffer_fit_tests` (dimensionado: lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que

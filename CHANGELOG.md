@@ -208,6 +208,11 @@ was prepared but never published: everything in it ships here.
   raises the buffer above the output resolution: with a 720p output the buffer is 720p even with a
   1080p minimum.
 - **The `compression check` log line is replaced by `perf check` and `pipeline check`** (below).
+- **Less personal data in the OBS log.** The sign-in link is no longer written to the log (it
+  carries the one-time sign-in code), and the "settings saved" and "copied OBS log" lines name the
+  file without the full path, which included your Windows user name.
+- **The update notice only opens this repository's release pages**: any other link in GitHub's
+  answer is replaced by the latest-release page.
 
 **Changed / Dock:**
 - **Brand look on top of your OBS theme.** Cards, fields and backgrounds still follow the active OBS
@@ -375,6 +380,8 @@ was prepared but never published: everything in it ships here.
   at least 10 frames shown behind a slow decoder), which shared runners and ThreadSanitizer can't
   always meet. Its correctness checks stay strict everywhere.
 - Version 0.6.0 in `buildspec.json` and the Windows installer script.
+- **The Windows DLL records only its PDB's file name** (`/PDBALTPATH`), not the build machine's
+  absolute path (`cmake/windows/helpers.cmake`).
 
 **Tests** (9 suites, no OBS needed; `ctest`):
 - `buffer_fit_tests` (sizing: canvas = output, 1440p → 1080p, 4K → 1080p, output above canvas,
