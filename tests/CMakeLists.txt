@@ -1,10 +1,11 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*). No libobs, no Qt, no FFmpeg, no test framework. Two
-# ways to build them:
+# src/encoder-check.*, and since v0.6.0 src/frame-arena.* and
+# src/frame-ring.*). No libobs, no Qt, no FFmpeg, no test framework. Two ways
+# to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
 #      cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
-#      cmake --build <dir> --target buffer_fit_tests encoder_check_tests --config RelWithDebInfo
+#      cmake --build <dir> --config RelWithDebInfo
 #      ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
 #
 # 2. Standalone, without downloading any OBS dependency (what CI's unit-tests
@@ -48,3 +49,25 @@ add_executable(
 target_include_directories(encoder_check_tests PRIVATE "${_src}")
 set_target_properties(encoder_check_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME encoder_check_tests COMMAND encoder_check_tests)
+
+# v0.6.0 codec workers: the payload arena and the ring's slot state machine.
+find_package(Threads REQUIRED)
+
+add_executable(frame_arena_tests frame_arena_tests.cpp check.hpp "${_src}/frame-arena.cpp" "${_src}/frame-arena.hpp")
+target_include_directories(frame_arena_tests PRIVATE "${_src}")
+target_link_libraries(frame_arena_tests PRIVATE Threads::Threads)
+set_target_properties(frame_arena_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME frame_arena_tests COMMAND frame_arena_tests)
+
+add_executable(
+  frame_ring_tests
+  frame_ring_tests.cpp
+  check.hpp
+  "${_src}/frame-ring.cpp"
+  "${_src}/frame-ring.hpp"
+  "${_src}/frame-arena.cpp"
+  "${_src}/frame-arena.hpp"
+)
+target_include_directories(frame_ring_tests PRIVATE "${_src}")
+set_target_properties(frame_ring_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME frame_ring_tests COMMAND frame_ring_tests)
