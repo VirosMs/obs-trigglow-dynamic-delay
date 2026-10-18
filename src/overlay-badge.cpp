@@ -122,6 +122,15 @@ QImage RenderDelayBadge(const QString &label, const QString &value)
 	const QString valueFamily = fonts.displayBold.isEmpty() ? fonts.display : fonts.displayBold;
 	const int valueWeight = fonts.displayBold.isEmpty() && !fonts.display.isEmpty() ? 600 : 700;
 	const QString labelText = label.toUpper();
+	// "30 s" with a no-break space (U+00A0), which Archivo and every fallback
+	// UI font have: Archivo has no narrow no-break space (U+202F), so a
+	// translation using it (or a thin space) would make Qt borrow that glyph
+	// from another font. Any space in the value is drawn as U+00A0.
+	QString valueText = value;
+	for (QChar &c : valueText) {
+		if (c.isSpace())
+			c = QChar(0x00A0);
+	}
 	constexpr qreal kTextLeft = 60.0;
 	constexpr qreal kTextRight = 190.0;
 	constexpr qreal kBaseline = 39.5;
@@ -140,7 +149,7 @@ QImage RenderDelayBadge(const QString &label, const QString &value)
 		valueFont.setFeature(QFont::Tag("tnum"), 1); // Tabular figures: 5 s and 60 s line up.
 #endif
 		labelWidth = QFontMetricsF(labelFont).horizontalAdvance(labelText);
-		valueWidth = QFontMetricsF(valueFont).horizontalAdvance(value);
+		valueWidth = QFontMetricsF(valueFont).horizontalAdvance(valueText);
 		if (kTextLeft + labelWidth + kGap + valueWidth <= kTextRight)
 			break;
 		factor *= 0.95;
@@ -151,7 +160,7 @@ QImage RenderDelayBadge(const QString &label, const QString &value)
 	p.drawText(QPointF(kTextLeft, kBaseline), labelText);
 	p.setFont(valueFont);
 	p.setPen(kMist);
-	p.drawText(QPointF(kTextLeft + labelWidth + kGap, kBaseline), value);
+	p.drawText(QPointF(kTextLeft + labelWidth + kGap, kBaseline), valueText);
 	p.end();
 	return image;
 }

@@ -25,9 +25,12 @@ keep their names. The OFL text must travel with the fonts: keep each `OFL-*.txt`
 python -P make_fonts.py <folder with the two upstream .ttf files> <output folder>
 ```
 
-- Characters: Basic Latin, Latin-1 Supplement, Latin Extended-A, plus thin and narrow no-break
-  spaces (U+2009, U+202F: "30 s"), en/em dashes, curly quotes, ellipsis, bullet, euro and
-  trademark.
+- Characters: Basic Latin, Latin-1 Supplement (with the no-break space U+00A0 the UI and the overlay
+  put in "30 s"), Latin Extended-A, plus the thin space U+2009 (Archivo only: Geist Mono has none),
+  en/em dashes, curly quotes, ellipsis, bullet, euro and trademark. Neither upstream font has the
+  narrow no-break space U+202F, so the strings never use it, and the overlay draws any space in its
+  value as U+00A0 (`src/overlay-badge.cpp`). To check a character, e.g. U+202F:
+  `python -P -c "from fontTools.ttLib import TTFont; print(0x202F in TTFont('data/fonts/Archivo-Bold.ttf').getBestCmap())"`.
 - OpenType features kept: `kern liga calt ccmp locl mark mkmk tnum case` (`tnum` gives the overlay's
   tabular figures).
 - Names: typographic family "Archivo" / "Geist Mono" with styles "SemiBold", "Bold", "Medium";
