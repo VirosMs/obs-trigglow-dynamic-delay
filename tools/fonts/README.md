@@ -19,10 +19,10 @@ keep their names. The OFL text must travel with the fonts: keep each `OFL-*.txt`
 
 ## Regenerating
 
-`make_fonts.py` (fontTools 4.60.1) instances the variable fonts and subsets them:
+`make_fonts.py` (needs fontTools, tested with 4.60.1) instances the variable fonts and subsets them:
 
 ```
-python -I make_fonts.py <folder with the two upstream .ttf files> <output folder>
+python -P make_fonts.py <folder with the two upstream .ttf files> <output folder>
 ```
 
 - Characters: Basic Latin, Latin-1 Supplement, Latin Extended-A, plus thin and narrow no-break
