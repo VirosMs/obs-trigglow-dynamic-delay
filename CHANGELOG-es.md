@@ -31,14 +31,25 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   da para el delay completo (antes podían quedar hasta ~1 s separados). El dock y el overlay del
   directo muestran esa misma cifra.
 - **Los segundos de delay se bloquean mientras el delay está en marcha**, como las escenas y la
-  calidad mínima: "Desactiva el delay para cambiarlo."
+  calidad mínima: "Desactiva el delay para cambiarlo." **El dock es el único sitio donde se elige el
+  delay**: los filtros "(auto)" ya no tienen campos de delay ni de calidad en sus propias
+  propiedades, ignoran los valores que se escriban desde fuera y se vuelven a activar solos si algo
+  los desactiva mientras el delay está en marcha.
+- **Cambiar de colección de escenas desactiva el delay**, y el dock dice por qué: la escena auxiliar
+  y los filtros pertenecen a la colección que has dejado. Vuelve a activarlo cuando quieras.
+- **La cuenta atrás y las cifras cuadran**: mientras el delay se llena, el dock cuenta los segundos
+  que de verdad se aplican ("41 / 60 s" cuando en la RAM solo caben 41), y la cuenta atrás ya no
+  vuelve a empezar al activar o desactivar el overlay o cambiar su esquina. La línea de RAM bajo los
+  campos se lee ahora como la estimación de RAM que es ("En la RAM solo caben 41 s de 60 s…"), en
+  segundos enteros.
 - **Nuevo diseño** del dock, el diálogo de reporte y el overlay del directo, alineado con
   trigglow.com, sobre tu tema de OBS (oscuro, claro, alto contraste), con contraste AA y foco de
   teclado visible.
 - **Correcciones**, entre otras: los filtros de delay que quedaron activos al cerrar OBS con el delay
   Activo se desactivan al arrancar y al cambiar de colección de escenas; a 59,94 fps ya no se pierde
-  un frame por segundo; cambiar el delay mientras está en marcha muestra la escena de carga en vez
-  de negro.
+  un frame por segundo; cambiar los ajustes de vídeo de OBS con el delay en marcha muestra la escena
+  de carga en vez de negro; renombrar la escena en directo ya no llena el log ni impide desactivar el
+  delay.
 
 **Antes de actualizar:**
 - **Los objetos que gestiona el plugin pasan de "(no tocar)" a "(auto)"**, de forma automática.
@@ -159,17 +170,38 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   valor nuevo en cuanto el dock cambia un ajuste, desde Enable. La tarjeta de estado del dock muestra
   la misma cifra que el overlay del directo: con 60 s pedidos y 35 s que caben, el chip pone
   "35 / 60 s" en ámbar y la línea de detalle dice que de los 60 s solo caben 35 en la RAM.
-- **Cambiar el delay mientras está en marcha ya no muestra negro.** Un cambio del delay o de la
-  calidad mínima que redimensiona el buffer tira los frames guardados. El filtro ahora lo avisa
-  (`buffer_restarted`) y el Programa vuelve a la escena de carga, con el audio resincronizado,
-  mientras el buffer se rellena, en vez de una vista retrasada en blanco durante `delay` segundos.
-  Igual tras un reset de los ajustes de vídeo de OBS. Si no hay escena de carga, el Programa se queda
-  en la escena contenedora (en blanco), nunca en la escena en directo sin delay. El dock ahora
-  bloquea esos campos mientras el delay está en marcha, así que en la práctica esto cubre los cambios
-  hechos desde las propiedades del propio filtro y los resets de vídeo.
-- **Un delay de 0 s** (solo posible desde las propiedades del propio filtro; el mínimo del dock es
-  1) deja pasar el vídeo sin retraso, sin buffer y sin códec. Antes comprimía cada frame en un ring
-  de un slot y nunca lo dibujaba: salida en negro con todo el coste de CPU.
+- **Un reinicio del buffer ya no muestra negro.** Un cambio del delay o de la calidad mínima que
+  redimensiona el buffer tira los frames guardados. El filtro ahora lo avisa (`buffer_restarted`) y
+  el Programa vuelve a la escena de carga, con el audio resincronizado, mientras el buffer se
+  rellena, en vez de una vista retrasada en blanco durante `delay` segundos. Igual tras un reset de
+  los ajustes de vídeo de OBS. Si no hay escena de carga, el Programa se queda en la escena
+  contenedora (en blanco), nunca en la escena en directo sin delay. El dock bloquea esos campos
+  mientras el delay está en marcha, así que en la práctica esto cubre los resets de los ajustes de
+  vídeo de OBS.
+- **Los filtros de delay solo aplican el delay del dock.** Sus propias propiedades permitían
+  saltarse el plugin: 90 s en el diálogo del filtro de vídeo dejaban el vídeo a 90 s y el audio a 60,
+  y 0 s dejaba pasar la escena en directo sin delay mientras el dock decía "Delay activo". Las
+  propiedades de los filtros "(auto)" ahora solo tienen una nota de que los gestiona el dock. El dock
+  envía su delay y su suelo de calidad con nuevos procs `set_managed_*`, y a partir de ahí un filtro
+  ignora cualquier otro valor que se escriba en sus ajustes (el botón Predeterminados de OBS, un
+  diálogo antiguo, obs-websocket), con un WARN por cada envío. Con el delay en marcha, un filtro de
+  delay desactivado desde fuera del dock (su icono del ojo en el diálogo de Filtros, obs-websocket)
+  se vuelve a activar al momento, con un WARN por activación.
+- **Un delay de 0 s** (ahora solo posible en un filtro que el dock todavía no gestiona, p. ej. uno
+  añadido a mano) deja pasar el vídeo sin retraso, sin buffer y sin códec. Antes comprimía cada frame
+  en un ring de un slot y nunca lo dibujaba: salida en negro con todo el coste de CPU.
+- **Cambiar de colección de escenas con el delay en marcha dejaba el dock diciendo "Delay activo"**
+  mientras la colección nueva funcionaba sin ningún delay. En
+  `OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING` (cambiar, nueva, eliminar) el delay se detiene ahora
+  como con Desactivar mientras la colección antigua sigue cargada, así que se guarda con sus filtros
+  apagados y su escena de vuelta en el Programa, y el dock pasa a Inactivo con una línea que dice
+  por qué. OBS 31 no envía `COLLECTION_CHANGING` al duplicar o renombrar una colección, solo
+  `COLLECTION_CHANGED` con la copia ya cargada: entonces se hace la misma parada, que apaga los
+  filtros de la copia y sale de la escena auxiliar si la copia se abrió en ella.
+- **Renombrar la escena en directo con el delay en marcha** llenaba el log (la consulta de salud del
+  dock, una vez por segundo, buscaba el filtro por su nombre y avisaba cada vez que no lo
+  encontraba) y dejaba el filtro activado tras Desactivar. El puente guarda ahora referencias débiles
+  a los filtros que activó, para la consulta, los ajustes y para apagarlos.
 - **Delay que se quedaba puesto tras cerrar OBS estando Activo.** Si OBS se cerraba con el delay
   activo, en el siguiente arranque la escena en directo quedaba con delay permanente mientras el
   dock decía "Inactivo". La v0.5.0 intentaba apagar esos filtros al cargar, pero los buscaba con
@@ -214,15 +246,26 @@ que nunca se publicó: todo lo que llevaba sale aquí.
 - **Tarjeta de estado**: icono, titular y chip con los segundos en cada estado, nunca solo color.
   Preparando delay muestra una barra de progreso con "12 / 30 s" y "Faltan 18 s"; Delay activo va
   en cian con un escudo (adiós al verde, la web no tiene verde); los errores llevan regla roja e
-  icono de alerta. Delay activo muestra los segundos que de verdad recibe tu audiencia, los mismos
-  que el overlay del directo (ver Corregido).
+  icono de alerta. Preparando delay y Delay activo cuentan los segundos que de verdad se aplican,
+  los mismos que el overlay del directo: con 60 s pedidos y 41 s que caben en la RAM, el chip pone
+  "41 / 60 s" en ámbar, el mensaje "Guardando 41 s de directo…: de tus 60 s solo caben 41 en la RAM"
+  y la ventana de llenado dura 41 s. La cuenta atrás solo vuelve a empezar con una ventana de
+  llenado nueva: activar o desactivar el overlay o cambiar su esquina mientras se llena ya no la
+  reinicia (ni, con ella, el paso a la escena retrasada).
+- **Línea de estimación de RAM** bajo los campos de delay y calidad, redactada como lo que es: "En la
+  RAM caben los 30 s completos a 1920×1080", "En la RAM solo caben 41 s de 60 s a …", en los mismos
+  segundos enteros que el chip. Se oculta mientras se muestra el aviso de degradación (que entonces
+  dice qué guarda el buffer), y no aconseja "baja los segundos o la calidad mínima" mientras esos
+  campos están bloqueados.
 - **Aviso "Calidad del buffer reducida"** al pie de la tarjeta de estado mientras el buffer va por
   debajo de la calidad completa: un icono de controles deslizantes y el título en ámbar, y después
   qué se redujo (la resolución frente al tamaño completo, los fps de captura o ambos), por qué (el
   hilo gráfico de OBS va muy cargado, comprimir o descomprimir los fotogramas consume mucha CPU) y
   que el delay sigue intacto; si hay fotogramas repetidos o descartados por minuto, se indican
   debajo. Desaparece en cuanto el buffer vuelve a la calidad completa, y con el delay desactivado no
-  se consulta nada. Los lectores de pantalla oyen cuándo aparece y cuándo se va.
+  se consulta nada. Los lectores de pantalla lo oyen una sola vez: cuando aparece, cuando cambia su
+  causa, y "El buffer vuelve a la calidad completa." cuando se va con el delay todavía en marcha
+  (anuncios de Qt 6.8+; con Qt anterior cambia el nombre de la tarjeta), no en cada peldaño.
 - **Bloqueados mientras el delay está en marcha:** los selectores de escena en directo y de carga,
   los segundos de delay y la calidad mínima. Los segundos seguían editables con el delay Activo y se
   aplicaban con cada tecla, cambiando el tamaño del buffer en pleno directo. Los campos bloqueados
@@ -357,6 +400,11 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   informa (anotación de aviso y resumen del job) en vez de bloquear la release, porque TSAN puede
   fallar sin que haya una carrera en este código (libstdc++ sin instrumentar, su lentitud dispara las
   comprobaciones de tiempo del test de estrés); el paso de compilación sí bloquea.
+- **`TRIGGLOW_STRESS_CI=1`**, puesto en los dos jobs de tests de CI, relaja solo los límites de
+  tiempo de `pipeline_stress_tests` (50% de los frames que tocan mostrados exactos en vez de 90%,
+  100 ms de retraso tras una pausa del render, al menos 10 frames mostrados detrás de un descompresor
+  lento), que los runners compartidos y ThreadSanitizer no siempre cumplen. Sus comprobaciones de
+  corrección siguen siendo estrictas en todas partes.
 - Versión 0.6.0 en `buildspec.json` y en el script del instalador de Windows.
 
 **Tests** (9 suites, sin OBS; `ctest`):
@@ -374,10 +422,10 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   simulado).
 
 **Limitaciones conocidas:**
-- **Cambiar el delay desde las propiedades del propio filtro** (en vez de desde el dock) con el
-  delay en marcha: el buffer se reinicia detrás de la escena de carga, pero el audio y el dock
-  mantienen el delay del dock, y solo lo siguen cuando el valor del filtro es menor. Cambia el delay
-  desde el dock, con el delay desactivado.
+- **Borrar a mano un filtro de delay "(auto)" con el delay en marcha** deja salir el vídeo en
+  directo sin delay (la escena auxiliar muestra entonces la escena en directo sin filtro) hasta que
+  desactivas y vuelves a activar el delay desde el dock, que lo vuelve a crear. No borres los filtros
+  del plugin; desactiva el delay desde el dock.
 - Las capturas se deduplican por una celda de reloj por intervalo de frame, no por la hora de frame
   de OBS, así que con mucho jitter de render se puede perder de vez en cuando un frame capturado (un
   frame repetido, nunca un desplazamiento del delay). Previsto para lo siguiente.

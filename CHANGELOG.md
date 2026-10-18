@@ -29,12 +29,21 @@ was prepared but never published: everything in it ships here.
 - **Audio and video always share the same delay**, in whole seconds, also when RAM can't hold the
   full delay (they could be up to ~1 s apart). The dock and the live overlay show that same figure.
 - **The delay seconds are locked while the delay runs**, like the scenes and the minimum quality:
-  "Turn the delay off to change it."
+  "Turn the delay off to change it." **The dock is the only place to set the delay**: the "(auto)"
+  filters no longer have delay or quality fields in their own properties, ignore values written from
+  anywhere else, and switch themselves back on if something turns them off while the delay runs.
+- **Switching scene collection turns the delay off**, and the dock says why: the helper scene and
+  the filters belong to the collection you left. Turn it on again when you're ready.
+- **The countdown and the figures add up**: while the delay fills, the dock counts the seconds that
+  really apply ("41 / 60 s" when RAM only fits 41), and the countdown no longer starts over when you
+  toggle the overlay or change its corner. The RAM line under the fields now reads as the RAM
+  estimate it is ("RAM only fits 41 s of 60 s…"), in whole seconds.
 - **New design** of the dock, the report dialog and the live overlay, aligned with trigglow.com, on
   top of your OBS theme (dark, light, high contrast), with AA contrast and visible keyboard focus.
 - **Fixes**, among others: delay filters left on by closing OBS while Active are switched off at
   startup and when you switch scene collection; 59.94 fps no longer loses a frame per second;
-  changing the delay while it runs shows the loading scene instead of black.
+  changing OBS's video settings while the delay runs shows the loading scene instead of black;
+  renaming the live scene no longer floods the log nor keeps Disable from working.
 
 **Before you update:**
 - **The objects the plugin manages are renamed from "(no tocar)" to "(auto)"**, automatically.
@@ -142,16 +151,35 @@ was prepared but never published: everything in it ships here.
   setting, from Enable on. The dock's status card shows that same figure as the live overlay: with
   60 s requested and 35 s fitting, the chip reads "35 / 60 s" in amber and the detail line says
   only 35 of the 60 s fit in RAM.
-- **Changing the delay while it runs no longer shows black.** A change of the delay or the minimum
-  quality that resizes the buffer throws the buffered frames away. The filter now signals it
+- **A buffer restart no longer shows black.** A change of the delay or the minimum quality that
+  resizes the buffer throws the buffered frames away. The filter now signals it
   (`buffer_restarted`) and Program goes back to the loading scene, with audio re-synced, while the
   buffer refills, instead of a blank delayed view for `delay` seconds. Same after a reset of OBS's
   video settings. With no loading scene set, Program stays on the (blank) wrapper scene, never on
-  the undelayed live scene. The dock now locks those fields while the delay runs, so in practice
-  this covers changes made from the filter's own properties and video resets.
-- **A 0 s delay** (only possible from the filter's own properties; the dock's minimum is 1) passes
-  the video through undelayed, with no buffer and no codec. Before, it encoded every frame into a
-  one-slot ring and never drew it: black output at full CPU cost.
+  the undelayed live scene. The dock locks those fields while the delay runs, so in practice this
+  covers resets of OBS's video settings.
+- **The delay filters only ever apply the dock's delay.** Their own properties could bypass the
+  plugin: 90 s in the video filter's dialog put video at 90 s and audio at 60, and 0 s passed the
+  live scene through undelayed while the dock said "Delay on". The "(auto)" filters' properties now
+  hold only a note that the dock manages them. The dock pushes its delay and quality floor through
+  new `set_managed_*` procs, and from then on a filter ignores any other value written to its
+  settings (OBS's Defaults button, an older dialog, obs-websocket), with one WARN per push. While
+  the delay is on, a delay filter switched off from outside the dock (its eye icon in the Filters
+  dialog, obs-websocket) is switched back on at once, with one WARN per activation.
+- **A 0 s delay** (only reachable now for a filter the dock doesn't manage yet, e.g. one added by
+  hand) passes the video through undelayed, with no buffer and no codec. Before, it encoded every
+  frame into a one-slot ring and never drew it: black output at full CPU cost.
+- **Switching scene collection with the delay on left the dock saying "Delay on"** while the new
+  collection ran without any delay. On `OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING` (switch, new,
+  remove) the delay is now stopped like Disable while the old collection is still loaded, so it's
+  saved with its filters off and its scene back on Program, and the dock goes Inactive with a line
+  saying why. OBS 31 sends no `COLLECTION_CHANGING` when duplicating or renaming a collection, only
+  `COLLECTION_CHANGED` with the copy already loaded: the same stop runs then, switching off the
+  copy's filters and leaving the helper scene if the copy opened on it.
+- **Renaming the live scene with the delay on** flooded the log (the dock's once-a-second health
+  poll looked the filter up by name and warned on every miss) and left the filter enabled after
+  Disable. The bridge now keeps weak references to the filters it switched on, for the poll, the
+  setters and switching them off.
 - **Delay stuck on after closing OBS while Active.** If OBS was closed with the delay on, the next
   start left the live scene delayed for good while the dock said "Inactive". v0.5.0 tried to switch
   those filters off on load, but it enumerated with `obs_enum_sources()`, which never returns
@@ -192,14 +220,24 @@ was prepared but never published: everything in it ships here.
   is visible on every control, and the dock's scroll area is no longer an invisible first tab stop.
 - **Status card**: icon, headline and a seconds chip per state, never color alone. Preparing delay
   shows a progress bar with "12 / 30 s" and "18 s left"; Delay on is cyan with a shield (the green
-  is gone, the web has no green); errors get a red rule and an alert icon. Delay on shows the
-  seconds viewers really get, the same as the live overlay (see Fixed).
+  is gone, the web has no green); errors get a red rule and an alert icon. Preparing delay and Delay
+  on both count the seconds that really apply, the same as the live overlay: with 60 s requested
+  and 41 s fitting in RAM, the chip reads "41 / 60 s" in amber, the message "Saving 41 s of stream…:
+  only 41 of your 60 s fit in RAM" and the fill window lasts 41 s. The fill countdown starts over
+  only for a new fill window: toggling the overlay or changing its corner while it fills no longer
+  restarts it (and the switch to the delayed scene with it).
+- **RAM estimate line** under the delay and quality fields, worded as what it is: "RAM fits the
+  full 30 s at 1920×1080", "RAM only fits 41 s of 60 s at …", in the same whole seconds as the chip.
+  It hides while the degradation notice shows (the notice then says what the buffer holds), and
+  gives no "lower the seconds or the min. quality" advice while those fields are locked.
 - **"Buffer quality lowered" notice** at the bottom of the status card while the buffer runs below
   full quality: a sliders icon and the title in amber, then what was lowered (resolution against the
   full size, capture fps, or both), why (OBS's graphics thread under heavy load, compressing or
   decompressing the frames) and that the delay is unchanged; repeated and dropped frames per minute
   follow when above zero. It goes away as soon as the buffer is back at full quality, and nothing is
-  polled while the delay is off. Screen readers hear it appear and go.
+  polled while the delay is off. Screen readers hear it once: when it appears, when its cause
+  changes, and "Buffer back to full quality." when it goes with the delay still on (Qt 6.8+
+  announcements; older Qt keeps the card's name change), not on every rung.
 - **Locked while the delay runs:** the live and loading scene pickers, the delay seconds and the
   minimum quality. The seconds used to stay editable while Active and applied on every keystroke,
   resizing the buffer under a live stream. Locked fields lose their arrows, take the card's
@@ -325,6 +363,10 @@ was prepared but never published: everything in it ships here.
   only reports (warning annotation and job summary) instead of blocking the release, since TSAN can
   fail without a race in this code (uninstrumented libstdc++, its slowdown tripping the stress
   test's timing checks); the build step does block.
+- **`TRIGGLOW_STRESS_CI=1`**, set on both CI test jobs, relaxes only `pipeline_stress_tests`'
+  timing limits (50% of due frames shown exactly instead of 90%, 100 ms of lag after a render pause,
+  at least 10 frames shown behind a slow decoder), which shared runners and ThreadSanitizer can't
+  always meet. Its correctness checks stay strict everywhere.
 - Version 0.6.0 in `buildspec.json` and the Windows installer script.
 
 **Tests** (9 suites, no OBS needed; `ctest`):
@@ -340,9 +382,10 @@ was prepared but never published: everything in it ships here.
   order, and no ring is ever freed on the simulated graphics thread).
 
 **Known limitations:**
-- **Changing the delay from the filter's own properties** (instead of the dock) while it runs: the
-  buffer restarts behind the loading scene, but audio and the dock keep the dock's delay, and only
-  follow when the filter's value is lower. Change the delay from the dock, with the delay off.
+- **Deleting an "(auto)" delay filter by hand while the delay is on** lets the live video out
+  without delay (the helper scene then shows the live scene with no filter) until you disable and
+  re-enable the delay from the dock, which recreates it. Don't delete the plugin's filters; turn the
+  delay off from the dock.
 - Captures are deduplicated by a wall-clock cell per frame interval, not by OBS's frame time, so
   heavy render jitter can occasionally cost a captured frame (a repeated frame, never a shift of the
   delay). Planned next.
