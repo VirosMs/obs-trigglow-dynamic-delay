@@ -2,15 +2,209 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
-## 0.6.0 (sin publicar)
+## v0.6.0 — 2026-10-18 (Early Access)
 
-Rediseño de la interfaz alineado con la marca Trigglow. Para fusionar con las notas de la 0.6.0.
+El delay deja de competir con OBS por su hilo gráfico, se adapta a lo que da tu equipo sin cortarse
+nunca, y el plugin adopta el aspecto de trigglow.com. Se preparó un hotfix de rendimiento v0.5.1
+que nunca se publicó: todo lo que llevaba sale aquí.
+
+**Qué cambia para ti:**
+- **Se acabó el "Encoding overloaded" (sobrecarga al codificar) al activar el delay con un lienzo
+  mayor que la salida.** Reportado en directo con un lienzo 2560x1440 y una salida 1920x1080 a
+  60 fps. El buffer del delay se guarda ahora como mucho a la resolución de salida de OBS (Ajustes →
+  Vídeo → Resolución de salida (escalada)), así que puedes volver a tu lienzo grande.
+- **Salida 1440p a 60 fps soportada.** Comprimir y descomprimir los frames del buffer ya no ocurre
+  en el hilo gráfico de OBS (el que tiene que terminar a tiempo cada frame de tu stream) sino en
+  hilos propios del plugin. A 1440p60 el trabajo del plugin en ese hilo baja de ~14/17 ms a
+  ~1,2–1,7/1,6–2,1 ms por frame (p50/p95, microbenchmark fuera de OBS en una CPU de 8 núcleos/16
+  hilos).
+- **Si tu equipo no da más, el delay sigue sin cortarse.** El plugin primero añade hilos de
+  compresión, después guarda el buffer a menos resolución (nunca por debajo de tu calidad mínima) y
+  solo entonces captura a la mitad de fps; vuelve a subir solo en cuanto hay margen. Mientras
+  tanto, el dock muestra un aviso ámbar con qué se redujo y por qué. Los segundos de delay no cambian
+  nunca.
+- **Menos RAM y sin parón al empezar el delay.** Unos 0,6–0,8 GB en vez de ~1,9 GB para 30 s a
+  1440p60 (simulación fuera de OBS). La memoria se toma a medida que llegan los frames en vez de
+  toda de golpe, y al desactivar el delay se libera fuera del hilo gráfico de OBS, junto con los
+  códecs y la memoria de vídeo que usaba el delay.
+- **Audio y vídeo comparten siempre el mismo delay**, en segundos enteros, también cuando la RAM no
+  da para el delay completo (antes podían quedar hasta ~1 s separados). El dock y el overlay del
+  directo muestran esa misma cifra.
+- **Los segundos de delay se bloquean mientras el delay está en marcha**, como las escenas y la
+  calidad mínima: "Desactiva el delay para cambiarlo."
+- **Nuevo diseño** del dock, el diálogo de reporte y el overlay del directo, alineado con
+  trigglow.com, sobre tu tema de OBS (oscuro, claro, alto contraste), con contraste AA y foco de
+  teclado visible.
+- **Correcciones**, entre otras: los filtros de delay que quedaron activos al cerrar OBS con el delay
+  Activo se desactivan al arrancar y al cambiar de colección de escenas; a 59,94 fps ya no se pierde
+  un frame por segundo; cambiar el delay mientras está en marcha muestra la escena de carga en vez
+  de negro.
+
+**Antes de actualizar:**
+- **Los objetos que gestiona el plugin pasan de "(no tocar)" a "(auto)"**, de forma automática.
+  **Apunta a los nombres nuevos cualquier acción de Stream Deck, obs-websocket u otro control remoto
+  que use los antiguos** (lista abajo).
+- **Volver a la v0.5.0 o anterior después de actualizar duplica esos objetos** (ver "Nombres" más
+  abajo).
+
+**Pipeline del buffer del delay (detalle técnico):**
+- **Límite a la resolución de salida.** Hasta la v0.5.0 el buffer de vídeo se guardaba a la
+  resolución del lienzo, así que con un lienzo 1440p emitido a 1080p el plugin comprimía y
+  descomprimía en MJPEG cada frame del buffer a 1440p dentro del hilo gráfico de OBS: 14,3/17,4 ms
+  p50/p95 por frame en un benchmark del mismo pipeline fuera de OBS, la mayor parte de los 16,7 ms
+  que tiene un frame a 60 fps. Esos píxeles de más los descartaba de todos modos el propio reescalado
+  de salida de OBS. `EnsureRingSized()` y la estimación del dock pasan ambos por la nueva función pura
+  de dimensionado `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, sin dependencia de
+  libobs/FFmpeg) con la geometría del lienzo (`obs_video_info::base_*`) y de la salida
+  (`output_*`). El techo es una escala uniforme, `min(1, max(outW/baseW, outH/baseH))`, que
+  conserva la relación de aspecto y nunca baja de la salida en ningún eje; solo se aplica cuando el
+  objetivo del buffer tiene el tamaño del lienzo (la escena en directo). Los anchos del buffer son
+  múltiplos de 8 y las alturas pares, así que cada fila de cada plano I420 ocupa un número entero de
+  palabras de 4 bytes (OpenGL rellena las filas de la lectura a 4 bytes en Linux y macOS). Ver
+  `docs/SPEC-es.md` §3.5.
+- **Hilos de códec** (`src/codec-pipeline.{hpp,cpp}`, C++ puro con el códec inyectado). El hilo
+  gráfico ahora solo renderiza la captura, la convierte, la lee de vuelta (tres slots de staging,
+  mapeados dos capturas después para que nunca se bloquee) y sube el frame que toca, solo cuando
+  cambia. Uno o dos hilos de compresión (`trigglow-enc-N`, cada uno con su propio contexto MJPEG)
+  toman los frames de una cola acotada; un hilo de descompresión (`trigglow-dec`) descomprime hasta
+  3 frames por delante de lo que hay en pantalla, salta directamente al frame que toca cuando se
+  queda atrás y empieza por los frames más antiguos durante el último cuarto de segundo de la ventana
+  de llenado, para que el primer frame retrasado esté listo cuando toca. Un hilo liberador
+  (`trigglow-reap`) libera rings, pools de frames y bloques de la arena: el hilo gráfico nunca libera
+  cientos de MB ni espera a un hilo. Cuando la compresión se queda atrás, se descarta la captura más
+  nueva (la vista retrasada repite un frame); la cola nunca crece. Medido fuera de OBS a 1440p60
+  (Ryzen 7 7700X, FFmpeg n9.0.2 vendorizado): hilo gráfico ~1,2–1,7/1,6–2,1 ms p50/p95 por frame,
+  compresión ~8,8/10,4 ms y descompresión ~6,2/7,5 ms en sus propios hilos (ocupados un 53% y un 37%
+  aproximadamente, menos de un núcleo en total). Ver `docs/SPEC-es.md` §4.6.
+- **Conversión de color a I420 en la GPU.** El shader escribe Y, U y V como tres planos separados
+  (BT.601, rango de estudio), así que la CPU ya no desentrelaza NV12 en ningún sentido: unos
+  1,1–1,3 ms menos de CPU por frame a 1440p. Los frames MJPEG se etiquetan ahora con el rango de
+  estudio que contienen (`AVCOL_RANGE_MPEG`; solo metadatos, los planos decodificados son
+  idénticos).
+- **Ring con máquina de estados por slot y arena por bloques.** El ring (`src/frame-ring.*`) es un
+  conjunto fijo de cabeceras de slot, cada una Free, Reserved, Encoding, Ready o Dropped, con su hora
+  de captura asignada al reservar el slot, así que las marcas de tiempo siguen en orden termine en el
+  orden que termine la compresión. Los datos viven en una arena por bloques (`src/frame-arena.*`):
+  paquetes uno detrás de otro en bloques de 4–32 MiB, nunca rellenados con ceros; un bloque se
+  recicla entero cuando el ring ha sobrescrito todos los frames que tenía, y solo los bloques vacíos
+  por encima de dos de reserva vuelven al sistema, en el hilo liberador. La memoria comprometida y la
+  residente siguen lo que de verdad pesan los frames: ~576–768 MB para 30 s a 1440p60 en la
+  simulación fuera de OBS, frente a ~1,9 GB residentes y un parón de ~381 ms (unos 23 frames
+  perdidos) en el primer frame tras Enable cuando cada slot se rellenaba con ceros de entrada. La
+  arena nunca crece por encima del presupuesto de RAM: una racha larga de frames que comprimen mucho
+  peor de lo previsto descarta frames (un frame repetido en pantalla) en vez de hacer crecer la
+  memoria.
+- **Desactivar libera todo lo que usaba el delay.** El ring y el pool de frames van al hilo
+  liberador, cada hilo cierra su códec y se liberan los objetos de GPU (~100 MB de RAM medidos y
+  ~37 MB de VRAM estimados a 1440p mientras el delay está desactivado); reabrirlos en el siguiente
+  Enable cuesta del orden de un milisegundo.
+- **Tablas de Huffman estándar de JPEG** (`huffman=default`) en vez de las óptimas por frame de
+  FFmpeg, que cuestan una segunda pasada sobre cada frame: un 10–17% menos de tiempo de compresión
+  a 1440p a cambio de frames un 3–3,5% más grandes; la imagen decodificada es idéntica (la
+  codificación Huffman no pierde información). La línea de log `MJPEG encoder open` dice
+  `huffman=default` (o por qué no se pudo fijar).
+- **Cada frame retrasado se descomprime y se sube una sola vez, haya las vistas que haya**
+  (Programa, vista previa, proyectores, multiview). Si el frame que toca no está listo (descartado,
+  o no descomprimido a tiempo), se repite el último en vez de dibujar negro: un tirón de un frame que
+  nunca alarga el delay. Justo después de una pausa del render, los frames descomprimidos por
+  adelantado antes de la pausa se descartan en vez de mostrarse tarde.
+- **Intervalo de frame exacto con frame rates fraccionarios.** A 59,94 fps el intervalo de captura
+  era `1e9 / 59` ns, así que se perdía casi un frame real por segundo. Ahora es
+  `1e9 × fps_den / fps_num` (16.683.333 ns a 59,94), y se usa para la captura, el tramo del ring y su
+  dimensionado.
+- **Modo síncrono** (el interruptor `codec_workers`, abajo): el códec se ejecuta en el hilo gráfico
+  de OBS como en la v0.5.0, pero con el compresor por slices (`thread_type = FF_THREAD_SLICE`,
+  `hardware_concurrency() / 4` hilos, de 1 a 4): a 1080p pasó de 8,6/10,4 a 5,2/5,9 ms p50/p95 en
+  ese hilo. `FF_THREAD_SLICE` tiene que fijarse de forma explícita: con solo `thread_count > 1`
+  FFmpeg elige threading por frames para MJPEG, `receive_packet()` devuelve `EAGAIN` y todos los
+  frames se guardarían en crudo; si aun así arranca con threading por frames, el compresor se reabre
+  con un solo hilo y un WARN.
+
+**Degradación automática (detalle técnico, `src/degradation-policy.*`):**
+- Se evalúa cada 250 ms sobre los últimos 2 s, y como pronto 2 s después del cambio anterior. Mira
+  el trabajo propio del plugin en el hilo gráfico (conversión, lectura y copia, subida; no el render
+  de la escena, que OBS hace de todos modos), el tiempo de compresión y de descompresión por frame,
+  las capturas descartadas y los frames que el descompresor no tuvo listos a tiempo.
+- **Bajada**, de un paso en un paso, cuando: el p95 del hilo gráfico supera el 40% del intervalo de
+  frame (o el 25% mientras OBS pierde frames por retraso de render, o su p50 de los últimos 0,5 s
+  supera el 50%); el p95 de compresión supera el 80% de lo que tienen los contextos de compresión
+  por frame, o se descartan más del 2% de las capturas; el p95 de descompresión supera el 80% del
+  intervalo de captura, o más del 5% de los frames que tocan no se descomprimen a tiempo.
+- **La escalera.** La carga de compresión añade paralelismo primero (contextos de compresión ×
+  hilos de slice: 1×1, 2×1, 2×2, 2×4) y después baja de peldaño; la carga de descompresión o del
+  hilo gráfico baja de peldaño directamente (el descompresor MJPEG no tiene threading, y lo que queda
+  en el hilo gráfico escala con los píxeles). Los peldaños: el tamaño completo del buffer, después
+  pasos de ×0,83 hasta tu calidad mínima (nunca por debajo), y después ese suelo capturado a la mitad
+  de fps (solo cuando la salida va a 48 fps o más). Todos los peldaños conservan el mismo ring y el
+  mismo número de slots: el delay nunca se mueve y el buffer nunca se vacía.
+- **Subida**, de un paso, solo cuando la carga prevista un peldaño más arriba se mantiene por debajo
+  del objetivo (hilo gráfico ≤ 25% del intervalo de frame, hilos de códec ≤ 50%) durante 30 s
+  seguidos; primero vuelve la calidad y después se devuelven los hilos. Las métricas de
+  descompresión solo cuentan cuando el descompresor trabaja ya con frames capturados en el peldaño
+  actual (va `delay` segundos por detrás de la captura).
+- El punto de partida se predice según la resolución: 1440p60 empieza con un contexto de compresión
+  y un slice, 4K60 con dos contextos.
+- Cada cambio de peldaño es un WARN en el log con su causa y las métricas de los últimos 2 s,
+  terminado en "The delay itself is unchanged."; los cambios de hilos son líneas INFO. El dock lee
+  el estado una vez por segundo con el proc `get_pipeline_state` del filtro, que nunca espera al
+  hilo gráfico.
+
+**Corregido:**
+- **Audio y vídeo comparten un único delay en segundos enteros.** Cuando la RAM recortaba el ring,
+  el vídeo se retrasaba el tramo exacto (fraccionario) y el audio en segundos enteros, así que podían
+  quedar hasta ~1 s separados. `bufferfit::Compute()` devuelve ahora un único delay efectivo en
+  segundos enteros, conservando el margen de un cuarto de segundo contra el jitter, y vídeo y audio
+  usan ese. `get_effective_delay_seconds` del filtro de vídeo lo calcula a partir de los ajustes
+  actuales del filtro en el hilo que llama (sin saltar al hilo gráfico), así que el audio recibe el
+  valor nuevo en cuanto el dock cambia un ajuste, desde Enable. La tarjeta de estado del dock muestra
+  la misma cifra que el overlay del directo: con 60 s pedidos y 35 s que caben, el chip pone
+  "35 / 60 s" en ámbar y la línea de detalle dice que de los 60 s solo caben 35 en la RAM.
+- **Cambiar el delay mientras está en marcha ya no muestra negro.** Un cambio del delay o de la
+  calidad mínima que redimensiona el buffer tira los frames guardados. El filtro ahora lo avisa
+  (`buffer_restarted`) y el Programa vuelve a la escena de carga, con el audio resincronizado,
+  mientras el buffer se rellena, en vez de una vista retrasada en blanco durante `delay` segundos.
+  Igual tras un reset de los ajustes de vídeo de OBS. Si no hay escena de carga, el Programa se queda
+  en la escena contenedora (en blanco), nunca en la escena en directo sin delay. El dock ahora
+  bloquea esos campos mientras el delay está en marcha, así que en la práctica esto cubre los cambios
+  hechos desde las propiedades del propio filtro y los resets de vídeo.
+- **Un delay de 0 s** (solo posible desde las propiedades del propio filtro; el mínimo del dock es
+  1) deja pasar el vídeo sin retraso, sin buffer y sin códec. Antes comprimía cada frame en un ring
+  de un slot y nunca lo dibujaba: salida en negro con todo el coste de CPU.
+- **Delay que se quedaba puesto tras cerrar OBS estando Activo.** Si OBS se cerraba con el delay
+  activo, en el siguiente arranque la escena en directo quedaba con delay permanente mientras el
+  dock decía "Inactivo". La v0.5.0 intentaba apagar esos filtros al cargar, pero los buscaba con
+  `obs_enum_sources()`, que nunca devuelve filtros, así que no apagaba nada. Ahora recorre los
+  filtros (`obs_source_enum_filters`) de inputs, grupos, escenas y fuentes de audio globales, y los
+  apaga fuera de los locks de libobs, cuando OBS termina de cargar y también al cambiar a otra
+  colección de escenas (en ambos casos solo con el delay desactivado).
+- **Se perdían referencias al filtro de delay en cada Enable.** `obs_source_get_filter_by_name()`
+  devuelve una referencia nueva, pero el plugin la trataba como prestada y nunca la liberaba, así que
+  el filtro de vídeo nunca se destruía. Ahora cada búsqueda libera su referencia
+  (`OBSSourceAutoRelease`), y el destructor del filtro, que libobs ejecuta sin contexto gráfico,
+  entra en uno para liberar sus objetos de GPU (después de esperar a que terminen los hilos de
+  códec).
+- **Un archivo de ajustes con JSON inválido ya no se sobrescribe.** Si `buffer-mode-settings.json`
+  no se podía leer (por ejemplo tras editarlo a mano y dejarse una coma), el plugin cargaba los
+  valores por defecto y los escribía encima al cerrar OBS. Ahora se aparta como
+  `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (se copia si no se puede renombrar) con un
+  WARN que da las dos rutas; si no funciona ninguna de las dos cosas, el archivo no se toca al salir.
+- **Corregidos el tooltip del dock y el texto de la propiedad del filtro para la calidad mínima.**
+  Decían que el vídeo retrasado "nunca baja de" esa resolución, lo que dejó de ser cierto con el
+  límite de salida.
+
+**Cambiado:**
+- **La "Calidad mínima" es un suelo para la reducción por RAM y para la degradación, acotado por la
+  salida de OBS.** Cuando falta RAM sigue decidiendo hasta dónde puede encogerse el buffer (antes que
+  bajar de ahí, se guardan menos segundos), y la degradación tampoco baja nunca de ella; pero ya no
+  eleva el buffer por encima de la resolución de salida: con una salida de 720p el buffer es 720p
+  aunque el mínimo sea 1080p.
+- **La línea de log `compression check` se sustituye por `perf check` y `pipeline check`** (abajo).
 
 **Cambiado / Dock:**
 - **Aspecto de marca sobre tu tema de OBS.** Tarjetas, campos y fondos siguen el tema activo de OBS
   (oscuro, claro, alto contraste de Windows); la marca entra por tarjetas cuadradas con hairlines,
-  titulares en Archivo y etiquetas y cifras en Geist Mono (empaquetadas, ver abajo), iconos SVG en
-  lugar de glifos de texto y el degradado cian→magenta solo en la acción principal, la casilla
+  titulares en Archivo y etiquetas y cifras en Geist Mono (empaquetadas, ver Empaquetado), iconos
+  SVG en lugar de glifos de texto y el degradado cian→magenta solo en la acción principal, la casilla
   marcada y el estado Activo. Los colores se derivan de la paleta del tema en un único sitio
   (`src/ui-tokens.*`, `src/ui-theme.*`): todo texto, placeholders incluidos, llega a WCAG AA (4,5:1)
   y todo borde de campo y anillo de foco a 3:1 en las paletas de los temas de OBS 31 (Yami y sus
@@ -21,15 +215,22 @@ Rediseño de la interfaz alineado con la marca Trigglow. Para fusionar con las n
   Preparando delay muestra una barra de progreso con "12 / 30 s" y "Faltan 18 s"; Delay activo va
   en cian con un escudo (adiós al verde, la web no tiene verde); los errores llevan regla roja e
   icono de alerta. Delay activo muestra los segundos que de verdad recibe tu audiencia, los mismos
-  que el overlay del directo: si la RAM recorta el delay (60 s elegidos, caben 35) el chip pone
-  "35 / 60 s" en ámbar y la línea de detalle explica por qué.
+  que el overlay del directo (ver Corregido).
+- **Aviso "Calidad del buffer reducida"** al pie de la tarjeta de estado mientras el buffer va por
+  debajo de la calidad completa: un icono de controles deslizantes y el título en ámbar, y después
+  qué se redujo (la resolución frente al tamaño completo, los fps de captura o ambos), por qué (el
+  hilo gráfico de OBS va muy cargado, comprimir o descomprimir los fotogramas consume mucha CPU) y
+  que el delay sigue intacto; si hay fotogramas repetidos o descartados por minuto, se indican
+  debajo. Desaparece en cuanto el buffer vuelve a la calidad completa, y con el delay desactivado no
+  se consulta nada. Los lectores de pantalla oyen cuándo aparece y cuándo se va.
+- **Bloqueados mientras el delay está en marcha:** los selectores de escena en directo y de carga,
+  los segundos de delay y la calidad mínima. Los segundos seguían editables con el delay Activo y se
+  aplicaban con cada tecla, cambiando el tamaño del buffer en pleno directo. Los campos bloqueados
+  pierden sus flechas, toman el fondo de la tarjeta y muestran un candado; una línea debajo,
+  "Desactiva el delay para cambiarlo.", es además su descripción accesible; el tabulador los salta
+  hasta que el delay se desactiva, y su valor sigue legible (texto atenuado, AA en todos los temas).
 - **Activar delay se explica**: mientras está deshabilitado, una lista indica si falta la cuenta
   gratuita o la escena en directo.
-- **Los segundos de delay se bloquean mientras el delay está en marcha**, como la calidad mínima:
-  mientras se preparaba o estaba activo seguían editables y se aplicaban con cada tecla, cambiando
-  el tamaño del buffer en pleno directo. Una línea debajo, con un candado, indica que hay que
-  desactivar el delay para cambiarlos, y hasta entonces el tabulador los salta. Los campos
-  bloqueados siguen mostrando su valor legible (texto atenuado, AA).
 - **Selector de escena en directo**: no hay nada preseleccionado ("Elige una escena…") hasta que
   eliges una, así que también se puede elegir la primera y el campo nunca muestra una escena que la
   lista da por pendiente; una escena guardada que ya no existe cuenta como no elegida. La escena
@@ -48,155 +249,61 @@ Rediseño de la interfaz alineado con la marca Trigglow. Para fusionar con las n
   ticket. Los errores técnicos de red quedan en el log de OBS. Se abre con 460 px de ancho y se
   puede estrechar hasta 340 px: Nombre y Email se apilan por debajo de 400 px y la nota del
   navegador pasa encima de los botones; la ayuda del email va bajo el campo de email.
-- **Textos**: microcopy reescrito en inglés y español (tildes, sin `--`, sin glifos, los tooltips
-  más cortos de la propuesta). Los atajos se llaman "Trigglow: Activar/desactivar Dynamic Delay",
-  "Activar" y "Desactivar"; las asignaciones de teclas existentes se conservan.
+- **Textos**: microcopy reescrito en inglés y español (tildes, sin `--`, sin glifos, tooltips más
+  cortos). En español los atajos se llaman "Trigglow: Activar/desactivar Dynamic Delay", "Trigglow:
+  Activar Dynamic Delay" y "Trigglow: Desactivar Dynamic Delay"; las asignaciones de teclas
+  existentes se conservan.
 
 **Cambiado / Overlay del directo:**
 - El overlay "DELAY 30 s" es ahora **una única imagen que pinta el propio plugin** (placa tinta,
   regla de marca, marca de Dynamic Delay, Archivo), guardada en la carpeta de configuración del
   plugin (`overlay/delay-badge-30s.png`) y mostrada por una sola fuente de imagen. Se ve igual en
   Windows, macOS y Linux (el texto anterior usaba Segoe UI, solo Windows) y se mueve de una pieza.
-  Queda a un 2,2 % del lado corto del lienzo de la esquina elegida y mantiene su tamaño relativo a
+  Queda a un 2,2% del lado corto del lienzo de la esquina elegida y mantiene su tamaño relativo a
   ese lado: igual que antes en lienzos horizontales (200x58 a 1080p), y en un lienzo vertical
-  1080x1920 el tamaño de 1080p en vez de un tercio del ancho del encuadre.
+  1080x1920 el tamaño de 1080p en vez de un tercio del ancho del encuadre. Muestra el delay que de
+  verdad se aplica.
 - **Si lo mueves o lo escalas en OBS, se queda así.** El plugin lo coloca en la esquina elegida la
   primera vez y de nuevo solo cuando eliges otra esquina en el dock (o cuando cambia el tamaño del
   lienzo, siempre que no lo hayas movido ni escalado). Si ya existe una fuente de imagen llamada
   "Trigglow Delay Badge (auto)", se reutiliza en vez de añadir copias "... 2".
-- La fuente de texto antigua ("Trigglow Delay Overlay Text (auto, no tocar)") se elimina sola. Si
-  le habías cambiado la fuente o el color, ese ajuste se pierde; la imagen se puede mover o escalar
-  y lo conserva.
+- La fuente de texto antigua ("Trigglow Delay Overlay Text (auto, no tocar)") se elimina sola. Su
+  texto ya no se puede editar: si le habías cambiado la fuente o el color, ese ajuste se pierde; la
+  imagen se puede mover o escalar y lo conserva.
 
 **Cambiado / Nombres de los objetos que gestiona el plugin:**
 - Adiós a "(no tocar)" en todos los idiomas: la escena pasa a ser **Trigglow Delay Buffer (auto)**,
-  los filtros **Trigglow Buffer Mode Delay (auto)** y `Trigglow Audio Delay (auto) - <fuente>`,
-  y el overlay **Trigglow Delay Badge (auto)**. Las colecciones existentes se renombran una vez, en
-  su sitio, al cargarse (se conservan posición, filtros y ajustes); si un nombre nuevo ya está en uso
-  se queda el antiguo y sigue funcionando.
+  los filtros **Trigglow Buffer Mode Delay (auto)** y `Trigglow Audio Delay (auto) - <fuente>`, y el
+  overlay **Trigglow Delay Badge (auto)**. Las colecciones existentes se renombran una vez, en su
+  sitio, al cargarse (se conservan posición, filtros y ajustes); si un nombre nuevo ya está en uso se
+  queda el antiguo y sigue funcionando.
 - **Todo lo que se refiera a estos objetos por su nombre hay que actualizarlo**: una acción de
   Stream Deck, obs-websocket u otro control remoto que cambie a la escena con el nombre antiguo, o
   active los filtros o el overlay antiguos por su nombre, hay que apuntarla a los nombres "(auto)".
-- **Volver a la v0.5.1 o anterior después del cambio de nombre los duplica**: la versión antigua no
+- **Volver a la v0.5.0 o anterior después del cambio de nombre los duplica**: la versión antigua no
   conoce los nombres "(auto)", así que vuelve a crear su escena auxiliar, sus filtros de delay y su
   overlay "(no tocar)" junto a ellos (al cargar la colección desactiva los filtros "(auto)", que se
   quedan inertes). Borra el juego que no uses; de vuelta en la 0.6.0 se usa el juego "(auto)" y el
   "(no tocar)" sobrante no se renombra mientras su nombre nuevo esté ocupado.
 
-**Corregido:**
-- Cambiar a otra colección de escenas también desactiva ahora los filtros de delay que esa colección
-  guardó activos (una sesión cerrada con el delay activo); antes solo se limpiaba la colección
-  cargada al arrancar.
-
-**Empaquetado:**
-- Nuevo `data/fonts/` (subconjuntos de Archivo SemiBold/Bold y Geist Mono Medium, SIL OFL 1.1 con
-  sus `OFL-*.txt`) y `data/licenses/` (iconos de Lucide, ISC), ambos en el instalador, que ahora no
-  se compila sin ellos. Si faltan en una instalación, el plugin usa la fuente de la interfaz de OBS
-  y lo indica una vez en el log. El plugin enlaza ahora `Qt6::Svg`.
-
-## v0.5.1 — 2026-10-18 (Early Access)
-
-Hotfix de rendimiento. Con un lienzo mayor que la salida (reportado en directo: lienzo 2560x1440,
-salida 1920x1080 a 60 fps), OBS mostraba **"Encoding overloaded" / sobrecarga al codificar** en
-cuanto se activaba el delay.
-
-**Corregido / Rendimiento:**
-- **Sobrecarga al codificar con el delay activo cuando el lienzo es mayor que la salida.** El
-  buffer de vídeo se guardaba a la resolución del lienzo, así que con un lienzo 1440p emitido a
-  1080p el plugin comprimía y descomprimía en MJPEG cada frame del buffer a 1440p dentro del hilo
-  gráfico de OBS: 14,3/17,4 ms p50/p95 por frame en un benchmark del mismo pipeline fuera de OBS,
-  la mayor parte de los 16,7 ms que tiene un frame a 60 fps, y OBS se quedaba atrás. Esos píxeles
-  de más los descartaba de todos modos el propio reescalado de salida de OBS. Ahora el buffer nunca
-  supera la resolución de salida de OBS (Ajustes → Vídeo → Resolución de salida (escalada)) y,
-  junto con la compresión con varios hilos de abajo, el mismo montaje cuesta ~5,2/5,9 ms p50/p95
-  (mismo benchmark). Puedes volver a usar un lienzo 2560x1440 con salida 1920x1080.
-  `EnsureRingSized()` y la estimación del dock pasan ambos por la nueva función pura de
-  dimensionado `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, sin dependencia
-  de libobs/FFmpeg) con la geometría del lienzo (`obs_video_info::base_*`) y de la salida
-  (`output_*`). El techo es una escala uniforme, `min(1, max(outW/baseW, outH/baseH))`, que
-  conserva la relación de aspecto y nunca baja de la salida en ningún eje; solo se aplica cuando el
-  objetivo del buffer tiene el tamaño del lienzo (la escena en directo). Ver `docs/SPEC-es.md`
-  §3.5.
-- **Compresión MJPEG con varios hilos.** El codificador divide cada frame en slices que se
-  comprimen en paralelo, hasta 4 hilos según la CPU (uno por cada 4 CPU lógicas: 4 en una CPU de 8
-  núcleos/16 hilos, 1 en una de 4 hilos). A 1080p el coste del plugin en el hilo gráfico de OBS
-  baja de 8,6/10,4 a 5,2/5,9 ms p50/p95 por frame. `thread_type = FF_THREAD_SLICE` se fija de forma
-  explícita: con solo `thread_count > 1`, FFmpeg elige threading por frames para MJPEG,
-  `receive_packet()` devuelve `EAGAIN` en el mismo tick y todos los frames se guardarían en crudo.
-  Si aun así FFmpeg arranca con threading por frames, el codificador se reabre con un solo hilo y
-  un WARN. Solo la codificación a 1080p: de 5,1 a 1,8 ms p50, el mismo CPU total, frames ~3,5% más
-  grandes.
-- **Cada frame retrasado se descomprime y sube una sola vez, haya las vistas que haya.** OBS
-  renderiza la escena una vez por vista (Programa, vista previa, proyectores, multiview), y cada
-  una de esas llamadas volvía a descomprimir y subir a la GPU el mismo frame retrasado. Ahora
-  ocurre como mucho una vez por frame; las vistas extra solo lo vuelven a dibujar. Si un frame no
-  se puede mostrar (nunca se capturó, o falla al descomprimir), se repite el último en vez de
-  dibujar negro: un tirón de un frame que nunca alarga el delay. La caché se indexa por slot +
-  hora de captura y se invalida en `ReleaseRing()`/`ReleaseSizedGpuObjects()`, así que un frame
-  repetido nunca viene de un ciclo anterior.
-- **Intervalo de frame exacto con frame rates fraccionarios.** A 59,94 fps el intervalo de
-  captura era `1e9 / 59` ns, así que se perdía casi un frame real por segundo. Ahora es
-  `1e9 × fps_den / fps_num` (16.683.333 ns a 59,94), y se usa para la captura, el tramo del ring y
-  su dimensionado. El delay efectivo con el que se sincroniza el audio
-  (`get_effective_delay_seconds`) también usa aritmética racional: multiplicar por el intervalo
-  truncado podía redondear a 29 s un tramo de exactamente 1800 frames a 60 fps (30 s).
-- **Sin parón ni pico de RAM al empezar el delay.** Al dimensionar el buffer se rellenaba con
-  ceros cada slot en el hilo gráfico de OBS, lo que tocaba toda su memoria de golpe: a 1440p60 eran
-  ~1,9 GB residentes de una vez y un parón de ~381 ms (unos 23 frames perdidos) en el primer frame
-  tras Enable. Ahora los slots se reservan sin inicializar (`Slot::pixels` es un
-  `std::unique_ptr<uint8_t[]>` sin inicializar), así que la memoria solo pasa a ser residente a
-  medida que se escriben frames: en la simulación fuera de OBS, 651-896 MB en vez de 1923 MB a
-  1440p60, dimensionar cuesta ~5 ms y liberar el buffer al desactivar también es más rápido
-  (87 → 30 ms). La memoria reservada (comprometida), y la cifra `ring` de `perf check`, no cambian.
-  Nada lee más allá de los bytes que escribió cada frame.
-- **Compresión más rápida en CPU con menos de 8 núcleos lógicos.** El codificador MJPEG usa ahora
-  las tablas de Huffman estándar de JPEG (`huffman=default`) en vez de las óptimas por frame de
-  FFmpeg, que cuestan una segunda pasada sobre cada frame. Con slices FFmpeg ya lo hacía, así que
-  cambia el codificador de un hilo: un 10-17% menos de tiempo de codificación a 1440p a cambio de
-  frames ~3% más grandes, y la imagen decodificada es idéntica (la codificación Huffman no pierde
-  información). La línea de log `MJPEG encoder/decoder open` dice ahora `huffman=default` (o por
-  qué no se pudo fijar).
-- **Delay que se quedaba puesto tras cerrar OBS estando Activo (el fix de v0.5.0 no funcionaba).**
-  Si OBS se cerraba con el delay activo, en el siguiente arranque la escena en directo quedaba con
-  delay permanente mientras el dock decía "Inactivo". La v0.5.0 intentaba apagar esos filtros al
-  cargar, pero los buscaba con `obs_enum_sources()`, que nunca devuelve filtros, así que no apagaba
-  nada. Ahora recorre los filtros (`obs_source_enum_filters`) de inputs, grupos, escenas y fuentes
-  de audio globales, y los apaga fuera de los locks de libobs. Limitación conocida: se ejecuta una
-  vez, cuando OBS termina de cargar, no al cambiar de colección de escenas sin reiniciar OBS.
-- **Corregidos el tooltip del dock y el texto de la propiedad del filtro para la calidad mínima.**
-  Decían que el vídeo retrasado "nunca baja de" esa resolución, lo que dejó de ser cierto con el
-  techo de salida (ver Cambiado).
-- **Se perdían referencias al filtro de delay en cada Enable.** `obs_source_get_filter_by_name()`
-  devuelve una referencia nueva, pero el plugin la trataba como prestada y nunca la liberaba
-  (filtro de vídeo: varias por Enable; filtros de audio: una por fuente de audio y llamada), así que
-  el filtro de vídeo nunca se destruía. Ahora cada búsqueda libera su referencia
-  (`OBSSourceAutoRelease`), y el destructor del filtro, que libobs ejecuta sin contexto gráfico,
-  entra en uno para liberar sus objetos de GPU.
-- **Un archivo de ajustes con JSON inválido ya no se sobrescribe.** Si `buffer-mode-settings.json`
-  no se podía leer (por ejemplo tras editarlo a mano y dejarse una coma), el plugin cargaba los
-  valores por defecto y los escribía encima al cerrar OBS, y se perdía lo que había. Ahora se aparta
-  como `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (se copia si no se puede renombrar) con
-  un WARN que da las dos rutas; si no funciona ninguna de las dos cosas, el archivo no se toca al
-  salir.
-
-**Cambiado:**
-- **La "Calidad mínima" es un suelo para la reducción por RAM, acotado por la salida de OBS.**
-  Cuando falta RAM sigue decidiendo hasta dónde puede encogerse el buffer (antes que bajar de ahí,
-  se guardan menos segundos), pero ya no eleva el buffer por encima de la resolución de salida:
-  con una salida de 720p el buffer es 720p aunque el mínimo sea 1080p. Guardar más filas de las que
-  OBS emite no aportaba nada.
-- **La línea de log `compression check` se sustituye por `perf check`** (abajo), que incluye los
-  mismos datos de compresión.
-
-**Añadido:**
-- **Línea `perf check` en el log de OBS.** Cada 10 s con el delay activo (Filling y Active), y una
-  última al desactivar el delay o cerrar OBS. Indica la resolución del buffer y si está limitada
-  (`capped to OBS output …`, `not capped …`, `cap off …`), tiempos p50/p95/max por fase (render
-  completo, lectura, codificación, decodificación, subida), llamadas/capturas/subidas por segundo,
-  frames repetidos (`holds`), fallbacks a crudo, los contadores propios de OBS de frames
-  renderizados/perdidos/saltados en la misma ventana, ratio de compresión y memoria del ring. Es lo
-  que lee soporte cuando el delay parece costar demasiado; guía campo a campo en
-  `docs/TROUBLESHOOTING-es.md`. Arrays fijos de 4096 muestras por fase, sin asignaciones por frame.
+**Añadido (soporte y diagnóstico):**
+- **Línea `perf check` en el log de OBS**, cada 10 s con el delay en marcha (Filling y Active), y
+  una última al desactivar el delay, ponerlo a 0 s o cerrar OBS. Indica la resolución del buffer y
+  si está limitada (`capped to OBS output …`, `not capped …`, `cap off …`), p50/p95/max de la
+  llamada de render completa, de la parte propia del plugin (`own`), de la lectura y de la subida,
+  llamadas/capturas/subidas por segundo, frames repetidos (`holds`, separados en descompresión
+  tardía, descartados y aún comprimiéndose) y los contadores propios de OBS de frames
+  renderizados/perdidos/saltados en la misma ventana. Arrays fijos de 4096 muestras por fase, sin
+  asignaciones por frame.
+- **Línea `pipeline check`** justo después: modo (`workers` o `sync`), peldaño de degradación,
+  tamaño y fps de captura, contextos de compresión × hilos de slice, profundidad de descompresión
+  anticipada y de staging, p50/p95/max de compresión y descompresión con lo ocupado que estuvo cada
+  hilo, descartes (reserva, contrapresión, arena, captura), fallbacks a crudo, fallos de códec,
+  compresiones obsoletas, saltos del descompresor, frames descomprimidos obsoletos, profundidad de la
+  cola de compresión, frames descomprimidos por adelantado, ratio de compresión, memoria de la arena
+  (comprometida, viva, pico, bloques, límite) y estados de los slots. Cada ciclo empieza además con
+  una línea `delay pipeline: …` con la configuración elegida y la escalera de degradación. Guía campo
+  a campo en `docs/TROUBLESHOOTING-es.md`.
 - **Aviso cuando una salida codifica por encima del buffer.** Si una salida activa tiene un encoder
   de vídeo del lienzo principal por encima de la resolución del buffer (por ejemplo una grabación
   reescalada a la resolución del lienzo con Reescalar salida de la salida avanzada, o pistas de
@@ -213,24 +320,26 @@ cuanto se activaba el delay.
   otra relación de aspecto no se detecta. Decisión en `src/encoder-check.{hpp,cpp}`, detalles en
   `docs/SPEC-es.md` §3.5.
 - **Ajuste oculto `buffer_output_cap`, para soporte.** `"buffer_output_cap": false` en el
-  `buffer-mode-settings.json` del plugin recupera la forma de dimensionar de v0.5.0 (resolución de
-  la fuente/lienzo, reducida solo por RAM) para quien graba a resolución de lienzo y prefiere esa
-  calidad a costa de CPU. Solo un `false` literal de JSON quita el límite: cualquier otro valor
-  (`"false"` entre comillas, `0`...) lo deja activado y escribe un WARN. Sin control en el dock a
-  propósito; solo se lee al cargar OBS, y el log lo confirma con `output_cap=off`. Pasos en
-  `docs/TROUBLESHOOTING-es.md`.
-- **Tests unitarios del cálculo de dimensionado del buffer** (`tests/buffer_fit_tests.cpp`,
-  desactivados por defecto: configura con `-DTRIGGLOW_BUILD_TESTS=ON`, o por separado con
-  `cmake -S tests -B build_tests` sin ninguna dependencia de OBS; ejecuta con `ctest`). Cubren
-  lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que el lienzo, relaciones de aspecto
-  distintas, un suelo por encima de la salida, reducción por RAM, redondeo, dimensiones impares,
-  entradas degeneradas, 59,94 fps y barridos de presupuesto/salida. Un segundo programa de tests,
-  `tests/encoder_check_tests.cpp`, cubre la decisión del aviso de encoders: un encoder del lienzo
-  con y sin escalado, encoders reescalados en GPU por encima y por debajo del buffer, pistas de
-  Enhanced Broadcasting, lienzos verticales (720x1280, 1080x1920) y un buffer al que el límite no
-  afecta.
+  `buffer-mode-settings.json` del plugin recupera la forma de dimensionar de la v0.5.0 (resolución
+  de la fuente/lienzo, reducida solo por RAM) para quien graba a resolución de lienzo y prefiere esa
+  calidad a costa de CPU y RAM. El log lo confirma con `output_cap=off`.
+- **Interruptor oculto `codec_workers`, para soporte.** `"codec_workers": false` en el mismo
+  archivo vuelve a ejecutar la compresión y la descompresión en el hilo gráfico de OBS, sin hilos de
+  códec (el hilo liberador sigue liberando la memoria fuera de ese hilo, y la degradación sigue
+  activa, añadiendo primero hilos de slice). Sirve para descartar o confirmar que un problema viene
+  de los hilos de códec; devuelve el coste al hilo gráfico. El log lo confirma con
+  `codec_workers=off` en las líneas `settings loaded` y `enabled`, y `mode=sync` en
+  `pipeline check`.
+- Ninguno de los dos ajustes ocultos tiene control en el dock a propósito; solo se leen al arrancar
+  OBS y hay que editarlos con OBS cerrado (OBS reescribe el archivo al salir). Solo un `false`
+  literal de JSON desactiva uno: cualquier otro valor (`"false"` entre comillas, `0`...) lo deja
+  activado y escribe un WARN. Pasos en `docs/TROUBLESHOOTING-es.md`.
 
-**Build / CI:**
+**Empaquetado / Build / CI:**
+- Nuevo `data/fonts/` (subconjuntos de Archivo SemiBold/Bold y Geist Mono Medium, SIL OFL 1.1 con
+  sus `OFL-*.txt`) y `data/licenses/` (iconos de Lucide, ISC), ambos en el instalador, que ahora no
+  se compila sin ellos. Si faltan en una instalación, el plugin usa la fuente de la interfaz de OBS
+  y lo indica una vez en el log. El plugin enlaza ahora `Qt6::Svg`.
 - **FFmpeg de Windows fijado a otra versión**: el build de fin de mes de BtbN
   `autobuild-2026-09-30-13-08` (`ffmpeg-n9.0.2-17-g2a571b6068`, misma rama 9.0 y mismas DLL:
   avcodec-63, avutil-61, swresample-7). La versión fijada anterior, `autobuild-2026-10-03-18-14`
@@ -239,20 +348,40 @@ cuanto se activaba el delay.
   así que a partir de ahora solo se fijan builds de fin de mes (`buildspec.json`,
   `cmake/windows/buildspec.cmake`).
 - **CI compila y ejecuta los tests unitarios** en Ubuntu, Windows y macOS: nuevo job `unit-tests` en
-  `.github/workflows/build-project.yaml`, con el nuevo `tests/CMakeLists.txt`, que se configura por
-  separado sin descargar OBS, Qt ni FFmpeg (`cmake -S tests -B build_tests`) y también sirve para la
-  ruta `-DTRIGGLOW_BUILD_TESTS=ON` del proyecto principal. Se ejecuta en PRs y pushes, y bloquea el
-  job de release.
-- Versión subida a 0.5.1 en `buildspec.json` y en el script del instalador de Windows.
+  `.github/workflows/build-project.yaml`, con `tests/CMakeLists.txt`, que se configura por separado
+  sin descargar OBS, Qt ni FFmpeg (`cmake -S tests -B build_tests`) y también sirve para la ruta
+  `-DTRIGGLOW_BUILD_TESTS=ON` del proyecto principal. Se ejecuta en PRs y pushes, y bloquea el job de
+  release.
+- Versión 0.6.0 en `buildspec.json` y en el script del instalador de Windows.
+
+**Tests** (9 suites, sin OBS; `ctest`):
+- `buffer_fit_tests` (dimensionado: lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que
+  el lienzo, relaciones de aspecto distintas, un suelo por encima de la salida, reducción por RAM,
+  redondeo, anchos múltiplos de 8, dimensiones impares, entradas degeneradas, 59,94 fps, el delay
+  efectivo en segundos enteros, barridos de presupuesto/salida), `encoder_check_tests` (la decisión
+  del aviso de encoders), `ui_tokens_tests` (contraste en las paletas de OBS 31),
+  `auto_names_tests` (los nombres y su migración), `overlay_layout_tests` (colocación del overlay),
+  `frame_arena_tests`, `frame_ring_tests` (máquina de estados de los slots, generaciones, selección
+  por antigüedad), `degradation_policy_tests` (escalera, cada disparador, enfriamiento, histéresis
+  de 30 s, sin oscilaciones) y `pipeline_stress_tests` (ring + arena + pipeline de códec con
+  desconexiones, redimensionados y cambios de peldaño y de fps al azar: el delay nunca encoge, los
+  frames nunca salen rotos ni desordenados y ningún ring se libera nunca en el hilo gráfico
+  simulado).
 
 **Limitaciones conocidas:**
-- **Salida 1440p a 60 fps.** Con una *salida* de 2560x1440 (no solo el lienzo) el buffer también es
-  1440p, y la compresión sigue ejecutándose dentro del hilo gráfico de OBS: a 30 fps debería
-  funcionar, a 60 fps todavía puede sobrecargar OBS. Sacar la compresión del hilo gráfico (objetivo
-  1440p60) es el plan para la v0.6.0 — ver `docs/ROADMAP-es.md`.
-- Cuando el presupuesto de RAM recorta el ring, el vídeo se retrasa el tramo exacto (fraccionario)
-  y el audio en segundos enteros, así que pueden quedar hasta ~1 s separados. Alinearlos también
-  está previsto para la v0.6.0.
+- **Cambiar el delay desde las propiedades del propio filtro** (en vez de desde el dock) con el
+  delay en marcha: el buffer se reinicia detrás de la escena de carga, pero el audio y el dock
+  mantienen el delay del dock, y solo lo siguen cuando el valor del filtro es menor. Cambia el delay
+  desde el dock, con el delay desactivado.
+- Las capturas se deduplican por una celda de reloj por intervalo de frame, no por la hora de frame
+  de OBS, así que con mucho jitter de render se puede perder de vez en cuando un frame capturado (un
+  frame repetido, nunca un desplazamiento del delay). Previsto para lo siguiente.
+- Mientras el buffer se llena, mantener la escena en directo renderizando sigue usando un render
+  target del tamaño del lienzo cuyo contenido nunca se usa (solo GPU). Previsto para lo siguiente.
+- Con un lienzo mayor que la salida, el frame retrasado se vuelve a dibujar a tamaño de lienzo y OBS
+  lo reduce otra vez, lo que puede verse algo más blando que la imagen en directo. Si no necesitas el
+  lienzo grande, poner lienzo = salida lo evita.
+- macOS sigue sin build de FFmpeg: allí el buffer se guarda sin comprimir (I420 en crudo).
 
 ## v0.5.0 — 2026-10-04 (Early Access)
 
