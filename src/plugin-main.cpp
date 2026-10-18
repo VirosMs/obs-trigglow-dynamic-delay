@@ -18,7 +18,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <memory>
 
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 
 extern "C" {
@@ -88,22 +90,88 @@ struct PluginState {
 	// only as a non-owning reference for potential future use (e.g. forcing
 	// a refresh), never deleted from this side.
 	trigglow::TrigglowDelayDock *dock = nullptr;
+	// False only when buffer-mode-settings.json exists, couldn't be parsed and
+	// couldn't be set aside either (see LoadBufferSettings): then the file is
+	// left untouched on exit instead of being replaced by the defaults.
+	bool saveSettingsOnExit = true;
 };
 
 PluginState *g_state = nullptr;
 
-void LoadBufferSettings(trigglow::BufferModeController &controller)
+// Moves an unreadable settings file out of the way (rename, or copy if that
+// fails) to "<file>.<yyyyMMdd-HHmmss>.invalid" next to it, so the defaults
+// SaveBufferSettings() writes on exit never silently replace what the user (or
+// support) put there. Returns the new path, or an empty string if neither
+// worked.
+QString SetAsideInvalidSettingsFile(const QString &path)
+{
+	const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
+	QString target = path + QLatin1Char('.') + stamp + QStringLiteral(".invalid");
+	// Never overwrite an earlier copy (two bad starts in the same second).
+	for (int n = 2; QFileInfo::exists(target); ++n)
+		target = path + QLatin1Char('.') + stamp + QLatin1Char('-') + QString::number(n) +
+			 QStringLiteral(".invalid");
+	if (QFile::rename(path, target) || QFile::copy(path, target))
+		return target;
+	return {};
+}
+
+// "buffer_output_cap" is a hidden support switch with no UI anywhere (see
+// BufferModeController::LoadSettings): only a literal JSON false turns the
+// cap off. Absent (or JSON null, which libobs drops on load) or true keeps it
+// on, and so does any other type ("false" as a string, 0...), with a WARN:
+// a typo must never quietly change how the buffer is sized.
+bool ReadBufferOutputCap(obs_data_t *data, const char *path)
+{
+	obs_data_item_t *item = obs_data_item_byname(data, "buffer_output_cap");
+	if (!item)
+		return true;
+	bool cap = true;
+	if (obs_data_item_gettype(item) == OBS_DATA_BOOLEAN) {
+		cap = obs_data_item_get_bool(item);
+	} else {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "\"buffer_output_cap\" in %s is not a JSON boolean -- keeping the "
+				  "output-resolution cap on. Only a literal false (no quotes) turns it off; this "
+				  "value is dropped from the file when OBS closes",
+				  path);
+	}
+	obs_data_item_release(&item);
+	return cap;
+}
+
+// False when the settings file exists but can't be parsed AND couldn't be set
+// aside: the caller must then not overwrite it on exit.
+bool LoadBufferSettings(trigglow::BufferModeController &controller)
 {
 	char *rawPath = obs_module_get_config_path(obs_current_module(), kBufferSettingsFile);
 	QString path = rawPath ? QString::fromUtf8(rawPath) : QString();
 	bfree(rawPath);
 	if (path.isEmpty())
-		return;
+		return true;
 
-	obs_data_t *data = obs_data_create_from_json_file(path.toUtf8().constData());
-	if (!data) {
+	const QByteArray pathUtf8 = path.toUtf8();
+	if (!QFileInfo::exists(path)) {
 		TRIGGLOW_LOG_INFO(kComponent, "no existing settings file, using defaults");
-		return;
+		return true;
+	}
+	obs_data_t *data = obs_data_create_from_json_file(pathUtf8.constData());
+	if (!data) {
+		// Exists but isn't readable JSON (hand-edited, truncated...). libobs
+		// already logged the parse error; keep the file for whoever edited it.
+		const QString setAside = SetAsideInvalidSettingsFile(path);
+		if (setAside.isEmpty()) {
+			TRIGGLOW_LOG_WARN(kComponent,
+					  "settings file %s is not valid JSON and could not be renamed or copied -- "
+					  "using defaults this session and leaving the file untouched on exit",
+					  pathUtf8.constData());
+			return false;
+		}
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "settings file %s is not valid JSON -- moved it to %s and using defaults (the "
+				  "file is written again when OBS closes)",
+				  pathUtf8.constData(), setAside.toUtf8().constData());
+		return true;
 	}
 
 	uint32_t delaySeconds = static_cast<uint32_t>(obs_data_get_int(data, "delay_seconds"));
@@ -117,12 +185,8 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 
 	bool showOverlay = obs_data_has_user_value(data, "show_overlay") ? obs_data_get_bool(data, "show_overlay")
 									 : true;
-	// Hidden support switch, no UI anywhere (see
-	// BufferModeController::LoadSettings): "buffer_output_cap": false brings
-	// back v0.5.0's buffer sizing. Absent = true. Read only here, at load.
-	const bool bufferOutputCap = obs_data_has_user_value(data, "buffer_output_cap")
-					     ? obs_data_get_bool(data, "buffer_output_cap")
-					     : true;
+	// false brings back v0.5.0's buffer sizing. Read only here, at load.
+	const bool bufferOutputCap = ReadBufferOutputCap(data, pathUtf8.constData());
 
 	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
 				loadingScene ? loadingScene : "", showOverlay,
@@ -133,6 +197,7 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 			  delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
 			  loadingScene ? loadingScene : "", bufferOutputCap ? "on" : "off");
 	obs_data_release(data);
+	return true;
 }
 
 void SaveBufferSettings(const trigglow::BufferModeController &controller)
@@ -205,7 +270,7 @@ bool obs_module_load(void)
 	g_state->bufferController->SetAuthorizationCheck(
 		[auth = g_state->authManager.get()] { return auth->IsLoggedIn(); });
 
-	LoadBufferSettings(*g_state->bufferController);
+	g_state->saveSettingsOnExit = LoadBufferSettings(*g_state->bufferController);
 
 	g_state->hotkeys = std::make_unique<trigglow::DelayHotkeys>(*g_state->bufferController);
 	g_state->hotkeys->Init();
@@ -223,7 +288,8 @@ void obs_module_unload(void)
 	if (!g_state)
 		return;
 
-	SaveBufferSettings(*g_state->bufferController);
+	if (g_state->saveSettingsOnExit)
+		SaveBufferSettings(*g_state->bufferController);
 
 	// Hotkeys must be torn down before we free the controller they point
 	// back into.
