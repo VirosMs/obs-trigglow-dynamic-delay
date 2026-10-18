@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string>
 #include <vector>
 
+#include "encoder-check.hpp"      // encodercheck::Scope, for ListActiveVideoEncoders()
 #include "video-delay-filter.hpp" // VideoDelayFilter::BufferFitEstimate, for EstimateBufferFit()
 
 #include <obs.hpp> // OBSSourceAutoRelease: libobs's own RAII wrapper for owned source references
@@ -51,7 +52,7 @@ extern "C" {
 //   - obs_source_get_name() / obs_source_release()
 // Re-verified 2026-10-18 against the libobs 31.1.1 sources this plugin builds
 // with (.deps/obs-studio-31.1.1), for DisableAllDelayFilters() and
-// ListActiveMainCanvasVideoEncoders():
+// ListActiveVideoEncoders():
 //   - obs_enum_sources(): non-private inputs AND groups, never filters (obs.c)
 //   - obs_enum_scenes(): the main canvas's scenes only, no groups (obs.c,
 //     obs_canvas_enum_scenes + obs_source_is_scene)
@@ -62,6 +63,9 @@ extern "C" {
 //   - obs_enum_outputs(): calls back under obs->data.outputs_mutex
 //   - obs_output_get_video_encoder2() / obs_encoder_get_width/height() /
 //     obs_encoder_parent_video(): plain reads, no locks, no refs
+//   - obs_enum_canvases(): calls back under obs->data.canvases_mutex, named
+//     canvases only (the main one included, private ones not);
+//     obs_canvas_get_video(): plain read
 namespace trigglow {
 
 // Mirrors the subset of obs_frontend_event we care about, so callers outside
@@ -77,13 +81,16 @@ enum class FrontendEvent {
 	Other,
 };
 
-// One video encoder of an active output, fed from OBS's main canvas -- see
-// ObsFrontendBridge::ListActiveMainCanvasVideoEncoders().
+// One video encoder of an active output -- see
+// ObsFrontendBridge::ListActiveVideoEncoders().
 struct ActiveVideoEncoder {
 	std::string outputName;
 	std::string encoderName;
-	uint32_t width = 0; // obs_encoder_get_width/height: its scaled size, or the canvas output size.
+	uint32_t width = 0; // obs_encoder_get_width/height: its scaled size, or its mix's output size.
 	uint32_t height = 0;
+	// Whether it renders OBS's main canvas (and so the delayed scene), and how
+	// sure that is: see encodercheck::Classify().
+	encodercheck::Scope scope = encodercheck::Scope::OtherCanvas;
 };
 
 using FrontendEventHandler = std::function<void(FrontendEvent)>;
@@ -148,17 +155,21 @@ public:
 							      uint32_t minResolutionHeight, bool capToOutput) const;
 
 	// Every video encoder (all MAX_OUTPUT_VIDEO_ENCODERS slots, so Enhanced
-	// Broadcasting's extra tracks too) of every ACTIVE output whose video
-	// comes from OBS's main canvas (obs_encoder_parent_video() ==
-	// obs_get_video()) -- the only encoders that see the delayed scene.
-	// Encoders of other canvases (e.g. a vertical canvas plugin) are skipped:
-	// their resolution has nothing to do with the delay buffer. An encoder
+	// Broadcasting's extra tracks too) of every ACTIVE output, each with its
+	// encodercheck::Scope: MainCanvas when obs_encoder_parent_video() is
+	// obs_get_video(), OtherCanvas when it is the video of another canvas
+	// listed by obs_enum_canvases() (e.g. a vertical canvas), and for any
+	// other mix -- a GPU-rescaled encoder (Rescale output, Enhanced
+	// Broadcasting tracks) or a plugin's own view, which libobs 31.1.1 can't
+	// map back to its canvas -- MainCanvasByAspect or OtherCanvas by aspect
+	// ratio. Only main-canvas encoders see the delayed scene. An encoder
 	// shared by several outputs appears once per output.
 	//
-	// Takes obs->data.outputs_mutex (obs_enum_outputs): call it from the UI
-	// thread (dock, hotkeys via OBS_TASK_UI, frontend events), NEVER from the
+	// Takes obs->data.canvases_mutex and outputs_mutex (obs_enum_canvases,
+	// obs_enum_outputs), one after the other: call it from the UI thread
+	// (dock, hotkeys via OBS_TASK_UI, frontend events), NEVER from the
 	// graphics thread (Render()/Tick()/a graphics task).
-	std::vector<ActiveVideoEncoder> ListActiveMainCanvasVideoEncoders() const;
+	std::vector<ActiveVideoEncoder> ListActiveVideoEncoders() const;
 
 	// --- Scene switching (optional "reconnect placeholder" scene, see
 	// docs/product roadmap issue #173) ---

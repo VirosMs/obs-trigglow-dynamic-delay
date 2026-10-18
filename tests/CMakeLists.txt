@@ -1,9 +1,10 @@
-# Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*).
-# No libobs, no Qt, no FFmpeg, no test framework. Two ways to build them:
+# Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
+# src/encoder-check.*). No libobs, no Qt, no FFmpeg, no test framework. Two
+# ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
 #      cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
-#      cmake --build <dir> --target buffer_fit_tests --config RelWithDebInfo
+#      cmake --build <dir> --target buffer_fit_tests encoder_check_tests --config RelWithDebInfo
 #      ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
 #
 # 2. Standalone, without downloading any OBS dependency (what CI's unit-tests
@@ -33,3 +34,17 @@ add_executable(buffer_fit_tests buffer_fit_tests.cpp "${_src}/buffer-fit.cpp" "$
 target_include_directories(buffer_fit_tests PRIVATE "${_src}")
 set_target_properties(buffer_fit_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME buffer_fit_tests COMMAND buffer_fit_tests)
+
+# Links buffer-fit too: the tests size the capped and uncapped buffers with
+# bufferfit::Compute(), like BufferModeController does.
+add_executable(
+  encoder_check_tests
+  encoder_check_tests.cpp
+  "${_src}/encoder-check.cpp"
+  "${_src}/encoder-check.hpp"
+  "${_src}/buffer-fit.cpp"
+  "${_src}/buffer-fit.hpp"
+)
+target_include_directories(encoder_check_tests PRIVATE "${_src}")
+set_target_properties(encoder_check_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME encoder_check_tests COMMAND encoder_check_tests)

@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "i18n.hpp"
 #include "logging.hpp"
 
+#include <cstdio>
+
 namespace trigglow {
 
 namespace {
@@ -315,25 +317,44 @@ void BufferModeController::WarnAboutEncodersAboveBuffer()
 						      status_.minResolutionHeight, true);
 	const auto uncapped = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
 							status_.minResolutionHeight, false);
-	if (capped.width == 0 || capped.height == 0)
-		return;
+	const encodercheck::Size cappedSize{capped.width, capped.height};
+	const encodercheck::Size uncappedSize{uncapped.width, uncapped.height};
 	// The cap isn't what limits the buffer (no cap applies, or RAM sets the
-	// size anyway): lifting it would change nothing, so nothing to say.
-	if (uncapped.width <= capped.width && uncapped.height <= capped.height)
+	// size anyway): lifting it would change nothing, so nothing to say and no
+	// need to walk the outputs. ShouldWarn() checks this again per encoder.
+	if (!encodercheck::CapLimitsBuffer(cappedSize, uncappedSize))
 		return;
 
-	for (const ActiveVideoEncoder &encoder : bridge_.ListActiveMainCanvasVideoEncoders()) {
-		if (encoder.width <= capped.width && encoder.height <= capped.height)
+	// What lifting the cap would cost in duration at today's RAM budget: the
+	// uncapped ring may not fit the whole delay where the capped one does.
+	char shorterNote[96] = "";
+	if (!uncapped.fitsFullDuration)
+		std::snprintf(shorterNote, sizeof(shorterNote), " (here: only %.1fs of the %us requested)",
+			      uncapped.actualSeconds, status_.delaySeconds);
+
+	for (const ActiveVideoEncoder &encoder : bridge_.ListActiveVideoEncoders()) {
+		if (!encodercheck::ShouldWarn(encoder.scope, {encoder.width, encoder.height}, cappedSize, uncappedSize,
+					      bufferOutputCap_))
 			continue;
-		if (!warnedEncoders_.insert(encoder.encoderName).second)
-			continue; // Once per encoder per cycle.
+		// Once per encoder AND size per cycle: the same encoder restarted at
+		// another resolution (output stopped, settings changed, started
+		// again) is warned about again.
+		if (!warnedEncoders_.emplace(encoder.encoderName, encoder.width, encoder.height).second)
+			continue;
+		const char *scopeNote =
+			encoder.scope == encodercheck::Scope::MainCanvasByAspect
+				? " (GPU-rescaled encoder, taken for the main canvas by its aspect ratio)"
+				: "";
 		TRIGGLOW_LOG_WARN(kComponent,
 				  "video encoder \"%s\" (output \"%s\") is %ux%u, above the delay buffer's %ux%u "
-				  "(capped to OBS's output resolution): its delayed video is upscaled. Without the cap "
-				  "the buffer would be %ux%u -- to lift it, set \"buffer_output_cap\": false in the "
-				  "plugin's buffer-mode-settings.json with OBS closed, then restart OBS",
+				  "(capped to OBS's output resolution): its delayed video is upscaled%s. Without the "
+				  "cap the buffer would be %ux%u -- to lift it, set \"buffer_output_cap\": false in "
+				  "the plugin's buffer-mode-settings.json with OBS closed, then restart OBS. Lifting "
+				  "it costs more CPU and RAM, and if RAM runs short the delay can end up shorter than "
+				  "requested%s",
 				  encoder.encoderName.c_str(), encoder.outputName.c_str(), encoder.width,
-				  encoder.height, capped.width, capped.height, uncapped.width, uncapped.height);
+				  encoder.height, capped.width, capped.height, scopeNote, uncapped.width,
+				  uncapped.height, shorterNote);
 	}
 }
 

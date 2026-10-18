@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 #include "video-delay-filter.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -1055,40 +1056,80 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen, capToOutput);
 }
 
-std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveMainCanvasVideoEncoders() const
+std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() const
 {
-	struct Ctx {
-		video_t *mainVideo;
-		std::vector<ActiveVideoEncoder> encoders;
-	} ctx{obs_get_video(), {}};
-	if (!ctx.mainVideo)
+	video_t *mainVideo = obs_get_video();
+	obs_video_info ovi = {};
+	if (!mainVideo || !obs_get_video_info(&ovi))
 		return {};
 
+	// The mixes of the other named canvases, compared by pointer only (never
+	// dereferenced later, so a canvas removed meanwhile is harmless). Under
+	// canvases_mutex: plain reads only. Private canvases aren't listed; their
+	// encoders fall into the aspect-ratio heuristic like any other mix.
+	struct CanvasCtx {
+		const video_t *mainVideo;
+		std::vector<const video_t *> others;
+	} canvases{mainVideo, {}};
+	obs_enum_canvases(
+		[](void *param, obs_canvas_t *canvas) -> bool {
+			auto *c = static_cast<CanvasCtx *>(param);
+			const video_t *video = obs_canvas_get_video(canvas);
+			if (video && video != c->mainVideo)
+				c->others.push_back(video);
+			return true;
+		},
+		&canvases);
+
+	struct RawEncoder {
+		std::string outputName;
+		std::string encoderName;
+		uint32_t width;
+		uint32_t height;
+		const video_t *parentVideo;
+	};
+	std::vector<RawEncoder> raw;
 	// Runs under outputs_mutex: only lock-free reads in here (see the header).
 	// An output in the list isn't freed meanwhile (obs_output_destroy() first
 	// unlinks it under this same mutex), and it holds a ref on each of its
 	// encoders, which libobs refuses to swap while the output is active.
 	obs_enum_outputs(
 		[](void *param, obs_output_t *output) -> bool {
-			auto *c = static_cast<Ctx *>(param);
+			auto *list = static_cast<std::vector<RawEncoder> *>(param);
 			if (!obs_output_active(output))
 				return true;
 			for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS; ++idx) {
 				obs_encoder_t *encoder = obs_output_get_video_encoder2(output, idx);
-				// parent_video, not obs_encoder_video(): with an fps divisor the
-				// latter returns a derived video_t, not the canvas's.
-				if (!encoder || obs_encoder_parent_video(encoder) != c->mainVideo)
+				if (!encoder)
 					continue;
 				const char *outputName = obs_output_get_name(output);
 				const char *encoderName = obs_encoder_get_name(encoder);
-				c->encoders.push_back({outputName ? outputName : "", encoderName ? encoderName : "",
-						       obs_encoder_get_width(encoder),
-						       obs_encoder_get_height(encoder)});
+				// parent_video, not obs_encoder_video(): with an fps divisor the
+				// latter returns a derived video_t, not the mix it renders.
+				list->push_back({outputName ? outputName : "", encoderName ? encoderName : "",
+						 obs_encoder_get_width(encoder), obs_encoder_get_height(encoder),
+						 obs_encoder_parent_video(encoder)});
 			}
 			return true;
 		},
-		&ctx);
-	return std::move(ctx.encoders);
+		&raw);
+
+	const encodercheck::Size mainBase{ovi.base_width, ovi.base_height};
+	const encodercheck::Size mainOutput{ovi.output_width, ovi.output_height};
+	std::vector<ActiveVideoEncoder> encoders;
+	encoders.reserve(raw.size());
+	for (RawEncoder &r : raw) {
+		encodercheck::VideoSource source = encodercheck::VideoSource::UnlistedMix;
+		if (r.parentVideo == mainVideo)
+			source = encodercheck::VideoSource::MainMix;
+		else if (std::find(canvases.others.begin(), canvases.others.end(), r.parentVideo) !=
+			 canvases.others.end())
+			source = encodercheck::VideoSource::OtherCanvasMix;
+		const encodercheck::Size size{r.width, r.height};
+		encoders.push_back({std::move(r.outputName), std::move(r.encoderName), r.width, r.height,
+				    encodercheck::Classify(source, size, mainBase, mainOutput)});
+	}
+	return encoders;
 }
 
 void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, void *privateData)

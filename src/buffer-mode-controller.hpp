@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <functional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "obs-frontend-bridge.hpp"
@@ -213,22 +214,26 @@ private:
 	void UpdateOverlay();
 
 	// While Filling/Active with the output cap on: logs a WARN, once per
-	// encoder per delay cycle, for each video encoder of an active main-canvas
-	// output that encodes above the (capped) delay buffer -- e.g. a recording
-	// rescaled to the canvas, or an Enhanced Broadcasting track above the
-	// output -- since it gets upscaled delayed video, and the hidden
-	// buffer_output_cap setting can lift the cap. Only when lifting it would
-	// actually buffer more (not when RAM is what limits the buffer). Called
-	// from Enable(), OnFillTimerElapsed() and the streaming/recording/replay
-	// buffer "started" frontend events: all on the UI thread, which is where
-	// ObsFrontendBridge::ListActiveMainCanvasVideoEncoders() must run.
+	// encoder and size per delay cycle, for each video encoder of an active
+	// output that renders OBS's main canvas and encodes above the (capped)
+	// delay buffer -- e.g. a recording rescaled to the canvas, or an Enhanced
+	// Broadcasting track above the output -- since it gets upscaled delayed
+	// video, and the hidden buffer_output_cap setting can lift the cap. Only
+	// when lifting it would actually buffer more (not when RAM is what limits
+	// the buffer); the text says lifting it can shorten the delay if RAM runs
+	// short. The decision is encodercheck::ShouldWarn(); GPU-rescaled encoders
+	// are attributed to the main canvas by aspect ratio (see
+	// encodercheck::Classify() for the limits). Called from Enable(),
+	// OnFillTimerElapsed() and the streaming/recording/replay buffer "started"
+	// frontend events: all on the UI thread, which is where
+	// ObsFrontendBridge::ListActiveVideoEncoders() must run.
 	void WarnAboutEncodersAboveBuffer();
 
 	uint32_t effectiveDelaySeconds_ = 0; // Set by SyncAudioDelayToVideoEffective().
 	bool bufferOutputCap_ = true;        // Hidden buffer_output_cap setting, see LoadSettings().
-	// Encoder names already warned about this cycle (WarnAboutEncodersAboveBuffer);
-	// cleared by Enable().
-	std::set<std::string> warnedEncoders_;
+	// (encoder name, width, height) already warned about this cycle
+	// (WarnAboutEncodersAboveBuffer); cleared by Enable().
+	std::set<std::tuple<std::string, uint32_t, uint32_t>> warnedEncoders_;
 
 	ObsFrontendBridge &bridge_;
 	BufferModeStatus status_;

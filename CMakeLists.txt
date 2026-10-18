@@ -140,6 +140,8 @@ target_sources(
     src/video-delay-filter.hpp
     src/buffer-fit.cpp
     src/buffer-fit.hpp
+    src/encoder-check.cpp
+    src/encoder-check.hpp
     src/audio-delay-filter.cpp
     src/audio-delay-filter.hpp
     src/hardware-info.cpp
@@ -165,10 +167,10 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STAND
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
-# Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*).
-# Off by default so plugin packaging is unchanged:
+# Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
+# src/encoder-check.*). Off by default so plugin packaging is unchanged:
 #   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
-#   cmake --build <dir> --target buffer_fit_tests --config RelWithDebInfo
+#   cmake --build <dir> --config RelWithDebInfo
 #   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
 # The target itself lives in tests/CMakeLists.txt, which also configures on
 # its own (no OBS deps) for CI's unit-tests job.
