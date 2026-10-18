@@ -25,6 +25,11 @@ Rediseño de la interfaz alineado con la marca Trigglow. Para fusionar con las n
   "35 / 60 s" en ámbar y la línea de detalle explica por qué.
 - **Activar delay se explica**: mientras está deshabilitado, una lista indica si falta la cuenta
   gratuita o la escena en directo.
+- **Los segundos de delay se bloquean mientras el delay está en marcha**, como la calidad mínima:
+  mientras se preparaba o estaba activo seguían editables y se aplicaban con cada tecla, cambiando
+  el tamaño del buffer en pleno directo. Una línea debajo, con un candado, indica que hay que
+  desactivar el delay para cambiarlos, y hasta entonces el tabulador los salta. Los campos
+  bloqueados siguen mostrando su valor legible (texto atenuado, AA).
 - **Selector de escena en directo**: no hay nada preseleccionado ("Elige una escena…") hasta que
   eliges una, así que también se puede elegir la primera y el campo nunca muestra una escena que la
   lista da por pendiente; una escena guardada que ya no existe cuenta como no elegida. La escena

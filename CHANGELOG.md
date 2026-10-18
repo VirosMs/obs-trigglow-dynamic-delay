@@ -23,6 +23,10 @@ UI redesign aligned with the Trigglow brand. To be merged with the 0.6.0 release
   (60 s set, 35 s fit) the chip reads "35 / 60 s" in amber and the detail line says why.
 - **Enable delay explains itself**: while it's disabled, a checklist shows whether the free account
   and the live scene are missing.
+- **The delay seconds are locked while the delay runs**, like the minimum quality: while preparing
+  or on they used to stay editable and applied on every keystroke, resizing the buffer under a live
+  stream. A line under them, with a lock icon, says to turn the delay off to change them, and they
+  are out of the tab order until then. Locked fields keep their value readable (muted text, AA).
 - **Live scene picker**: nothing is preselected ("Choose a scene…") until you pick a scene, so the
   first one can be chosen too and the field never shows a scene the checklist says is missing; a
   saved scene that no longer exists counts as not chosen. The plugin's helper scene is no longer

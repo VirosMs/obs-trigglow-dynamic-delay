@@ -203,6 +203,10 @@ private:
 	SceneComboBox *liveSceneCombo_ = nullptr;
 	SceneComboBox *loadingSceneCombo_ = nullptr;
 	QSpinBox *secondsSpin_ = nullptr;
+	// "Turn the delay off to change it.": shown under the delay | quality row
+	// while both are locked (Filling, Active).
+	QWidget *delayLockedRow_ = nullptr;
+	QLabel *delayLockedIcon_ = nullptr;
 	// "Calidad minima" -- floor on the delayed video's resolution; see
 	// BufferModeStatus::minResolutionHeight / VideoDelayFilter::EnsureRingSized.
 	QComboBox *minResolutionCombo_ = nullptr;

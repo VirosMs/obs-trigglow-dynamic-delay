@@ -413,10 +413,15 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 		    "solid %1; padding-bottom: 1px; }")
 		    .arg(focus));
 	add(QStringLiteral("QPlainTextEdit:focus { border: 1px solid %1; border-bottom: 2px solid %1; }").arg(focus));
+	// Locked fields still show something the user needs (the live scene, the
+	// seconds in effect while the delay runs), so their value stays AA in the
+	// muted text color rather than the faint disabled one; the hairline
+	// border, the muted spin arrows and the dock's "turn it off" line mark
+	// them as locked.
 	add(QStringLiteral(
 		    "QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled { color: "
 		    "%1; border-color: %2; }")
-		    .arg(disabled, line));
+		    .arg(muted, line));
 	// Spin box buttons: ours, so a theme without spin box rules (OBS's System
 	// theme) never leaves Qt's fallback of two dots side by side. Two 14 px
 	// halves at the right of the padding box, a hairline apart; chevrons in the

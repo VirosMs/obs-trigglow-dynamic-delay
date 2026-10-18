@@ -410,6 +410,24 @@ void TrigglowDelayDock::BuildUi()
 
 	configLayout->addLayout(tuningRow);
 
+	// While the delay runs (Filling, Active) the seconds are locked like the
+	// quality: changing them would resize the buffer under a live stream.
+	// This line says why, visibly, not only in a tooltip (RefreshFromStatus).
+	delayLockedRow_ = new QWidget(configCard);
+	{
+		auto *lockedLayout = new QHBoxLayout(delayLockedRow_);
+		lockedLayout->setContentsMargins(0, 2, 0, 0);
+		lockedLayout->setSpacing(6);
+		delayLockedIcon_ = MakeIconLabel(delayLockedRow_, kInlineIconSize);
+		auto *lockedText = new QLabel(T("Dock.Delay.Locked"), delayLockedRow_);
+		lockedText->setWordWrap(true);
+		SetRole(lockedText, "hint", ui::FontRole::Hint);
+		lockedLayout->addWidget(delayLockedIcon_, 0, Qt::AlignTop);
+		lockedLayout->addWidget(lockedText, 1);
+	}
+	delayLockedRow_->setVisible(false);
+	configLayout->addWidget(delayLockedRow_);
+
 	// Live-updated by RefreshFitEstimate() whenever secondsSpin_/
 	// minResolutionCombo_ change -- see that method and
 	// BufferModeController::EstimateBufferFit's comment.
@@ -764,6 +782,7 @@ void TrigglowDelayDock::ApplyStaticIcons()
 	const uitokens::Tokens &t = theme_.tokens;
 	SetIcon(updateIcon_, ui::IconId::Download, QStringLiteral("warning"), kAccountIconSize);
 	SetIcon(updateExternalIcon_, ui::IconId::ExternalLink, QStringLiteral("muted"), kInlineIconSize);
+	SetIcon(delayLockedIcon_, ui::IconId::Lock, QStringLiteral("muted"), kInlineIconSize);
 	SetButtonIcon(enableButton_, ui::IconId::Shield, ui::ToQColor(t.onGradient));
 	SetButtonIcon(disableButton_, ui::IconId::X, ui::ToQColor(t.dangerButtonText));
 	// Right to left: the icon follows the text, so the gap goes on its left.
@@ -891,7 +910,11 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	bool busy = status.state == BufferModeState::Filling || status.state == BufferModeState::Active;
 	liveSceneCombo_->setEnabled(!busy);
 	loadingSceneCombo_->setEnabled(!busy);
-	secondsSpin_->setEnabled(status.state != BufferModeState::Filling);
+	// Locked while the delay runs, like the quality (a disabled control is
+	// also out of the tab order); the line under them says how to unlock.
+	secondsSpin_->setEnabled(!busy);
+	secondsSpin_->setAccessibleDescription(busy ? T("Dock.Delay.Locked") : QString());
+	delayLockedRow_->setVisible(busy);
 	minResolutionCombo_->setEnabled(!busy);
 	// Also requires a live scene chosen -- previously Enable was clickable
 	// with no scene selected, which just bounced back into an Error state
