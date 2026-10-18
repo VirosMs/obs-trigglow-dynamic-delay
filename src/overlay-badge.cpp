@@ -39,8 +39,6 @@ namespace trigglow::ui {
 namespace {
 
 constexpr const char *kComponent = "overlay-badge";
-// Bump when the drawing changes so a cached PNG from an older build is redrawn.
-constexpr int kRenderVersion = 1;
 
 // Brand tokens fixed for the overlay, independent of the OBS theme
 // (apps/web/src/index.css).
@@ -166,9 +164,12 @@ QString DelayBadgeFiles::PathFor(uint32_t seconds, const QString &label, const Q
 	if (directory_.isEmpty())
 		return {};
 	const QString path = QDir(directory_).filePath(QString::fromStdString(overlaylayout::BadgeFileName(seconds)));
-	const QString key = QStringLiteral("%1\x1f%2\x1f%3\x1f%4\x1f%5")
-				    .arg(kRenderVersion)
-				    .arg(label, value, Fonts().display, Fonts().displayBold);
+	// In memory only: every value is redrawn the first time it is asked for
+	// in a session, before the badge is shown, so a PNG an older build left
+	// on disk (other drawing, other texts) is never what OBS displays and no
+	// render version is needed.
+	const QString key =
+		QStringLiteral("%1\x1f%2\x1f%3\x1f%4").arg(label, value, Fonts().display, Fonts().displayBold);
 
 	if (renderedKeys_.value(seconds) == key && QFileInfo::exists(path))
 		return path;
