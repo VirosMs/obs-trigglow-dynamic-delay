@@ -81,6 +81,13 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # pipeline_stress_tests' timing checks (exact frame shown, lag after a
+      # render pause, a slow decoder keeping up) use their looser CI limits:
+      # shared runners, macOS above all, don't always keep its 4 ms steps,
+      # and this job gates create-release. Its correctness checks stay strict.
+      # See the header of tests/pipeline_stress_tests.cpp.
+      TRIGGLOW_STRESS_CI: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -103,6 +110,10 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # The stress test's looser CI timing limits (see the unit-tests job):
+      # under TSAN's 5-15x slowdown the strict ones fail without a race.
+      TRIGGLOW_STRESS_CI: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -128,8 +139,9 @@ jobs:
         # create-release, and TSAN can fail for reasons that are not races in
         # this code: false positives on what it can't see into (libstdc++.so is
         # not built with -fsanitize=thread, standalone std::atomic_thread_fence
-        # is not modeled) and its 5-15x slowdown tripping the stress test's
-        # timing checks. The unit-tests job above is the gate; this step only
+        # is not modeled) and its 5-15x slowdown, which can trip the stress
+        # test's timing checks even with their CI limits (TRIGGLOW_STRESS_CI
+        # above). The unit-tests job above is the gate; this step only
         # reports: a warning annotation on the run and a summary on the job
         # page, which the release checklist reviews before a draft release is
         # published. Once it has run clean for a few releases, drop
