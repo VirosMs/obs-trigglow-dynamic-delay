@@ -56,8 +56,19 @@ enum class FrontendEvent {
 	StreamingStarted,
 	StreamingStopping,
 	StreamingStopped,
+	RecordingStarted,
+	ReplayBufferStarted,
 	FinishedLoading,
 	Other,
+};
+
+// One video encoder of an active output, fed from OBS's main canvas -- see
+// ObsFrontendBridge::ListActiveMainCanvasVideoEncoders().
+struct ActiveVideoEncoder {
+	std::string outputName;
+	std::string encoderName;
+	uint32_t width = 0; // obs_encoder_get_width/height: its scaled size, or the canvas output size.
+	uint32_t height = 0;
 };
 
 using FrontendEventHandler = std::function<void(FrontendEvent)>;
@@ -120,6 +131,19 @@ public:
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(const std::string &liveSceneName,
 							      uint32_t requestedDelaySeconds,
 							      uint32_t minResolutionHeight, bool capToOutput) const;
+
+	// Every video encoder (all MAX_OUTPUT_VIDEO_ENCODERS slots, so Enhanced
+	// Broadcasting's extra tracks too) of every ACTIVE output whose video
+	// comes from OBS's main canvas (obs_encoder_parent_video() ==
+	// obs_get_video()) -- the only encoders that see the delayed scene.
+	// Encoders of other canvases (e.g. a vertical canvas plugin) are skipped:
+	// their resolution has nothing to do with the delay buffer. An encoder
+	// shared by several outputs appears once per output.
+	//
+	// Takes obs->data.outputs_mutex (obs_enum_outputs): call it from the UI
+	// thread (dock, hotkeys via OBS_TASK_UI, frontend events), NEVER from the
+	// graphics thread (Render()/Tick()/a graphics task).
+	std::vector<ActiveVideoEncoder> ListActiveMainCanvasVideoEncoders() const;
 
 	// --- Scene switching (optional "reconnect placeholder" scene, see
 	// docs/product roadmap issue #173) ---

@@ -188,6 +188,11 @@ void BufferModeController::Enable()
 	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s",
 			  status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
 			  bufferOutputCap_ ? "on" : "off");
+
+	// New cycle: warn again about any encoder above the buffer, starting with
+	// the outputs already running right now.
+	warnedEncoders_.clear();
+	WarnAboutEncodersAboveBuffer();
 }
 
 void BufferModeController::OnFillTimerElapsed()
@@ -211,6 +216,9 @@ void BufferModeController::OnFillTimerElapsed()
 	SetState(BufferModeState::Active);
 	UpdateOverlay();
 	TRIGGLOW_LOG_INFO(kComponent, "buffer full, now showing delayed content");
+	// Catches outputs started during Filling without a frontend event (e.g.
+	// by another plugin); already-warned encoders stay silent.
+	WarnAboutEncodersAboveBuffer();
 }
 
 void BufferModeController::Disable()
@@ -288,6 +296,45 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 		bridge_.DisableAllDelayFilters();
 	if (event == FrontendEvent::FinishedLoading && onSceneListRefresh_)
 		onSceneListRefresh_();
+	// A new output's encoders may encode above the delay buffer. No-op unless
+	// the delay is Filling/Active (see WarnAboutEncodersAboveBuffer).
+	if (event == FrontendEvent::StreamingStarted || event == FrontendEvent::RecordingStarted ||
+	    event == FrontendEvent::ReplayBufferStarted)
+		WarnAboutEncodersAboveBuffer();
+}
+
+void BufferModeController::WarnAboutEncodersAboveBuffer()
+{
+	if (!bufferOutputCap_ || status_.liveSceneName.empty() ||
+	    (status_.state != BufferModeState::Filling && status_.state != BufferModeState::Active))
+		return;
+
+	// Same bufferfit::Compute() the filter sizes its ring with, so this is the
+	// buffer it uses (or will use, before its first Render()), cap on and off.
+	const auto capped = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
+						      status_.minResolutionHeight, true);
+	const auto uncapped = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
+							status_.minResolutionHeight, false);
+	if (capped.width == 0 || capped.height == 0)
+		return;
+	// The cap isn't what limits the buffer (no cap applies, or RAM sets the
+	// size anyway): lifting it would change nothing, so nothing to say.
+	if (uncapped.width <= capped.width && uncapped.height <= capped.height)
+		return;
+
+	for (const ActiveVideoEncoder &encoder : bridge_.ListActiveMainCanvasVideoEncoders()) {
+		if (encoder.width <= capped.width && encoder.height <= capped.height)
+			continue;
+		if (!warnedEncoders_.insert(encoder.encoderName).second)
+			continue; // Once per encoder per cycle.
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "video encoder \"%s\" (output \"%s\") is %ux%u, above the delay buffer's %ux%u "
+				  "(capped to OBS's output resolution): its delayed video is upscaled. Without the cap "
+				  "the buffer would be %ux%u -- to lift it, set \"buffer_output_cap\": false in the "
+				  "plugin's buffer-mode-settings.json with OBS closed, then restart OBS",
+				  encoder.encoderName.c_str(), encoder.outputName.c_str(), encoder.width,
+				  encoder.height, capped.width, capped.height, uncapped.width, uncapped.height);
+	}
 }
 
 void BufferModeController::SyncAudioDelayToVideoEffective()

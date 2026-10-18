@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "video-delay-filter.hpp"
 
 #include <cstring>
+#include <vector>
 
 extern "C" {
 #include <obs.h>
@@ -1012,6 +1013,42 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen, capToOutput);
 }
 
+std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveMainCanvasVideoEncoders() const
+{
+	struct Ctx {
+		video_t *mainVideo;
+		std::vector<ActiveVideoEncoder> encoders;
+	} ctx{obs_get_video(), {}};
+	if (!ctx.mainVideo)
+		return {};
+
+	// Runs under outputs_mutex: only lock-free reads in here (see the header).
+	// An output in the list isn't freed meanwhile (obs_output_destroy() first
+	// unlinks it under this same mutex), and it holds a ref on each of its
+	// encoders, which libobs refuses to swap while the output is active.
+	obs_enum_outputs(
+		[](void *param, obs_output_t *output) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			if (!obs_output_active(output))
+				return true;
+			for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS; ++idx) {
+				obs_encoder_t *encoder = obs_output_get_video_encoder2(output, idx);
+				// parent_video, not obs_encoder_video(): with an fps divisor the
+				// latter returns a derived video_t, not the canvas's.
+				if (!encoder || obs_encoder_parent_video(encoder) != c->mainVideo)
+					continue;
+				const char *outputName = obs_output_get_name(output);
+				const char *encoderName = obs_encoder_get_name(encoder);
+				c->encoders.push_back({outputName ? outputName : "", encoderName ? encoderName : "",
+						       obs_encoder_get_width(encoder),
+						       obs_encoder_get_height(encoder)});
+			}
+			return true;
+		},
+		&ctx);
+	return std::move(ctx.encoders);
+}
+
 void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, void *privateData)
 {
 	auto *self = static_cast<ObsFrontendBridge *>(privateData);
@@ -1031,6 +1068,12 @@ void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, voi
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
 		mapped = FrontendEvent::StreamingStopped;
+		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
+		mapped = FrontendEvent::RecordingStarted;
+		break;
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
+		mapped = FrontendEvent::ReplayBufferStarted;
 		break;
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		mapped = FrontendEvent::FinishedLoading;
