@@ -302,7 +302,7 @@ obs_sceneitem_t *FindOverlayBadgeItem(obs_scene_t *wrapperScene)
 			*static_cast<obs_sceneitem_t **>(param) = item;
 			return false;
 		},
-		&marked);
+		static_cast<void *>(&marked));
 	return marked;
 }
 
@@ -461,7 +461,7 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 		const std::string *liveName;
 		obs_source_t *itemSource = nullptr;
 		std::vector<obs_sceneitem_t *> stale;
-	} ctx{&liveSceneName};
+	} ctx{&liveSceneName, nullptr, {}};
 	obs_scene_enum_items(
 		wrapperScene,
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) -> bool {
