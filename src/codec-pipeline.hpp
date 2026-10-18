@@ -144,6 +144,7 @@ class CodecPipeline {
 public:
 	static constexpr uint32_t kMaxEncodeContexts = 2;
 	static constexpr uint32_t kMaxSlicesPerContext = 4;
+	static constexpr uint32_t kStaleIntervals = 2; // See AcquireForDisplay().
 
 	struct Options {
 		bool threaded = true;
@@ -171,6 +172,7 @@ public:
 		uint64_t backpressureDrops = 0; // Captures dropped: no free RawFrame (encoders behind).
 		uint64_t staleEncodes = 0;      // Jobs whose slot was superseded before encoding.
 		uint64_t decodeJumps = 0;       // Decoder skipped ahead to catch up.
+		uint64_t staleDecoded = 0;      // Decoded frames dropped unshown: far older than the frame due.
 		uint32_t queueDepthMax = 0;
 		uint64_t queueDepthSum = 0;
 		uint64_t queueDepthSamples = 0;
@@ -228,7 +230,11 @@ public:
 	// Playback. Publishes targetNs (and what's on screen now) to the decoder,
 	// then returns the newest decoded frame with lastShownNs < captureNs <=
 	// targetNs, if any (sync mode: decodes it right here). After uploading it,
-	// call ReleaseDisplay().
+	// call ReleaseDisplay(). A decoded frame more than kStaleIntervals capture
+	// intervals older than the frame due in the ring (decoded ahead before a
+	// pause in rendering, say) is never returned: it's dropped, and the caller
+	// holds the frame on screen until the decoder, which jumps straight to the
+	// due frame when it falls behind, has that one ready (one decode later).
 	bool AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, DecodedLease &lease);
 	void ReleaseDisplay(DecodedLease &lease);
 	// Only publishes a target (nothing is shown): lets the decoder start on

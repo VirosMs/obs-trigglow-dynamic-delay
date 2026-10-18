@@ -721,9 +721,10 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 		"pipeline check (%s): mode=%s rung=%zu/%zu capture=%ux%u@%.2ffps enc=%ux%u L=%u S=%zu | "
 		"enc0 p50/p95/max=%.2f/%.2f/%.2fms busy=%.0f%% enc1=%.2f/%.2f/%.2f busy=%.0f%% "
 		"dec=%.2f/%.2f/%.2f busy=%.0f%% | drops reserve=%llu backpressure=%llu arena=%llu capture=%llu "
-		"rawFallback=%llu encFail=%llu decFail=%llu staleEnc=%llu decJumps=%llu | queue enc max=%u avg=%.2f "
-		"dec ahead avg=%.2f min=%u | ratio=%.1fx arena=%.0fMB committed (live %.0fMB, peak %.0fMB, %u blocks "
-		"of %.0fMB, limit %.0fMB) ring=%zu slots (ready %zu, dropped %zu, in flight %zu, pinned %zu)",
+		"rawFallback=%llu encFail=%llu decFail=%llu staleEnc=%llu decJumps=%llu staleDec=%llu | queue enc "
+		"max=%u avg=%.2f dec ahead avg=%.2f min=%u | ratio=%.1fx arena=%.0fMB committed (live %.0fMB, peak "
+		"%.0fMB, %u blocks of %.0fMB, limit %.0fMB) ring=%zu slots (ready %zu, dropped %zu, in flight %zu, "
+		"pinned %zu)",
 		reason, threaded ? "workers" : "sync", rung, rungs - 1, captureWidth_, captureHeight_,
 		fps / std::max<uint32_t>(1, captureDivisor_), pipeline_ ? pipeline_->ActiveEncodeContexts() : 0,
 		pipeline_ ? pipeline_->SlicesPerContext() : 0, pipeline_ ? pipeline_->LookaheadFrames() : 0,
@@ -734,7 +735,7 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 		static_cast<unsigned long long>(perf_.captureFailures), static_cast<unsigned long long>(w.rawFallbacks),
 		static_cast<unsigned long long>(w.encodeFailures), static_cast<unsigned long long>(w.decodeFailures),
 		static_cast<unsigned long long>(w.staleEncodes), static_cast<unsigned long long>(w.decodeJumps),
-		w.queueDepthMax,
+		static_cast<unsigned long long>(w.staleDecoded), w.queueDepthMax,
 		w.queueDepthSamples ? static_cast<double>(w.queueDepthSum) / static_cast<double>(w.queueDepthSamples)
 				    : 0.0,
 		w.aheadSamples ? static_cast<double>(w.aheadSum) / static_cast<double>(w.aheadSamples) : 0.0,

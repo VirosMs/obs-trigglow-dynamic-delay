@@ -408,6 +408,86 @@ RunStats RunScenario(const Scenario &s)
 	return stats;
 }
 
+// Rendering stops for 300 ms (OBS stalled, the scene hidden): the decoder had
+// decoded a few frames ahead of the old target, and those are now far older
+// than the frame due. The first frame shown afterwards must be (about) the due
+// one, never one of those (QA: one frame ~280 ms older than due).
+void RunPauseScenario()
+{
+	testcheck::g_currentTest = "threaded, 300 ms render pause";
+	CodecPipeline::Options options;
+	options.threaded = true;
+	options.clockNs = &NowNs;
+	options.lookaheadFrames = 3;
+	std::atomic<uint32_t> seeds{100};
+	options.codecFactory = [&seeds] {
+		return std::unique_ptr<VideoCodec>(new StampCodec(seeds++));
+	};
+	auto pipeline = std::make_unique<CodecPipeline>(options);
+	const uint64_t periodNs = 4000000, delayNs = 1000000000;
+	auto ring = std::make_shared<FrameRing>(static_cast<size_t>(delayNs / periodNs) + 32, FrameArena::Config{});
+	pipeline->Attach(ring, 64, 32, periodNs);
+	std::deque<FrameRing::Reservation> staging;
+	uint64_t lastShown = 0, lastCell = 0, worstLagNs = 0, shownAfter = 0;
+	auto step = [&](bool measure) {
+		const uint64_t now = NowNs();
+		const uint64_t cell = now / periodNs;
+		if (cell != lastCell) {
+			lastCell = cell;
+			FrameRing::Reservation reservation;
+			if (ring->Reserve(now, reservation))
+				staging.push_back(reservation);
+			while (staging.size() > 2) {
+				const FrameRing::Reservation r = staging.front();
+				staging.pop_front();
+				RawFrame *frame = pipeline->AcquireRawFrame(64, 32);
+				if (!frame) {
+					ring->MarkDropped(r.index, r.generation);
+					continue;
+				}
+				FillStamped(*frame, r.captureNs);
+				pipeline->SubmitEncode(ring, frame, r);
+			}
+		}
+		uint64_t oldest = 0;
+		if (ring->OldestCaptureNs(oldest) && now > delayNs && oldest <= now - delayNs) {
+			DecodedLease lease;
+			if (pipeline->AcquireForDisplay(now - delayNs, lastShown, lease)) {
+				if (measure) {
+					worstLagNs = std::max(worstLagNs, (now - delayNs) - lease.captureNs);
+					++shownAfter;
+				}
+				lastShown = lease.captureNs;
+				pipeline->ReleaseDisplay(lease);
+			}
+		}
+	};
+	auto runFor = [&](uint64_t ns, bool measure) {
+		const uint64_t end = NowNs() + ns;
+		uint64_t nextTick = NowNs();
+		while (NowNs() < end) {
+			step(measure);
+			nextTick += periodNs;
+			while (NowNs() < nextTick)
+				std::this_thread::yield();
+		}
+	};
+	runFor(1500000000ULL, false);
+	std::this_thread::sleep_for(std::chrono::milliseconds(300)); // No Render() at all.
+	runFor(100000000ULL, true);
+	CodecPipeline::WindowStats stats;
+	pipeline->TakeWindowStats(stats);
+	pipeline->Shutdown();
+	std::printf("  %s: %llu frames shown in the 100 ms after it, worst %.1f ms older than due (%llu stale "
+		    "decoded frames dropped)\n",
+		    testcheck::g_currentTest, static_cast<unsigned long long>(shownAfter),
+		    static_cast<double>(worstLagNs) / 1e6, static_cast<unsigned long long>(stats.staleDecoded));
+	CHECK(shownAfter > 0);
+	// The due frame, or one at most kStaleIntervals captures older (plus a
+	// capture interval of jitter between the two clock reads).
+	CHECK(worstLagNs <= (CodecPipeline::kStaleIntervals + 1) * periodNs);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -448,6 +528,8 @@ int main(int argc, char **argv)
 	sync.seconds = 2 * scale;
 	sync.periodNs = 8000000; // The fake codec runs on this thread: leave it room.
 	RunScenario(sync);
+
+	RunPauseScenario();
 
 	CHECK_EQ(g_tornFrames.load(), 0u);
 	CHECK_EQ(g_badPackets.load(), 0u);

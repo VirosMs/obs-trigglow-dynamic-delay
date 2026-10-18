@@ -184,6 +184,9 @@ public:
 			      ReadView &out);
 	// Sync path: pins ringselect::SelectForDisplay(targetNs, maxBack).
 	bool PinForDisplay(uint64_t targetNs, size_t maxBack, ReadView &out);
+	// The capture time of the slot PinForDisplay() would pin, without pinning
+	// it: the frame that should be on screen now. False if there is none.
+	bool DisplayCandidateNs(uint64_t targetNs, size_t maxBack, uint64_t &captureNs) const;
 	void Unpin(const ReadView &view);
 
 	// --- Queries ---

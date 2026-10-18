@@ -205,6 +205,23 @@ bool FrameRing::PinForDisplay(uint64_t targetNs, size_t maxBack, ReadView &out)
 	return true;
 }
 
+bool FrameRing::DisplayCandidateNs(uint64_t targetNs, size_t maxBack, uint64_t &captureNs) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	const size_t count = buffered_;
+	auto captureAt = [&](size_t p) {
+		return headers_[IndexAt(p)].captureNs;
+	};
+	auto readyAt = [&](size_t p) {
+		return headers_[IndexAt(p)].state == SlotState::Ready;
+	};
+	const size_t p = ringselect::SelectForDisplay(count, targetNs, maxBack, captureAt, readyAt);
+	if (p == count)
+		return false;
+	captureNs = captureAt(p);
+	return true;
+}
+
 void FrameRing::Unpin(const ReadView &view)
 {
 	std::lock_guard<std::mutex> lock(mutex_);

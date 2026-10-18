@@ -572,9 +572,24 @@ bool CodecPipeline::AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, D
 	if (!Threaded())
 		return AcquireInline(targetNs, lastShownNs, lease);
 
+	// The frame that should be on screen now: the newest Ready slot at or
+	// before the target. G is the only caller of Detach(), so this copy of the
+	// ring is never its last reference.
+	uint64_t dueNs = 0;
+	{
+		std::shared_ptr<FrameRing> ring;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			ring = ring_;
+		}
+		if (!ring || !ring->DisplayCandidateNs(targetNs, kDisplayMaxBack, dueNs))
+			dueNs = 0;
+	}
+
 	std::array<std::shared_ptr<void>, kMaxLookaheadFrames + 2> doomed;
 	size_t doomedCount = 0;
 	uint32_t ahead = 0;
+	uint32_t stale = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		targetNs_ = targetNs;
@@ -594,6 +609,22 @@ bool CodecPipeline::AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, D
 				++ahead;
 			else if (!best || entry.captureNs > best->captureNs)
 				best = &entry;
+		}
+		// Stale: decoded ahead of a target that has since moved on by far more
+		// than a decode (a pause in rendering): QA saw one frame shown ~280 ms
+		// older than due right after a 300 ms pause. None of the decoded frames
+		// at or before the target will ever be shown -- the due one is newer --
+		// so they all go, freeing the pool for it.
+		if (best && dueNs > best->captureNs + kStaleIntervals * captureIntervalNs_) {
+			for (DecodedEntry &entry : decoded_) {
+				if (entry.state == DecodedEntry::State::Ready && entry.captureNs <= targetNs) {
+					entry.state = DecodedEntry::State::Free;
+					doomed[doomedCount++] = std::move(entry.image.owner);
+					entry.image = DecodedImage{};
+					++stale;
+				}
+			}
+			best = nullptr;
 		}
 		if (best) {
 			// Anything older than the frame shown now will never be shown.
@@ -618,6 +649,7 @@ bool CodecPipeline::AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, D
 		window_.aheadSum += ahead;
 		++window_.aheadSamples;
 		window_.aheadMin = std::min(window_.aheadMin, ahead);
+		window_.staleDecoded += stale;
 	}
 	// `doomed` released here, outside both locks.
 	return lease.valid;
@@ -915,6 +947,7 @@ void CodecPipeline::TakeWindowStats(WindowStats &out)
 	window_.backpressureDrops = 0;
 	window_.staleEncodes = 0;
 	window_.decodeJumps = 0;
+	window_.staleDecoded = 0;
 	window_.queueDepthMax = 0;
 	window_.queueDepthSum = 0;
 	window_.queueDepthSamples = 0;

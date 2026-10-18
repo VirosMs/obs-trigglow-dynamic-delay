@@ -198,6 +198,16 @@ void TestSelectionWithDrops()
 	CHECK_EQ(view.captureNs, 1070u);
 	ring.Unpin(view);
 	CHECK(ring.Due(1085).state == SlotState::Encoding);
+	// The same choice without pinning (what the decoded frame shown is
+	// compared against).
+	uint64_t candidate = 0;
+	CHECK(ring.DisplayCandidateNs(1055, 4, candidate));
+	CHECK_EQ(candidate, 1030u);
+	CHECK(ring.DisplayCandidateNs(1085, 4, candidate));
+	CHECK_EQ(candidate, 1070u);
+	CHECK(!ring.DisplayCandidateNs(999, 4, candidate));
+	CHECK(!ring.DisplayCandidateNs(1055, 1, candidate)); // 1050 and 1040 dropped, 1030 is 2 back.
+	CHECK_EQ(ring.GetCounts().pinned, 0u);
 	// Before the oldest frame: nothing.
 	CHECK(!ring.PinForDisplay(999, 4, view));
 	CHECK(!ring.Due(999).exists);
