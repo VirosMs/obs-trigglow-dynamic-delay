@@ -473,16 +473,18 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 	add(QStringLiteral("QPushButton[tgVariant=\"danger\"]:disabled { color: %1; border-color: %2; }")
 		    .arg(disabled, line));
 
-	// Link: no box, accent text, underline on hover and keyboard focus. The
-	// 2 px bottom padding becomes the focus border, so nothing moves.
+	// Link: no box, accent text, underline on hover and keyboard focus. 20 px
+	// of content + 3 px padding each side keeps the target at 26 px (WCAG
+	// 2.5.8: 24); 2 px of the bottom padding becomes the focus border, so
+	// nothing moves.
 	add(QStringLiteral("QPushButton[tgVariant=\"link\"] { background: transparent; color: %1; border: none; "
-			   "border-radius: 0px; min-height: 0px; max-height: 200px; margin: 0px; padding: 2px 0px 2px "
-			   "0px; text-align: left; }")
+			   "border-radius: 0px; height: 20px; min-height: 20px; max-height: 20px; margin: 0px; "
+			   "padding: 3px 0px 3px 0px; text-align: left; }")
 		    .arg(accentText));
 	add(QStringLiteral("QPushButton[tgVariant=\"link\"]:hover { text-decoration: underline; }"));
 	add(QStringLiteral(
 		    "QPushButton[tgVariant=\"link\"]:focus { text-decoration: underline; border-bottom: 2px solid "
-		    "%1; padding-bottom: 0px; }")
+		    "%1; padding-bottom: 1px; }")
 		    .arg(focus));
 	add(QStringLiteral("QPushButton[tgVariant=\"link\"]:disabled { color: %1; }").arg(disabled));
 
