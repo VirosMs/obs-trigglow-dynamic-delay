@@ -8,6 +8,14 @@ option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
 option(TRIGGLOW_BUILD_TESTS "Build the standalone unit tests (no libobs needed, run with ctest)" OFF)
 
+# Local test builds only: the plugin reads its API host from the TRIGGLOW_API_HOST
+# environment variable (a bare hostname, still HTTPS only). Never on in a published
+# build: a CI build with it ON stops here.
+option(TRIGGLOW_ALLOW_API_HOST_OVERRIDE "Test builds only: API host from the TRIGGLOW_API_HOST variable" OFF)
+if(TRIGGLOW_ALLOW_API_HOST_OVERRIDE AND DEFINED ENV{CI})
+  message(FATAL_ERROR "TRIGGLOW_ALLOW_API_HOST_OVERRIDE is for local test builds only")
+endif()
+
 include(compilerconfig)
 include(defaults)
 include(helpers)
@@ -118,9 +126,10 @@ if(ENABLE_QT)
     # anyway just gets silently rejected ("No functional TLS backend was
     # found") rather than working. WinHTTP has no such dependency: TLS is
     # handled by the OS itself.
-    # dxgi: the GPU's PCI vendor ID for Trigi's opt-in technical data
-    # (src/diagnostics-collector.cpp).
-    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp dxgi)
+    # crypt32: the sign-in is stored with the Windows data protection API
+    # (CryptProtectData, src/token-store.cpp). dxgi: the GPU's PCI vendor ID for
+    # Trigi's opt-in technical data (src/diagnostics-collector.cpp).
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp crypt32 dxgi)
   endif()
 
   target_compile_options(
@@ -186,6 +195,12 @@ target_sources(
     src/support-diagnostics.hpp
     src/diagnostics-collector.cpp
     src/diagnostics-collector.hpp
+    src/api-client.cpp
+    src/api-client.hpp
+    src/token-store.cpp
+    src/token-store.hpp
+    src/auth-client.cpp
+    src/auth-client.hpp
     src/bug-report.cpp
     src/bug-report.hpp
     src/report-bug-dialog.cpp
@@ -207,6 +222,11 @@ target_sources(
 )
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+
+if(TRIGGLOW_ALLOW_API_HOST_OVERRIDE)
+  message(WARNING "Test build: the API host can be changed with TRIGGLOW_API_HOST. Never publish this build.")
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_ALLOW_API_HOST_OVERRIDE)
+endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 

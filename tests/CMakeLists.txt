@@ -126,9 +126,11 @@ target_link_libraries(pipeline_stress_tests PRIVATE Threads::Threads)
 set_target_properties(pipeline_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME pipeline_stress_tests COMMAND pipeline_stress_tests)
 
-# v0.6.0 account, Trigi and ticket client.
+# v0.6.0 account, Trigi and ticket client. Every network call goes through a
+# scripted stand-in (tests/fake-transport.hpp), so these never touch the network;
+# win-http.cpp is only linked for http::Send()'s symbol.
 function(trigglow_add_client_test name)
-  add_executable(${name} ${ARGN} check.hpp test-support.hpp)
+  add_executable(${name} ${ARGN} check.hpp test-support.hpp fake-transport.hpp)
   target_include_directories(${name} PRIVATE "${_src}")
   set_target_properties(${name} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
   if(WIN32)
@@ -136,6 +138,20 @@ function(trigglow_add_client_test name)
   endif()
   add_test(NAME ${name} COMMAND ${name})
 endfunction()
+
+set(
+  _client_sources
+  "${_src}/json.cpp"
+  "${_src}/json.hpp"
+  "${_src}/win-http.cpp"
+  "${_src}/win-http.hpp"
+  "${_src}/api-client.cpp"
+  "${_src}/api-client.hpp"
+  "${_src}/token-store.cpp"
+  "${_src}/token-store.hpp"
+  "${_src}/auth-client.cpp"
+  "${_src}/auth-client.hpp"
+)
 
 trigglow_add_client_test(json_tests json_tests.cpp "${_src}/json.cpp" "${_src}/json.hpp")
 # Redaction of OBS's log before it is attached to a ticket (src/log-redact.hpp).
@@ -152,3 +168,6 @@ trigglow_add_client_test(
   "${_src}/json.cpp"
   "${_src}/json.hpp"
 )
+trigglow_add_client_test(api_client_tests api_client_tests.cpp ${_client_sources})
+trigglow_add_client_test(token_store_tests token_store_tests.cpp ${_client_sources})
+trigglow_add_client_test(auth_client_tests auth_client_tests.cpp ${_client_sources})

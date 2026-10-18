@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "settings-ui.hpp"
+#include "api-client.hpp"
 #include "auth-manager.hpp"
 #include "i18n.hpp"
 #include "logging.hpp"
@@ -778,6 +779,11 @@ void TrigglowDelayDock::BuildUi()
 		}
 	});
 	connect(signInButton_, &QPushButton::clicked, this, [this] {
+		if (authManager_.IsLoggedIn() && authManager_.AccountInactive()) {
+			// "Open trigglow.com": the account page explains the account's state.
+			QDesktopServices::openUrl(QUrl(QString::fromUtf8(api::web::kAppSupport)));
+			return;
+		}
 		if (!authManager_.IsLoggedIn() && !authManager_.IsLoggingIn()) {
 			TRIGGLOW_LOG_INFO(kComponent, "Sign in pressed in dock");
 			linkCopied_ = false;
@@ -1089,7 +1095,8 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	// sets Error if authManager_ says logged out, but disabling the button
 	// up front is a clearer signal than a click that visibly bounces. The
 	// requirement list right below says which of the two is missing.
-	const bool loggedIn = authManager_.IsLoggedIn();
+	// A suspended or inactive account blocks Enable too (the account row says why).
+	const bool loggedIn = authManager_.CanEnable();
 	// The saved live scene counts once it's in the picker (a deleted scene or
 	// the helper scene isn't); until OBS has loaded the collection the picker
 	// is still empty and the saved name is trusted.
@@ -1321,7 +1328,15 @@ void TrigglowDelayDock::RefreshAccountUi()
 	QString primaryText;
 	bool showCopy = false;
 
-	if (authManager_.IsLoggedIn()) {
+	if (authManager_.IsLoggedIn() && authManager_.AccountInactive()) {
+		linkCopied_ = false;
+		icon = ui::IconId::AlertTriangle;
+		iconTone = QStringLiteral("danger");
+		textTone = QStringLiteral("danger");
+		text = T("Dock.Account.Inactive").toHtmlEscaped();
+		primaryText = T("Dock.Account.OpenTrigglow");
+		inlineText = T("Dock.Account.SignOut");
+	} else if (authManager_.IsLoggedIn()) {
 		linkCopied_ = false;
 		icon = ui::IconId::User;
 		const QString name = QString::fromStdString(authManager_.DisplayName());
@@ -1334,16 +1349,25 @@ void TrigglowDelayDock::RefreshAccountUi()
 		inlineText = T("Dock.Account.SignOut");
 	} else if (authManager_.IsLoggingIn()) {
 		inlineText = T("Dock.Account.Cancel");
+		// The page must show the same code: that is how the user knows the
+		// page they confirm on is this OBS's request.
+		const QString code = QString::fromStdString(authManager_.PendingUserCode());
+		showCopy = !authManager_.PendingUrl().empty();
 		if (error == LoginError::Browser) {
 			icon = ui::IconId::AlertTriangle;
 			iconTone = QStringLiteral("danger");
 			text = T("Dock.Account.Error.Browser").toHtmlEscaped();
-			showCopy = true;
 		} else {
 			icon = ui::IconId::Clock;
 			iconTone = QStringLiteral("warning");
 			text = T("Dock.Account.WaitingConfirmation").toHtmlEscaped();
 		}
+		if (!code.isEmpty())
+			text += QStringLiteral("<br>") +
+				T("Dock.Account.ConfirmCode")
+					.toHtmlEscaped()
+					.arg(QStringLiteral("<span style=\"font-weight:600;\">%1</span>")
+						     .arg(code.toHtmlEscaped()));
 	} else {
 		linkCopied_ = false;
 		primaryText = T("Dock.Account.SignIn");
@@ -1360,6 +1384,15 @@ void TrigglowDelayDock::RefreshAccountUi()
 				primaryText = T("Dock.Account.Retry");
 			} else if (error == LoginError::SessionEnded) {
 				text = T("Dock.Account.SessionEnded").toHtmlEscaped();
+			} else if (error == LoginError::Denied) {
+				text = T("Dock.Account.Error.Denied").toHtmlEscaped();
+			} else if (error == LoginError::Failed) {
+				text = T("Dock.Account.Error.Failed").toHtmlEscaped();
+				primaryText = T("Dock.Account.Retry");
+			} else if (error == LoginError::RateLimited) {
+				text = T("Dock.Account.Error.RateLimited").toHtmlEscaped();
+			} else if (error == LoginError::Outdated) {
+				text = T("Dock.Account.Error.Outdated").toHtmlEscaped();
 			}
 		}
 	}

@@ -73,7 +73,7 @@ inline bool IsOwnReleasePageUrl(const std::string &url)
 }
 
 // BLOCKING -- callers must not run this on the UI thread, same contract as
-// every call in win-http.hpp (this is built directly on top of HttpsGet).
+// every call in win-http.hpp (this is built directly on top of http::Send).
 // currentVersion: PLUGIN_VERSION (plugin-support.h), passed in rather than
 // read here so this file stays free of that header's C-linkage extern.
 UpdateCheckResult CheckForUpdate(const std::string &currentVersion);

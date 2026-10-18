@@ -329,8 +329,9 @@ bool obs_module_load(void)
 	// outlives BufferModeController (constructed first above, destroyed
 	// last in obs_module_unload()'s PluginState teardown), so this is always
 	// valid for as long as bufferController itself is.
+	// A suspended or inactive account (HTTP 403 from the server) blocks it too.
 	g_state->bufferController->SetAuthorizationCheck(
-		[auth = g_state->authManager.get()] { return auth->IsLoggedIn(); });
+		[auth = g_state->authManager.get()] { return auth->CanEnable(); });
 
 	g_state->saveSettingsOnExit = LoadBufferSettings(*g_state->bufferController);
 

@@ -10,8 +10,8 @@ resources directory would otherwise never find out they exist.
 ## What this does NOT do
 
 - No password, email, or any personal data is ever typed into or stored by the plugin itself --
-  see "How login works" below. The plugin only ever holds an opaque session token, the same kind
-  the web app itself stores in its own browser session.
+  see "How login works" below. The plugin only ever holds its own opaque token, which works for
+  nothing but the few calls the plugin makes.
 - No plugin configuration (scenes, delay seconds, quality floor) is gated. Only Enable/Toggle are.
 - No account data collected here is used for marketing or resold to third parties without separate,
   explicit consent -- that's a Trigglow product/privacy-policy commitment, not something enforced
@@ -19,28 +19,43 @@ resources directory would otherwise never find out they exist.
 
 ## How login works
 
-1. `AuthManager::StartLogin()` (`src/auth-manager.hpp`/`.cpp`) calls `POST /auth/plugin/start` on
-   trigglow.com, which returns a one-time device code and a `verificationUrl`. This call (and every
+1. `AuthManager::StartLogin()` (`src/auth-manager.hpp`/`.cpp`, protocol in `src/auth-client.hpp`)
+   calls `POST /auth/plugin/start` on trigglow.com, which returns a short code (like `KD7F-29QM`),
+   the confirmation page to open, and a secret that never leaves the plugin. This call (and every
    other HTTPS call this feature makes) goes through `src/win-http.hpp` (WinHTTP, native Windows
    API) rather than Qt's `QNetworkAccessManager` -- see that header's comment for why: Qt's TLS
    backend plugin is tied to the exact Qt version already loaded in the host process (OBS's own
    bundled Qt, not the older one this plugin builds against), and shipping a mismatched one just
    gets silently rejected at runtime ("No functional TLS backend was found", hit live 2026-09-01).
-2. The plugin opens `verificationUrl` in the user's system browser (`QDesktopServices::openUrl`) --
-   never an embedded browser, never a form inside OBS.
+   Redirects are never followed, so the plugin's token can't be bounced to another host.
+2. The plugin opens the page in the user's system browser (`QDesktopServices::openUrl`) -- never an
+   embedded browser, never a form inside OBS -- and shows the code in the dock. The page shows the
+   same code: confirm only if they match. "It wasn't me" on the page cancels the request.
 3. The user logs in (or creates a free account) using trigglow.com's normal login page -- the exact
    same one the web app itself uses (email/password or Kick OAuth). The plugin is never involved in
    that exchange at all.
-4. Once confirmed there, the plugin's poll loop (`GET /auth/plugin/poll`, every 3s, capped at 5
-   minutes) picks up a session token.
-5. The token is stored locally in this plugin's own OBS module config directory
-   (`trigglow-account.json`), in plaintext -- consistent with how `buffer-mode-settings.json`
-   already stores this plugin's other local settings (see `plugin-main.cpp`). No new crypto/keychain
-   machinery for an Early Access plugin whose installer isn't code-signed yet either.
+4. While the dock waits, the plugin asks `POST /auth/plugin/token` at the interval the server gives,
+   until the request expires. The secret travels in the request body, never in a URL, and neither
+   the page, the code nor the secret is ever written to OBS's log.
+5. Once confirmed, the plugin receives its own token. It only works for the plugin's own calls
+   (account check, renewal, sign-out, Trigi and the user's own support tickets), it is renewed
+   automatically when the server says so, and "Sign out" revokes it on the server as well as
+   deleting it locally.
+6. The token is stored encrypted with the Windows data protection API, for the current Windows
+   user only, apart from the plugin's settings. The email is not stored.
 
-On every OBS start, `AuthManager::Init()` does exactly one fire-and-forget `GET /auth/me` to confirm
-the stored token still works -- not a loop, not a background heartbeat. Outside of an active
-`StartLogin()` wait, the plugin makes zero network calls related to this feature.
+Sign-ins made with version 0.5.x or earlier are exchanged once, silently, for a plugin token on the
+first start of 0.6.0, and the old plain-text sign-in file is overwritten and deleted. Until that
+exchange succeeds (for example while offline) the old sign-in keeps Enable working.
+
+On every OBS start, `AuthManager::Init()` makes one `GET /auth/plugin/me` call to confirm the stored
+token still works (plus a renewal when it is due) -- not a loop, not a background heartbeat. If
+trigglow.com can't be reached, the plugin stays signed in and Enable keeps working; if the server
+says the account is suspended or not active, Enable is blocked and the dock says why. Outside of an
+active `StartLogin()` wait, the plugin makes no other network calls related to this feature.
+
+Sign-in (and with it Enable) works only on Windows today: macOS and Linux get an HTTP client in a
+later version.
 
 ## Enforcement point
 

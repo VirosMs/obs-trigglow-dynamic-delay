@@ -17,6 +17,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "update-checker.hpp"
+#include "api-client.hpp"
 #include "logging.hpp"
 #include "win-http.hpp"
 
@@ -31,8 +32,8 @@ namespace trigglow {
 
 namespace {
 constexpr const char *kComponent = "update-checker";
-constexpr const wchar_t *kGithubApiHost = L"api.github.com";
-constexpr const wchar_t *kGithubReleasesPath = L"/repos/VirosMs/obs-trigglow-dynamic-delay/releases/latest";
+constexpr const char *kGithubApiHost = "api.github.com";
+constexpr const char *kGithubReleasesPath = "/repos/VirosMs/obs-trigglow-dynamic-delay/releases/latest";
 
 // Parses "X.Y.Z" (leading 'v' already stripped by the caller) into up to 3
 // numeric components; a missing or non-numeric component reads as 0 --
@@ -68,16 +69,22 @@ UpdateCheckResult CheckForUpdate(const std::string &currentVersion)
 	UpdateCheckResult result;
 
 	// GitHub's REST API requires a User-Agent header on every request (403
-	// otherwise) -- win-http.cpp's WinHttpOpen() already sets one for the
-	// whole session (its own agent string), so nothing extra is needed here.
-	HttpResult httpResult = HttpsGet(kGithubApiHost, kGithubReleasesPath);
-	if (!httpResult.ok || httpResult.statusCode != 200) {
+	// otherwise): the plugin's own. No token, no cookies, redirects not
+	// followed (win-http.hpp).
+	http::Request request;
+	request.host = kGithubApiHost;
+	request.path = kGithubReleasesPath;
+	request.userAgent = api::UserAgent(currentVersion);
+	request.headers.push_back({"Accept", "application/vnd.github+json"});
+	request.maxResponseBytes = 1024 * 1024; // The release notes travel along.
+	const http::Response response = http::Send(request);
+	if (!response.Ok() || response.status != 200) {
 		TRIGGLOW_LOG_INFO(kComponent, "update check failed (HTTP %d, %s) -- treating as unknown, not an error",
-				  httpResult.statusCode, httpResult.error.c_str());
+				  response.status, http::ErrorName(response.error));
 		return result;
 	}
 
-	obs_data_t *data = obs_data_create_from_json(httpResult.body.c_str());
+	obs_data_t *data = obs_data_create_from_json(response.body.c_str());
 	if (!data) {
 		TRIGGLOW_LOG_WARN(kComponent, "update check: invalid JSON from GitHub");
 		return result;
