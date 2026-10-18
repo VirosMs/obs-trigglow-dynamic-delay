@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 extern "C" {
@@ -54,7 +55,7 @@ extern "C" {
 // feedback asked whether VRAM was really required and a real "Device
 // Remove/Reset" game crash raised the cost of holding dozens of large GPU
 // textures alive at once): the ring buffer itself lives in ordinary system
-// RAM (Slot::pixels below, one plain byte vector per buffered frame), stored
+// RAM (Slot::pixels below, one plain byte buffer per buffered frame), stored
 // as NV12 rather than RGBA since 2026-08-26 (see Slot's comment -- ~2.7x
 // less RAM for the same buffered duration/quality). There are only ever a
 // small FIXED number of actual GPU objects, regardless of how many seconds
@@ -181,8 +182,8 @@ private:
 	// which is what actually realizes the RAM reduction Phase 1 only assumed
 	// on paper (a compressed packet's smaller usedBytes never shrank the
 	// actual allocation there). EncodeScratchNv12Into() and the raw fallback
-	// in Render() both grow a slot's `pixels` past the budget with a plain
-	// `resize()` whenever one particular frame genuinely needs more room
+	// in Render() both grow a slot's `pixels` past the budget (Slot::EnsureCapacity())
+	// whenever one particular frame genuinely needs more room
 	// than assumed (hard-to-compress content, or FFmpeg unavailable/failed
 	// entirely) -- and that growth is PERMANENT for the slot's lifetime
 	// (capacity is never shrunk back down), to avoid paying a
@@ -190,8 +191,19 @@ private:
 	// eventually grows to the full raw size (identical to Phase 1's
 	// behavior) if content consistently compresses worse than assumed;
 	// that's an accepted, safe degradation, not a bug.
+	//
+	// v0.5.1: `pixels` is allocated WITHOUT initializing it (default-init
+	// new[], not a zero-filled std::vector). Zero-filling touched every page of
+	// the whole ring the moment it was sized: ~1.9GB resident at once and a
+	// ~381ms stall on the graphics thread at 1440p60 when the delay was
+	// switched on (measured). Now a page only becomes resident when a frame is
+	// written to it, so resident memory follows the real packet sizes. The
+	// commit charge is unchanged. Invariant this relies on: nothing ever reads
+	// past `usedBytes`, and `usedBytes` only covers bytes written for the
+	// current frame (the encoder's packet or the whole raw NV12 frame).
 	struct Slot {
-		std::vector<uint8_t> pixels;
+		std::unique_ptr<uint8_t[]> pixels; // `capacity` bytes, only [0, usedBytes) meaningful.
+		size_t capacity = 0;
 		size_t usedBytes = 0;
 		bool compressed = false;
 		bool valid = false; // false until first successfully captured.
@@ -200,6 +212,22 @@ private:
 		// Render() runs at a different rate than the configured fps.
 		// kPendingTimestamp while the async readback is still in flight.
 		uint64_t timestampNs = 0;
+
+		// Makes room for `bytes` before the caller overwrites [0, bytes):
+		// grow-only and permanent (see above), and the old contents are NOT
+		// kept (usedBytes is reset), since every caller replaces the whole
+		// frame. The new block is uninitialized. True if it had to grow.
+		bool EnsureCapacity(size_t bytes)
+		{
+			if (capacity >= bytes)
+				return false;
+			pixels.reset(); // Free first, so the old and new blocks never coexist.
+			capacity = 0;
+			usedBytes = 0;
+			pixels.reset(new uint8_t[bytes]); // Default-init: pages untouched until written.
+			capacity = bytes;
+			return true;
+		}
 	};
 
 	// One in-flight (or just-finished) async GPU->CPU readback -- BOTH

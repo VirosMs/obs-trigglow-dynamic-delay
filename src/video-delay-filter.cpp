@@ -563,9 +563,11 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 	perf_.decode.Summarize(decodeP50, decodeP95, decodeMax);
 	perf_.upload.Summarize(uploadP50, uploadP95, uploadMax);
 
+	// Allocated (committed) bytes. Since v0.5.1 slots aren't zero-filled, so
+	// the resident part (Task Manager) is lower: only pages written so far.
 	size_t ringBytes = 0;
 	for (const auto &slot : ring_)
-		ringBytes += slot.pixels.size();
+		ringBytes += slot.capacity;
 
 	const double windowRatio = perf_.encodedBytes > 0 ? static_cast<double>(perf_.encodedRawBytes) /
 								    static_cast<double>(perf_.encodedBytes)
@@ -906,10 +908,10 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 		return false;
 
 	size_t packetSize = static_cast<size_t>(encodePacket_->size);
-	// The true ceiling is the raw NV12 size, not dst.pixels.size() -- v0.3.0
+	// The true ceiling is the raw NV12 size, not dst.capacity -- v0.3.0
 	// Phase 2 starts slots at a smaller BUDGETED allocation (see
 	// EnsureRingSized()) and grows a given slot only as far as an individual
-	// frame actually needs, so dst.pixels.size() no longer reflects a fixed
+	// frame actually needs, so dst.capacity no longer reflects a fixed
 	// worst-case ceiling the way it did in Phase 1.
 	const auto rawFrameBytes = static_cast<size_t>(bufferfit::Nv12FrameBytes(bufferWidth_, bufferHeight_));
 	if (packetSize > rawFrameBytes) {
@@ -925,13 +927,12 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 	// Grow-only: a slot that has previously needed more room than the
 	// budgeted default keeps that larger capacity permanently (never shrunk
 	// back down) rather than paying a realloc on every single frame -- see
-	// EnsureRingSized()'s comment on the tradeoff this accepts.
-	if (dst.pixels.size() < packetSize) {
-		dst.pixels.resize(packetSize);
+	// EnsureRingSized()'s comment on the tradeoff this accepts. The grown block
+	// is uninitialized too; the memcpy below fills exactly [0, usedBytes).
+	if (dst.EnsureCapacity(packetSize))
 		++encodeGrowthCount_; // See kAssumedCompressionRatio's comment: the direct signal it's too low.
-	}
 
-	std::memcpy(dst.pixels.data(), encodePacket_->data, packetSize);
+	std::memcpy(dst.pixels.get(), encodePacket_->data, packetSize);
 	dst.usedBytes = packetSize;
 	dst.compressed = true;
 
@@ -960,11 +961,14 @@ bool VideoDelayFilter::DecodeSlotIntoScratchNv12(const Slot &src)
 {
 	if (!decoderCtx_ || !decodeFrame_ || !decodePacket_)
 		return false;
+	// Only the packet's own bytes: the rest of the slot was never written.
+	if (!src.pixels || src.usedBytes == 0 || src.usedBytes > src.capacity)
+		return false;
 
 	av_packet_unref(decodePacket_);
 	if (av_new_packet(decodePacket_, static_cast<int>(src.usedBytes)) < 0)
 		return false;
-	std::memcpy(decodePacket_->data, src.pixels.data(), src.usedBytes);
+	std::memcpy(decodePacket_->data, src.pixels.get(), src.usedBytes);
 
 	if (avcodec_send_packet(decoderCtx_, decodePacket_) < 0)
 		return false;
@@ -1105,11 +1109,16 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// than assumed; see Slot's comment in the header for the full tradeoff.
 	// 1.0 on non-FFmpeg platforms makes this identical to the pre-Phase-2
 	// full raw allocation, unchanged.
+	//
+	// Uninitialized since v0.5.1 (Slot::EnsureCapacity(), see Slot's comment):
+	// no page is touched here, so sizing the ring costs a few ms instead of
+	// zero-filling all of it on the graphics thread (381ms at 1440p60), and
+	// freeing it later is cheaper too.
 	size_t budgetedBytes =
 		static_cast<size_t>(std::ceil(static_cast<double>(frameBytes) / kAssumedCompressionRatio));
 	ring_.resize(static_cast<size_t>(fit.actualFrames));
 	for (auto &slot : ring_)
-		slot.pixels.assign(budgetedBytes, 0);
+		slot.EnsureCapacity(budgetedBytes);
 
 	// scratchNv12_ is this same size -- one frame's worth of raw NV12,
 	// reused every tick as the encode input / decode output staging area
@@ -1465,10 +1474,10 @@ void VideoDelayFilter::Render()
 					// starts at a smaller BUDGETED size on FFmpeg platforms
 					// (see EnsureRingSized()), so grow it (permanently, same
 					// tradeoff as EncodeScratchNv12Into()) if this is the
-					// first time this slot has needed the full raw size.
-					if (dst.pixels.size() < scratchNv12_.size())
-						dst.pixels.resize(scratchNv12_.size());
-					std::memcpy(dst.pixels.data(), scratchNv12_.data(), scratchNv12_.size());
+					// first time this slot has needed the full raw size. The
+					// whole frame is copied, so usedBytes covers all of it.
+					dst.EnsureCapacity(scratchNv12_.size());
+					std::memcpy(dst.pixels.get(), scratchNv12_.data(), scratchNv12_.size());
 					dst.usedBytes = scratchNv12_.size();
 					dst.compressed = false;
 				}
@@ -1584,8 +1593,13 @@ void VideoDelayFilter::Render()
 					// so this translation unit still compiles without the decoder.
 					ready = false;
 #endif
+				} else if (src.pixels && src.usedBytes >= yBytes + yBytes / 2) {
+					// A raw slot holds one whole NV12 frame (the fallback
+					// above always writes scratchNv12_ in full); the check
+					// just guarantees the upload never reads unwritten bytes.
+					pixels = src.pixels.get();
 				} else {
-					pixels = src.pixels.data();
+					ready = false;
 				}
 
 				if (!yPlaybackTexture_)
