@@ -389,6 +389,16 @@ void VideoDelayFilter::ReleaseRing()
 	writeIndex_ = 0;
 	bufferedCount_ = 0;
 	lastCaptureCell_ = UINT64_MAX;
+	// The slot indices the playback cache refers to are gone; a hold must never
+	// redraw a frame from before the ring was cleared (previous cycle).
+	InvalidatePlaybackCache();
+}
+
+void VideoDelayFilter::InvalidatePlaybackCache()
+{
+	havePlaybackFrame_ = false;
+	playbackSlotIndex_ = SIZE_MAX;
+	playbackSlotTimestampNs_ = 0;
 }
 
 void VideoDelayFilter::ReleaseGpuObjects()
@@ -406,6 +416,9 @@ void VideoDelayFilter::ReleaseGpuObjects()
 
 void VideoDelayFilter::ReleaseSizedGpuObjects()
 {
+	// yPlaybackTexture_/uvPlaybackTexture_ are destroyed below: nothing left to redraw.
+	InvalidatePlaybackCache();
+
 #ifdef TRIGGLOW_HAVE_FFMPEG
 	// Codec contexts are sized to bufferWidth_/bufferHeight_ exactly like
 	// the GPU pool below -- same lifecycle, same two call sites
@@ -1272,10 +1285,10 @@ void VideoDelayFilter::Render()
 		ring_[writeIndex_].timestampNs = nowNs;
 
 	// --- Playback: draw whichever slot is configuredDelaySeconds_ old. Both
-	// Y and UV planes get uploaded fresh from RAM into the two reusable
-	// playback textures, then nv12Effect_'s "DrawNV12" technique samples
-	// both and writes RGBA straight out -- no separate RGBA reconstruction
-	// texture needed. ---
+	// Y and UV planes get uploaded from RAM into the two reusable playback
+	// textures (once per slot -- see havePlaybackFrame_), then nv12Effect_'s
+	// "DrawNV12" technique samples both and writes RGBA straight out -- no
+	// separate RGBA reconstruction texture needed. ---
 	//
 	// The slot is chosen by capture AGE (wall clock), not by counting slots
 	// back: slots are captured at most once per 1/fps cell, but Render() can
@@ -1320,39 +1333,64 @@ void VideoDelayFilter::Render()
 		}
 	}
 
-	if (haveEnoughHistory && ring_[readIndex].valid && nv12Effect_) {
-		uint32_t uvWidth = bufferWidth_ / 2;
-		uint32_t uvHeight = bufferHeight_ / 2;
-		size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
-
+	if (haveEnoughHistory && nv12Effect_) {
 		const Slot &src = ring_[readIndex];
-		const uint8_t *pixels = nullptr;
-		bool ready = true;
-		if (src.compressed) {
+		// Decode + upload each slot at most once (see havePlaybackFrame_):
+		// Render() runs once per view of the scene (preview, projectors,
+		// program...), and every call after the first for the same slot only
+		// needs to draw what's already in the playback textures.
+		const bool alreadyAttempted = playbackSlotIndex_ == readIndex &&
+					      playbackSlotTimestampNs_ == src.timestampNs;
+		if (!alreadyAttempted) {
+			playbackSlotIndex_ = readIndex;
+			playbackSlotTimestampNs_ = src.timestampNs;
+
+			bool uploaded = false;
+			if (src.valid) {
+				uint32_t uvWidth = bufferWidth_ / 2;
+				uint32_t uvHeight = bufferHeight_ / 2;
+				size_t yBytes = static_cast<size_t>(bufferWidth_) * bufferHeight_;
+
+				const uint8_t *pixels = nullptr;
+				bool ready = true;
+				if (src.compressed) {
 #ifdef TRIGGLOW_HAVE_FFMPEG
-			ready = DecodeSlotIntoScratchNv12(src);
-			pixels = scratchNv12_.data();
+					ready = DecodeSlotIntoScratchNv12(src);
+					pixels = scratchNv12_.data();
 #else
-			// A slot marked compressed can't exist on a platform that never
-			// defines TRIGGLOW_HAVE_FFMPEG in the first place (nothing here
-			// ever sets Slot::compressed=true without it) -- guarded purely
-			// so this translation unit still compiles without the decoder.
-			ready = false;
+					// A slot marked compressed can't exist on a platform that never
+					// defines TRIGGLOW_HAVE_FFMPEG in the first place (nothing here
+					// ever sets Slot::compressed=true without it) -- guarded purely
+					// so this translation unit still compiles without the decoder.
+					ready = false;
 #endif
-		} else {
-			pixels = src.pixels.data();
+				} else {
+					pixels = src.pixels.data();
+				}
+
+				if (!yPlaybackTexture_)
+					yPlaybackTexture_ = gs_texture_create(bufferWidth_, bufferHeight_, GS_R8, 1,
+									      nullptr, GS_DYNAMIC);
+				if (!uvPlaybackTexture_)
+					uvPlaybackTexture_ =
+						gs_texture_create(uvWidth, uvHeight, GS_R8G8, 1, nullptr, GS_DYNAMIC);
+
+				if (ready && pixels && yPlaybackTexture_ && uvPlaybackTexture_) {
+					gs_texture_set_image(yPlaybackTexture_, pixels, bufferWidth_, false);
+					gs_texture_set_image(uvPlaybackTexture_, pixels + yBytes, uvWidth * 2, false);
+					uploaded = true;
+				}
+			}
+
+			if (uploaded)
+				havePlaybackFrame_ = true;
+			// Otherwise (the slot due now never got a frame or failed to
+			// decode) the last uploaded frame, if any, is repeated below
+			// rather than flashing nothing. The next slot is still picked by
+			// age, so this is a one-frame stutter, never a drift in the delay.
 		}
 
-		if (!yPlaybackTexture_)
-			yPlaybackTexture_ =
-				gs_texture_create(bufferWidth_, bufferHeight_, GS_R8, 1, nullptr, GS_DYNAMIC);
-		if (!uvPlaybackTexture_)
-			uvPlaybackTexture_ = gs_texture_create(uvWidth, uvHeight, GS_R8G8, 1, nullptr, GS_DYNAMIC);
-
-		if (ready && pixels && yPlaybackTexture_ && uvPlaybackTexture_) {
-			gs_texture_set_image(yPlaybackTexture_, pixels, bufferWidth_, false);
-			gs_texture_set_image(uvPlaybackTexture_, pixels + yBytes, uvWidth * 2, false);
-
+		if (havePlaybackFrame_ && yPlaybackTexture_ && uvPlaybackTexture_) {
 			gs_eparam_t *imageParam = gs_effect_get_param_by_name(nv12Effect_, "image");
 			gs_eparam_t *imageUvParam = gs_effect_get_param_by_name(nv12Effect_, "image_uv");
 			gs_effect_set_texture(imageParam, yPlaybackTexture_);
@@ -1360,9 +1398,8 @@ void VideoDelayFilter::Render()
 			while (gs_effect_loop(nv12Effect_, "DrawNV12"))
 				gs_draw_sprite(yPlaybackTexture_, 0, width, height);
 		}
-		// Else: decode failed for this one frame -- draw nothing this tick
-		// rather than showing stale/garbage pixels; the next tick's read
-		// index will move on to a different slot regardless.
+		// Else: nothing valid uploaded yet this cycle -- draw nothing, same
+		// as before 0.5.1.
 	}
 	// Else: buffer still filling (first configuredDelaySeconds_ after
 	// enabling/raising the delay) — draw nothing, same as

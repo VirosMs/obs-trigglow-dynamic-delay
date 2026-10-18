@@ -229,6 +229,9 @@ private:
 	void ReleaseRing();            // Frees the CPU-side ring_ (Slot::pixels) only.
 	void ReleaseGpuObjects();      // Frees the ENTIRE GPU pool, effect included -- destructor only.
 	void ReleaseSizedGpuObjects(); // Frees just the resolution-sized objects -- also used on resize.
+	// Forgets which ring slot yPlaybackTexture_/uvPlaybackTexture_ hold (see
+	// havePlaybackFrame_). Called whenever the ring or those textures go away.
+	void InvalidatePlaybackCache();
 
 	// Resizes audioRing_ for the given channel count/sample rate and the
 	// current configuredDelaySeconds_. Plain CPU memory (no graphics
@@ -361,6 +364,17 @@ private:
 	// writes out RGBA directly -- no separate RGBA reconstruction buffer.
 	gs_texture_t *yPlaybackTexture_ = nullptr;
 	gs_texture_t *uvPlaybackTexture_ = nullptr;
+	// Playback cache (v0.5.1). Render() runs several times per OBS frame
+	// (preview, projectors, program...) and used to decode + upload the same
+	// slot on every call. Now each slot is decoded/uploaded at most once:
+	// playbackSlotIndex_/playbackSlotTimestampNs_ name the last slot an upload
+	// was ATTEMPTED for (success or failure, so a failing slot isn't retried
+	// on every call either), and havePlaybackFrame_ says the playback
+	// textures hold a valid frame from this cycle -- which is also what gets
+	// redrawn (a "hold") when the slot due now can't be shown.
+	bool havePlaybackFrame_ = false;
+	size_t playbackSlotIndex_ = SIZE_MAX;
+	uint64_t playbackSlotTimestampNs_ = 0;
 	// 2, not more: double-buffering is enough headroom for a GPU->CPU copy
 	// to finish one frame later without the CPU ever having to stall on
 	// gs_stagesurface_map() waiting for it -- see Render()'s capture step.
