@@ -30,11 +30,11 @@ constexpr float kMinScale = 0.2f;
 constexpr float kMaxScale = 1.0f;
 } // namespace
 
-float SafetyMargin(float canvasHeight)
+float SafetyMargin(float canvasShortSide)
 {
-	if (!(canvasHeight > 0.0f))
-		canvasHeight = kDesignCanvasHeight;
-	return std::round(canvasHeight * 0.022f);
+	if (!(canvasShortSide > 0.0f))
+		canvasShortSide = kDesignCanvasHeight;
+	return std::round(canvasShortSide * 0.022f);
 }
 
 Placement Place(float canvasWidth, float canvasHeight, uint32_t corner)
@@ -43,12 +43,15 @@ Placement Place(float canvasWidth, float canvasHeight, uint32_t corner)
 		canvasWidth = 1920.0f;
 		canvasHeight = kDesignCanvasHeight;
 	}
+	// Landscape: the height. Vertical (1080x1920): the width, so the badge
+	// takes the same share of the frame's width as on a 1080p landscape canvas.
+	const float shortSide = std::min(canvasWidth, canvasHeight);
 
 	Placement p;
-	p.scale = std::clamp(canvasHeight / kDesignCanvasHeight / kRenderScale, kMinScale, kMaxScale);
+	p.scale = std::clamp(shortSide / kDesignCanvasHeight / kRenderScale, kMinScale, kMaxScale);
 	p.width = kDesignWidth * kRenderScale * p.scale;
 	p.height = kDesignHeight * kRenderScale * p.scale;
-	p.margin = SafetyMargin(canvasHeight);
+	p.margin = SafetyMargin(shortSide);
 
 	const bool right = corner == static_cast<uint32_t>(Corner::TopRight) ||
 			   corner == static_cast<uint32_t>(Corner::BottomRight);

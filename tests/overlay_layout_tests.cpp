@@ -111,11 +111,6 @@ void TestPlacementOtherCanvases()
 	Placement tiny = Place(320.0f, 180.0f, 0);
 	CHECK(Near(tiny.scale, 0.2f));
 
-	// Vertical canvas (1080x1920): same height share as a 1920-tall canvas.
-	Placement vertical = Place(1080.0f, 1920.0f, 1);
-	CHECK(vertical.x >= 0.0f);
-	CHECK(Near(vertical.x + vertical.width + vertical.margin, 1080.0f));
-
 	// A canvas narrower than the badge never pushes it off the left/top edge.
 	Placement narrow = Place(150.0f, 1080.0f, 3);
 	CHECK(narrow.x >= 0.0f);
@@ -125,6 +120,36 @@ void TestPlacementOtherCanvases()
 	Placement zero = Place(0.0f, 0.0f, 0);
 	CHECK(Near(zero.scale, 0.4f));
 	CHECK(Near(zero.x, 24.0f));
+}
+
+void TestVerticalAndUltrawide()
+{
+	g_currentTest = "vertical and ultrawide canvases";
+	// 1080x1920 (vertical video): sized by the short side, i.e. exactly the
+	// 1080p badge -- 200x58, 18.5 % of the frame's width -- not the 355 px
+	// that scaling by the height gave.
+	Placement vertical = Place(1080.0f, 1920.0f, 3);
+	CHECK(Near(vertical.scale, 0.4f));
+	CHECK(Near(vertical.width, 200.0f));
+	CHECK(Near(vertical.height, 58.0f));
+	CHECK(Near(vertical.margin, 24.0f));
+	CHECK(Near(vertical.x, 1080.0f - 200.0f - 24.0f));
+	CHECK(Near(vertical.y, 1920.0f - 58.0f - 24.0f));
+	// Never wider than a fifth of the vertical frame.
+	CHECK(vertical.width / 1080.0f < 0.2f);
+
+	// 720x1280 vertical: same as 720p landscape.
+	Placement vertical720 = Place(720.0f, 1280.0f, 0);
+	Placement landscape720 = Place(1280.0f, 720.0f, 0);
+	CHECK(Near(vertical720.scale, landscape720.scale));
+	CHECK(Near(vertical720.margin, landscape720.margin));
+	CHECK(Near(vertical720.x, landscape720.x) && Near(vertical720.y, landscape720.y));
+
+	// Square and ultrawide canvases: the short side is the height, as before.
+	CHECK(Near(Place(1080.0f, 1080.0f, 0).scale, 0.4f));
+	Placement ultrawide = Place(2560.0f, 1080.0f, 1);
+	CHECK(Near(ultrawide.scale, 0.4f));
+	CHECK(Near(ultrawide.x, 2560.0f - 200.0f - 24.0f));
 }
 
 void TestFileNames()
@@ -147,6 +172,7 @@ int main()
 	TestMargin();
 	TestPlacement1080p();
 	TestPlacementOtherCanvases();
+	TestVerticalAndUltrawide();
 	TestFileNames();
 
 	std::printf("overlay_layout_tests: %d checks, %d failures\n", g_checks, g_failures);

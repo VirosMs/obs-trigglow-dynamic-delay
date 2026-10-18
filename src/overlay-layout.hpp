@@ -55,16 +55,17 @@ struct Placement {
 };
 
 // Distance from the canvas edges, so the platform's player controls and the
-// zoom of clip tools don't crop the badge: 2.2 % of the canvas height (24 px at
-// 1080p, 16 px at 720p).
-float SafetyMargin(float canvasHeight);
+// zoom of clip tools don't crop the badge: 2.2 % of the canvas's short side
+// (24 px at 1080p and on a 1080x1920 vertical canvas, 16 px at 720p).
+float SafetyMargin(float canvasShortSide);
 
 // Where the badge goes for `corner` (0-3; anything else is top-left, like
 // BufferModeController::SetOverlayCorner) on a canvasWidth x canvasHeight
-// canvas. The badge keeps the same share of the canvas height as on 1080p, so
-// it reads the same at 720p, 1440p and 4K; the scale is clamped so it never
-// becomes unreadably small nor upscales the PNG beyond its rendered size.
-// Invalid (zero) canvas sizes fall back to 1920x1080.
+// canvas. The badge keeps the share of the canvas's SHORT side it has on
+// 1080p, so it reads the same at 720p, 1440p and 4K and doesn't spread across
+// a vertical (1080x1920) canvas; the scale is clamped so it never becomes
+// unreadably small nor upscales the PNG beyond its rendered size. Invalid
+// (zero) canvas sizes fall back to 1920x1080.
 Placement Place(float canvasWidth, float canvasHeight, uint32_t corner);
 
 // "delay-badge-30s.png": one file per value, so OBS reloads the image source
