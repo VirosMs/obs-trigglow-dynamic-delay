@@ -456,23 +456,26 @@ While the delay is `Active` and "Show delay overlay on stream" is checked, the w
 "DELAY 30 s" badge with the delay really in effect (`BufferModeStatus::effectiveDelaySeconds`). Since
 v0.6.0 it is **one image the plugin paints itself** (`src/overlay-badge.*`, QPainter on the UI
 thread only: ink plate, brand rule, Dynamic Delay mark, the bundled Archivo, or the system UI font when
-it isn't bundled, and under "DELAY 30 s" the small `Overlay.Signature` line, "By Trigglow" in every
-language, in the bundled Geist Mono at 15 px and mist at 62 %: 10 px on a 720p stream), written as
-one PNG per seconds value to the plugin's config folder (`overlay/delay-badge-r2-<N>s.png`, 500x180,
-2.5x the 200x72 design so it stays sharp) and shown by a single image source, **Trigglow Delay Badge
-(auto)**. The `r2` is `overlaylayout::kRenderVersion`, bumped whenever the drawing changes: a PNG an
-older build left in that folder is never shown, and the first render of a session deletes it. It
-replaces v0.5.x's badge PNG plus a separate text source in Segoe UI (Windows only, magic offsets to
-line the two up); its text can no longer be edited, and the old text source is removed on sight.
+it isn't bundled; under the plate, outside it and below the mark, the small `Overlay.Signature`
+text, "By Trigglow" in every language, in the bundled Geist Mono at 11 px, mist at 75 % with a faint
+dark halo and no box: 7.3 px on a 720p stream), written as one PNG per seconds value to the plugin's
+config folder (`overlay/delay-badge-r3-<N>s.png`, 500x180, 2.5x the 200x72 design -- the 200x58
+plate, then the signature line on transparent pixels -- so it stays sharp) and shown by a single
+image source, **Trigglow Delay Badge (auto)**. The `r3` is `overlaylayout::kRenderVersion`, bumped
+whenever the drawing changes: a PNG an older build left in that folder is never shown, and the first
+render of a session deletes it. It replaces v0.5.x's badge PNG plus a separate text source in Segoe
+UI (Windows only, magic offsets to line the two up); its text can no longer be edited, and the old
+text source is removed on sight.
 
 Placement (`src/overlay-layout.*`, pure, `tests/overlay_layout_tests.cpp`): 2.2% of the canvas's
 short side away from the chosen corner (24 px at 1080p), keeping the share of the short side it has
 at 1080p, so it reads the same at 720p, 1440p and 4K and doesn't spread across a 1080x1920 vertical
-canvas. What the plugin last applied (corner, canvas size, position, scale, badge height) is kept in
-the scene item's private settings: the plugin places it again only when the corner changes in the
-dock, or when the canvas size or the badge's height (`kDesignHeight`, 58 before the signature)
-changes and the item still sits where the plugin put it. A position or size the user set in OBS is
-kept. An existing image source with that name is reused instead of adding
+canvas. The whole image keeps that margin: in a top corner the plate sits at it, in a bottom corner
+the signature does. What the plugin last applied (corner, canvas size, position, scale, badge
+height) is kept in the scene item's private settings: the plugin places it again only when the
+corner changes in the dock, or when the canvas size or the badge's height (`kDesignHeight`, 58
+before the signature) changes and the item still sits where the plugin put it. A position or size
+the user set in OBS is kept. An existing image source with that name is reused instead of adding
 "... 2" copies.
 
 ### 3.7. Names of the objects the plugin manages (v0.6.0)
