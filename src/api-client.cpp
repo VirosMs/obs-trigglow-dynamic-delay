@@ -175,9 +175,11 @@ std::string ApiHost()
 
 std::string VerificationUrlPrefix()
 {
+#ifdef TRIGGLOW_ALLOW_API_HOST_OVERRIDE
 	const std::string host = ApiHost();
 	if (host != kDefaultApiHost)
 		return "https://" + host + "/plugin/link?";
+#endif
 	return "https://www.trigglow.com/plugin/link?";
 }
 

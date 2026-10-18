@@ -238,16 +238,25 @@ size_t MatchWindowsUserPath(string_view s, size_t i, string &replacement)
 
 // --- 4. macOS and Linux home folders -----------------------------------------
 
-size_t MatchPosixHome(string_view s, size_t i, string &replacement)
+// The home folders' parent: "Users" (macOS) or "home" (Linux), between two
+// '/'. Returns the index right after the second '/', or 0.
+size_t PosixHomeParentEnd(string_view s, size_t i)
 {
 	if (s[i] != '/')
 		return 0;
-	size_t p = 0;
-	if (StartsWithAt(s, i, "/Users/"))
-		p = i + 7;
-	else if (StartsWithAt(s, i, "/home/"))
-		p = i + 6;
-	else
+	static constexpr std::array<string_view, 2> kParents = {"Users", "home"};
+	for (string_view parent : kParents) {
+		const size_t slash = i + 1 + parent.size();
+		if (slash < s.size() && s[slash] == '/' && StartsWithAt(s, i + 1, parent))
+			return slash + 1;
+	}
+	return 0;
+}
+
+size_t MatchPosixHome(string_view s, size_t i, string &replacement)
+{
+	const size_t p = PosixHomeParentEnd(s, i);
+	if (p == 0)
 		return 0;
 	size_t end = p;
 	while (end < s.size() && s[end] != '/' && !IsSpace(s[end]) && s[end] != '"' && s[end] != '\'')
@@ -624,7 +633,7 @@ string RedactLine(string_view line)
 	}
 	if (s.find(":\\") != string::npos || s.find(":/") != string::npos)
 		s = ReplaceAll(s, MatchWindowsUserPath);
-	if (s.find("/Users/") != string::npos || s.find("/home/") != string::npos)
+	if (s.find("Users/") != string::npos || s.find("home/") != string::npos)
 		s = ReplaceAll(s, MatchPosixHome);
 	if (s.find("/overlay/") != string::npos)
 		s = ReplaceAll(s, MatchOverlaySlug);
