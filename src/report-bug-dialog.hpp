@@ -21,6 +21,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QDialog>
 #include <QString>
 
+#include "ui-theme.hpp"
+
+class QBoxLayout;
+class QFrame;
 class QLineEdit;
 class QPlainTextEdit;
 class QLabel;
@@ -56,14 +60,25 @@ public:
 	explicit ReportBugDialog(QString pluginVersion, QString defaultName, QString defaultEmail,
 				 QWidget *parent = nullptr);
 
+protected:
+	void resizeEvent(QResizeEvent *event) override;
+
 private:
 	void BuildUi();
+	// Same tokens/fonts/icons as the dock (ui-theme.hpp), so the dialog looks
+	// the same whether or not it inherits the dock's style sheet.
+	void ApplyTheme();
 	void OnSubmitClicked();
+	// Validation errors sit under their field (danger border + icon + text),
+	// focus jumps to the first one; network/server errors go in a banner at
+	// the top. Both are announced to screen readers.
+	void ShowFieldError(QWidget *field, QLabel *errorLabel, const QString &message);
+	void ClearErrors();
 	// busy: true while a submission is in flight -- disables every input and
 	// swaps submitButton_'s text, same spirit as accountButton_ showing
 	// "Esperando..." during login in settings-ui.cpp.
 	void SetBusy(bool busy);
-	void ShowError(const QString &message);
+	void ShowError(const QString &message); // Network/server error banner.
 
 	QString pluginVersion_;
 
@@ -75,11 +90,21 @@ private:
 	QString logPath_;
 	bool logFound_ = false;
 
+	ui::Theme theme_;
+
 	QLineEdit *nameEdit_ = nullptr;
 	QLineEdit *emailEdit_ = nullptr;
 	QPlainTextEdit *messageEdit_ = nullptr;
+	QLabel *nameError_ = nullptr;
+	QLabel *emailError_ = nullptr;
+	QLabel *messageError_ = nullptr;
+	QBoxLayout *identityRow_ = nullptr; // Name | Email side by side, stacked when narrow.
+	QFrame *errorBanner_ = nullptr;
+	QLabel *errorBannerIcon_ = nullptr;
+	QLabel *statusLabel_ = nullptr; // Text of errorBanner_.
+	QLabel *logIcon_ = nullptr;
 	QLabel *logStatusLabel_ = nullptr;
-	QLabel *statusLabel_ = nullptr;
+	QLabel *opensBrowserIcon_ = nullptr;
 	QPushButton *submitButton_ = nullptr;
 	QPushButton *cancelButton_ = nullptr;
 };
