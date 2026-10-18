@@ -121,7 +121,9 @@ public:
 
 	// Disables the filter and switches back to whatever scene was active
 	// right before Enable() (falls back to the live scene itself if that's
-	// unavailable). Safe to call from any state, including mid-Filling.
+	// unavailable). Safe to call from any state, including mid-Filling. Also
+	// what a scene collection switch does to a running delay (see
+	// StopForSceneCollectionChange()).
 	void Disable();
 
 	void Toggle();
@@ -229,6 +231,26 @@ private:
 	void SetState(BufferModeState state, std::string message = {});
 	void NotifyStatusChanged();
 	void OnFrontendEvent(FrontendEvent event);
+
+	// Disable()'s body: the filters, keep-alive and overlay switched off,
+	// Inactive with `message` (empty: the default detail). Program goes back
+	// to the scene shown before Enable() only if `restoreProgram`.
+	void StopDelay(std::string message, bool restoreProgram);
+
+	// A scene collection switch with the delay Filling or Active: the delay
+	// can't follow (its helper scene and filters belong to the old
+	// collection), so it stops in an orderly way and the dock says why
+	// (Status.CollectionChanged) instead of staying "Active" over a collection
+	// that has no delay. On SceneCollectionChanging (oldCollectionLoaded): like
+	// Disable(), before OBS saves the old collection -- so it's saved with
+	// its filters off and its scene back on Program. OBS 31 sends no
+	// CHANGING for a duplicate or a rename, only SceneCollectionChanged, with
+	// the copy already loaded as it was saved: then the copy's filters are
+	// switched off (by name; OnFrontendEvent's DisableAllDelayFilters() covers
+	// the rest), and Program leaves the helper scene for the scene shown
+	// before Enable() only if the copy opened on the helper scene. No-op in
+	// any other state.
+	void StopForSceneCollectionChange(bool oldCollectionLoaded);
 
 	// Pushes whichever is SMALLER of status_.delaySeconds and what
 	// ObsFrontendBridge::GetVideoEffectiveDelaySeconds() reports video is

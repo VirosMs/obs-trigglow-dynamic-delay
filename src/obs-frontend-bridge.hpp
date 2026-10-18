@@ -83,6 +83,9 @@ enum class FrontendEvent {
 	RecordingStarted,
 	ReplayBufferStarted,
 	FinishedLoading,
+	// OBS is about to switch scene collection (switch, new, remove): the
+	// current one is still loaded and is saved right after this event.
+	SceneCollectionChanging,
 	SceneCollectionChanged,
 	ThemeChanged, // OBS switched theme (or its font size): the dock restyles itself.
 	Other,

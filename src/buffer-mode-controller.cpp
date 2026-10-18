@@ -321,6 +321,11 @@ void BufferModeController::OnBufferRestarted()
 
 void BufferModeController::Disable()
 {
+	StopDelay({}, /*restoreProgram=*/true);
+}
+
+void BufferModeController::StopDelay(std::string message, bool restoreProgram)
+{
 	bool wasActive = status_.state != BufferModeState::Inactive;
 
 	// Covers Disable() interrupting mid-Filling, before OnFillTimerElapsed()
@@ -334,16 +339,33 @@ void BufferModeController::Disable()
 	status_.effectiveDelaySeconds = 0;
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, false);
-	if (!sceneBeforeEnable_.empty()) {
-		bridge_.SetCurrentSceneByName(sceneBeforeEnable_);
-		sceneBeforeEnable_.clear();
-	} else if (!status_.liveSceneName.empty()) {
-		bridge_.SetCurrentSceneByName(status_.liveSceneName);
+	if (restoreProgram) {
+		if (!sceneBeforeEnable_.empty())
+			bridge_.SetCurrentSceneByName(sceneBeforeEnable_);
+		else if (!status_.liveSceneName.empty())
+			bridge_.SetCurrentSceneByName(status_.liveSceneName);
 	}
+	sceneBeforeEnable_.clear();
 
-	SetState(BufferModeState::Inactive);
+	SetState(BufferModeState::Inactive, std::move(message));
 	if (wasActive)
 		TRIGGLOW_LOG_INFO(kComponent, "disabled");
+}
+
+void BufferModeController::StopForSceneCollectionChange(bool oldCollectionLoaded)
+{
+	if (status_.state != BufferModeState::Filling && status_.state != BufferModeState::Active)
+		return;
+	TRIGGLOW_LOG_WARN(kComponent,
+			  "scene collection %s while the delay was %s: turning the delay off (it belongs to the "
+			  "previous collection)",
+			  oldCollectionLoaded ? "changing" : "changed (duplicate or rename)",
+			  status_.state == BufferModeState::Active ? "on" : "filling");
+	// See the header: after a duplicate or rename the copy may have opened on
+	// the helper scene it was saved with, which would show the live scene
+	// undelayed now that its filter is off.
+	const bool restoreProgram = oldCollectionLoaded || autonames::IsWrapperSceneName(bridge_.GetCurrentSceneName());
+	StopDelay(Str("Status.CollectionChanged"), restoreProgram);
 }
 
 void BufferModeController::Toggle()
@@ -401,6 +423,12 @@ void BufferModeController::NotifyStatusChanged()
 
 void BufferModeController::OnFrontendEvent(FrontendEvent event)
 {
+	// First, so the collection that just loaded finds the delay Inactive below.
+	if (event == FrontendEvent::SceneCollectionChanging)
+		StopForSceneCollectionChange(/*oldCollectionLoaded=*/true);
+	else if (event == FrontendEvent::SceneCollectionChanged)
+		StopForSceneCollectionChange(/*oldCollectionLoaded=*/false);
+
 	const bool collectionLoaded = event == FrontendEvent::FinishedLoading ||
 				      event == FrontendEvent::SceneCollectionChanged;
 	// On startup AND on every switch to another collection, while Inactive (so

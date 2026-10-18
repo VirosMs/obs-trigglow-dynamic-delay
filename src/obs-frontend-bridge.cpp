@@ -1404,6 +1404,9 @@ void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, voi
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		mapped = FrontendEvent::FinishedLoading;
 		break;
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
+		mapped = FrontendEvent::SceneCollectionChanging;
+		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
 		mapped = FrontendEvent::SceneCollectionChanged;
 		break;
