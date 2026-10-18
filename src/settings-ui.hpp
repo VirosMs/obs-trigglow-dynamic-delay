@@ -134,9 +134,10 @@ private:
 	// SetAuthorizationCheck in plugin-main.cpp); this is UX only.
 	void RefreshAccountUi();
 
-	// Single-shot fill countdown, armed for bufferController_.GetStatus().
-	// delaySeconds when Filling starts (same pattern DelayController's own
-	// apply watchdog used).
+	// Single-shot fill countdown, armed by OnStatusChanged() once per fill
+	// window -- when BufferModeStatus::fillGeneration changes while Filling --
+	// for the seconds that window has to fill (same pattern DelayController's
+	// own apply watchdog used).
 	void ArmFillTimer(uint32_t seconds);
 	void DisarmFillTimer();
 
@@ -296,6 +297,10 @@ private:
 	QTimer *fillProgressTimer_ = nullptr;
 	QElapsedTimer fillElapsed_;
 	uint32_t fillTotalSeconds_ = 0;
+	// The fill window fillTimer_ is armed for (BufferModeStatus::fillGeneration);
+	// fillArmed_ is false whenever the timer is disarmed.
+	uint32_t armedFillGeneration_ = 0;
+	bool fillArmed_ = false;
 };
 
 } // namespace trigglow

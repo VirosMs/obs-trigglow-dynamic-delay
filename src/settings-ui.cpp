@@ -965,10 +965,17 @@ void TrigglowDelayDock::OnStatusChanged(const BufferModeStatus &status)
 {
 	RefreshFromStatus(status);
 
-	if (status.state == BufferModeState::Filling)
-		ArmFillTimer(status.delaySeconds);
-	else
+	if (status.state != BufferModeState::Filling) {
 		DisarmFillTimer();
+		return;
+	}
+	// Once per fill window (Enable(), a refill): every other update while
+	// Filling -- the overlay switched on or off, another corner -- leaves the
+	// countdown running instead of starting it over.
+	if (!fillArmed_ || status.fillGeneration != armedFillGeneration_) {
+		armedFillGeneration_ = status.fillGeneration;
+		ArmFillTimer(status.delaySeconds);
+	}
 }
 
 void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
@@ -1329,6 +1336,7 @@ void TrigglowDelayDock::ArmFillTimer(uint32_t seconds)
 		return;
 	fillTimer_->setInterval(static_cast<int>(seconds) * 1000);
 	fillTimer_->start();
+	fillArmed_ = true;
 
 	fillTotalSeconds_ = seconds;
 	fillElapsed_.start();
@@ -1339,6 +1347,7 @@ void TrigglowDelayDock::ArmFillTimer(uint32_t seconds)
 
 void TrigglowDelayDock::DisarmFillTimer()
 {
+	fillArmed_ = false;
 	if (fillTimer_)
 		fillTimer_->stop();
 	if (fillProgressTimer_)

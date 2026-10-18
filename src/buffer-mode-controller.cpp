@@ -206,6 +206,7 @@ void BufferModeController::Enable()
 	if (!status_.loadingSceneName.empty())
 		bridge_.SetCurrentSceneByName(status_.loadingSceneName);
 
+	++status_.fillGeneration; // A new fill window: the dock starts its countdown.
 	SetState(BufferModeState::Filling, FormatOne(Str("Status.Filling"), std::to_string(status_.delaySeconds)));
 	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s",
 			  status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
@@ -270,8 +271,10 @@ void BufferModeController::ShowLoadingSceneForRefill()
 void BufferModeController::EnterRefill(const char *reason)
 {
 	const bool wasFilling = status_.state == BufferModeState::Filling;
-	// The dock (re)arms its fill timer on every Filling status: OnFillTimerElapsed()
-	// switches back to the wrapper scene once the new ring is full.
+	// A new fill window, so the dock re-arms its fill timer (it only does when
+	// fillGeneration changes): OnFillTimerElapsed() switches back to the
+	// wrapper scene once the new ring is full.
+	++status_.fillGeneration;
 	SetState(BufferModeState::Filling, FormatOne(Str("Status.Filling"), std::to_string(status_.delaySeconds)));
 	TRIGGLOW_LOG_WARN(kComponent, "%s: the video buffer restarted empty -- %s for the next %us while it refills",
 			  reason,

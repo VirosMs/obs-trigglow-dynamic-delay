@@ -68,6 +68,12 @@ struct BufferModeStatus {
 	// Enable() on). What viewers get, so the dock and the overlay both show
 	// this one -- the only copy of it. 0 while Inactive or in Error.
 	uint32_t effectiveDelaySeconds = 0;
+	// Fill windows started so far: +1 at Enable() and at every refill
+	// (EnterRefill(): a buffer restart, or a delay/quality change that resizes
+	// the ring). The dock starts its fill countdown over only when this
+	// changes, never on the other status updates that arrive while Filling
+	// (an overlay toggle or corner change notifies too).
+	uint32_t fillGeneration = 0;
 	// Floor for the RAM reduction of the delayed video's resolution --
 	// VideoDelayFilter never reduces below this for RAM, shortening the ACTUAL
 	// buffered duration instead if delaySeconds doesn't fit the RAM budget at
