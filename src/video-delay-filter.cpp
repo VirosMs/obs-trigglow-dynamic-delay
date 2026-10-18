@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <thread> // std::thread::hardware_concurrency(), for the MJPEG encoder's slice threads
 
 extern "C" {
 #include <util/platform.h> // os_gettime_ns()
@@ -120,6 +121,21 @@ constexpr int kMjpegQuality = 5;
 // at all. 300 frames is ~5s at 60fps / ~10s at 30fps: frequent enough to
 // catch a real gameplay session, rare enough not to spam the log every tick.
 constexpr uint64_t kCompressionLogIntervalFrames = 300;
+
+// Upper bound on the MJPEG encoder's slice threads (v0.5.1). The encode runs
+// synchronously on OBS's graphics thread, so slices cut its WALL time there
+// (measured with the vendored n9.0.2: 1080p encode 4.5 -> 1.8ms with 4
+// slices, same total CPU, ~3.5% bigger packets). More than 4 gains little and
+// competes with the game for cores.
+constexpr int kMaxEncodeSliceThreads = 4;
+
+// hardware_concurrency()/4 (logical CPUs), clamped to [1, kMaxEncodeSliceThreads]:
+// 4 on an 8C/16T CPU, 1 on a 4-thread one.
+int EncodeSliceThreadCount()
+{
+	const unsigned logicalCpus = std::thread::hardware_concurrency(); // 0 = unknown -> 1 thread.
+	return std::clamp(static_cast<int>(logicalCpus / 4), 1, kMaxEncodeSliceThreads);
+}
 #else
 constexpr double kAssumedCompressionRatio = 1.0;
 #endif
@@ -450,35 +466,74 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 		return;
 	}
 
-	encoderCtx_ = avcodec_alloc_context3(encoder);
-	encoderCtx_->width = static_cast<int>(bufferWidth_);
-	encoderCtx_->height = static_cast<int>(bufferHeight_);
-	// Modern replacement for the deprecated AV_PIX_FMT_YUVJ420P: plain 4:2:0
-	// planar plus an explicit full-range color_range, which is what "J"
-	// (JPEG-range) formats meant anyway.
-	encoderCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
-	encoderCtx_->color_range = AVCOL_RANGE_JPEG;
-	encoderCtx_->time_base = AVRational{1, static_cast<int>(std::max<uint32_t>(1, currentFps_))};
-	// Fixed quality via AV_CODEC_FLAG_QSCALE rather than a bitrate target --
-	// simpler for a first pass, no rate-control ramp-up/lookahead to reason
-	// about (irrelevant anyway for an all-intra codec with no lookahead).
-	// Not a user-facing setting yet -- see docs/ROADMAP.md's "Fases futuras"
-	// for the dock quality control this could grow into later.
-	encoderCtx_->flags |= AV_CODEC_FLAG_QSCALE;
-	encoderCtx_->qmin = kMjpegQuality;
-	encoderCtx_->qmax = kMjpegQuality;
+	// Slice threads (v0.5.1): the encode still runs synchronously inside
+	// Render(), so splitting each frame into slices encoded in parallel cuts
+	// its wall time on OBS's graphics thread. thread_type MUST be set
+	// explicitly: with only thread_count > 1, FFmpeg picks FRAME threading for
+	// MJPEG (we use AV_CODEC_FLAG_QSCALE, which skips its single-thread
+	// exception), and frame threads hand packets back 1-2 calls late --
+	// receive_packet() returns EAGAIN in the same tick, which this path treats
+	// as a failed encode and stores the frame raw, so RAM would balloon. With
+	// more than one slice FFmpeg also switches to its default Huffman tables
+	// on its own; "huffman" is deliberately left untouched.
+	auto openEncoder = [&](int threads) -> bool {
+		encoderCtx_ = avcodec_alloc_context3(encoder);
+		if (!encoderCtx_)
+			return false;
+		encoderCtx_->width = static_cast<int>(bufferWidth_);
+		encoderCtx_->height = static_cast<int>(bufferHeight_);
+		// Modern replacement for the deprecated AV_PIX_FMT_YUVJ420P: plain 4:2:0
+		// planar plus an explicit full-range color_range, which is what "J"
+		// (JPEG-range) formats meant anyway.
+		encoderCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
+		encoderCtx_->color_range = AVCOL_RANGE_JPEG;
+		encoderCtx_->time_base = AVRational{1, static_cast<int>(std::max<uint32_t>(1, currentFps_))};
+		// Fixed quality via AV_CODEC_FLAG_QSCALE rather than a bitrate target --
+		// simpler for a first pass, no rate-control ramp-up/lookahead to reason
+		// about (irrelevant anyway for an all-intra codec with no lookahead).
+		// Not a user-facing setting yet -- see docs/ROADMAP.md's "Fases futuras"
+		// for the dock quality control this could grow into later.
+		encoderCtx_->flags |= AV_CODEC_FLAG_QSCALE;
+		encoderCtx_->qmin = kMjpegQuality;
+		encoderCtx_->qmax = kMjpegQuality;
+		encoderCtx_->thread_type = FF_THREAD_SLICE;
+		encoderCtx_->thread_count = threads;
+		if (avcodec_open2(encoderCtx_, encoder, nullptr) < 0) {
+			avcodec_free_context(&encoderCtx_);
+			return false;
+		}
+		return true;
+	};
 
-	if (avcodec_open2(encoderCtx_, encoder, nullptr) < 0) {
+	const int sliceThreads = EncodeSliceThreadCount();
+	bool encoderOpen = openEncoder(sliceThreads);
+	if (encoderOpen && (encoderCtx_->active_thread_type & FF_THREAD_FRAME)) {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "MJPEG encoder came up with frame threading (active_thread_type=%d) despite "
+				  "thread_type=slice -- reopening it single-threaded",
+				  encoderCtx_->active_thread_type);
+		avcodec_free_context(&encoderCtx_);
+		encoderOpen = openEncoder(1);
+	} else if (!encoderOpen && sliceThreads > 1) {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "failed to open the MJPEG encoder with %d slice threads -- retrying "
+				  "single-threaded",
+				  sliceThreads);
+		encoderOpen = openEncoder(1);
+	}
+	if (!encoderOpen) {
 		TRIGGLOW_LOG_WARN(kComponent,
 				  "failed to open MJPEG encoder at %ux%u -- storing uncompressed NV12 "
 				  "this session",
 				  bufferWidth_, bufferHeight_);
-		avcodec_free_context(&encoderCtx_);
 		return;
 	}
-
 	decoderCtx_ = avcodec_alloc_context3(decoder);
-	if (avcodec_open2(decoderCtx_, decoder, nullptr) < 0) {
+	// Explicit: n9.0's MJPEG decoder has no threading at all, and a future
+	// default change must not start buffering frames across calls here.
+	if (decoderCtx_)
+		decoderCtx_->thread_count = 1;
+	if (!decoderCtx_ || avcodec_open2(decoderCtx_, decoder, nullptr) < 0) {
 		TRIGGLOW_LOG_WARN(kComponent, "failed to open MJPEG decoder -- storing uncompressed NV12 this "
 					      "session");
 		avcodec_free_context(&encoderCtx_);
@@ -527,8 +582,12 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 		return;
 	}
 
-	TRIGGLOW_LOG_INFO(kComponent, "MJPEG encoder/decoder open at %ux%u (quality qscale=%d)", bufferWidth_,
-			  bufferHeight_, kMjpegQuality);
+	TRIGGLOW_LOG_INFO(kComponent,
+			  "MJPEG encoder/decoder open at %ux%u (quality qscale=%d, encoder threads=%d of %d requested "
+			  "for %u logical CPUs, active_thread_type=%d, decoder threads=%d)",
+			  bufferWidth_, bufferHeight_, kMjpegQuality, encoderCtx_->thread_count, sliceThreads,
+			  std::thread::hardware_concurrency(), encoderCtx_->active_thread_type,
+			  decoderCtx_->thread_count);
 }
 
 void VideoDelayFilter::ReleaseCodecContexts()
