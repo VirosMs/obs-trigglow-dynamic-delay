@@ -93,7 +93,10 @@ bool ShouldPlace(const AppliedLayout &applied, const ItemTransform &current, flo
 		return true; // The dock asked for another corner: that wins over a manual move.
 	const bool canvasChanged = std::fabs(canvasWidth - applied.canvasWidth) >= 0.5f ||
 				   std::fabs(canvasHeight - applied.canvasHeight) >= 0.5f;
-	return canvasChanged && IsUntouched(applied, current);
+	// A taller badge left where an older build put it would eat into the
+	// bottom margin: placed again, unless the user moved or scaled it.
+	const bool badgeResized = std::fabs(applied.designHeight - kDesignHeight) >= 0.5f;
+	return (canvasChanged || badgeResized) && IsUntouched(applied, current);
 }
 
 uint32_t ClampSeconds(uint32_t seconds)
@@ -103,7 +106,18 @@ uint32_t ClampSeconds(uint32_t seconds)
 
 std::string BadgeFileName(uint32_t seconds)
 {
-	return "delay-badge-" + std::to_string(ClampSeconds(seconds)) + "s.png";
+	return "delay-badge-r" + std::to_string(kRenderVersion) + "-" + std::to_string(ClampSeconds(seconds)) + "s.png";
+}
+
+bool IsStaleBadgeFile(const std::string &fileName)
+{
+	const std::string prefix = "delay-badge-";
+	const std::string suffix = ".png";
+	if (fileName.size() <= prefix.size() + suffix.size() || fileName.compare(0, prefix.size(), prefix) != 0 ||
+	    fileName.compare(fileName.size() - suffix.size(), suffix.size(), suffix) != 0)
+		return false; // Not a badge.
+	const std::string current = prefix + "r" + std::to_string(kRenderVersion) + "-";
+	return fileName.compare(0, current.size(), current) != 0;
 }
 
 } // namespace trigglow::overlaylayout

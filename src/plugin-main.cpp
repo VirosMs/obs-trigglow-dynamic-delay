@@ -312,7 +312,8 @@ bool obs_module_load(void)
 		g_state->bridge.SetOverlayImageProvider([files = g_state->badgeFiles.get()](uint32_t seconds) {
 			const QString label = QString::fromUtf8(Str("Overlay.Label"));
 			const QString value = QString::fromUtf8(Str("Overlay.Value")).arg(seconds);
-			return files->PathFor(seconds, label, value).toStdString();
+			const QString signature = QString::fromUtf8(Str("Overlay.Signature"));
+			return files->PathFor(seconds, label, value, signature).toStdString();
 		});
 	}
 

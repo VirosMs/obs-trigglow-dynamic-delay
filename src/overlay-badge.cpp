@@ -22,9 +22,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ui-theme.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
@@ -53,8 +55,9 @@ QColor WithAlpha(QColor color, double alpha)
 	return color;
 }
 
-// Archivo when bundled; the system UI font otherwise. Weights are the files'
-// own (600 / 700), so Qt never synthesizes a bolder face from the SemiBold.
+// The bundled family when there is one; the system UI font otherwise. Weights
+// are the files' own (Archivo 600 / 700, Geist Mono 500), so Qt never
+// synthesizes a bolder face from another weight.
 QFont BadgeFont(const QString &family, int weight, qreal pixelSize)
 {
 	QFont font;
@@ -73,7 +76,7 @@ QFont BadgeFont(const QString &family, int weight, qreal pixelSize)
 
 } // namespace
 
-QImage RenderDelayBadge(const QString &label, const QString &value)
+QImage RenderDelayBadge(const QString &label, const QString &value, const QString &signature)
 {
 	using namespace overlaylayout;
 	const int width = qRound(kDesignWidth * kRenderScale);
@@ -85,38 +88,47 @@ QImage RenderDelayBadge(const QString &label, const QString &value)
 	p.setRenderHint(QPainter::Antialiasing);
 	p.setRenderHint(QPainter::TextAntialiasing);
 	p.setRenderHint(QPainter::SmoothPixmapTransform);
-	// Everything below is in design units (the 1x, 200x58 badge).
+	// Everything below is in design units (the 1x, 200x72 badge).
 	p.scale(kRenderScale, kRenderScale);
+	constexpr qreal kW = kDesignWidth;
+	constexpr qreal kH = kDesignHeight;
 
 	// 1 px dark ring: separates the plate from bright footage (snow, sky, menus).
 	p.setPen(QPen(WithAlpha(Qt::black, 0.55), 1.0));
 	p.setBrush(Qt::NoBrush);
-	p.drawRect(QRectF(0.5, 0.5, 199.0, 57.0));
+	p.drawRect(QRectF(0.5, 0.5, kW - 1.0, kH - 1.0));
 
 	// Plate: ink at 92 % keeps the mist text above 15:1 on any footage.
-	p.fillRect(QRectF(1.0, 1.0, 198.0, 56.0), WithAlpha(kInk, 0.92));
+	p.fillRect(QRectF(1.0, 1.0, kW - 2.0, kH - 2.0), WithAlpha(kInk, 0.92));
 
 	// Inner hairline (--color-pulse-line).
 	p.setPen(QPen(WithAlpha(kMist, 0.18), 1.0));
-	p.drawRect(QRectF(1.5, 1.5, 197.0, 55.0));
+	p.drawRect(QRectF(1.5, 1.5, kW - 3.0, kH - 3.0));
 
 	// Brand rule (gradient-brand, 90 degrees).
-	QLinearGradient brand(QPointF(1.0, 0.0), QPointF(199.0, 0.0));
+	QLinearGradient brand(QPointF(1.0, 0.0), QPointF(kW - 1.0, 0.0));
 	brand.setColorAt(0.0, kCyan);
 	brand.setColorAt(1.0, kMagenta);
-	p.fillRect(QRectF(1.0, 1.0, 198.0, 3.0), brand);
+	p.fillRect(QRectF(1.0, 1.0, kW - 2.0, 3.0), brand);
 
-	// Dynamic Delay mark.
+	// The mark, the separator and the text block are centered on the plate
+	// below the rule.
+	constexpr qreal kCenterY = (4.0 + (kH - 1.0)) / 2.0;
+
+	// Dynamic Delay mark, on whole pixels of the 2.5x PNG.
 	const QImage mark(QStringLiteral(":/trigglow/overlay/dynamic-delay-mark.png"));
-	if (!mark.isNull())
-		p.drawImage(QRectF(10.0, 14.0, 32.0, 32.0), mark);
+	if (!mark.isNull()) {
+		const qreal markTop = std::round((kCenterY - 16.0) * kRenderScale) / kRenderScale;
+		p.drawImage(QRectF(10.0, markTop, 32.0, 32.0), mark);
+	}
 
-	// Separator.
+	// Separator, as tall as the two lines of text.
 	p.setPen(QPen(WithAlpha(kMist, 0.16), 1.0));
-	p.drawLine(QPointF(50.5, 16.0), QPointF(50.5, 46.0));
+	p.drawLine(QPointF(50.5, kCenterY - 18.0), QPointF(50.5, kCenterY + 18.0));
 
-	// "DELAY" in cyan (10.5:1 on the plate), "30 s" in mist, 7 px apart, on one
-	// baseline. Scaled down together if a fallback font is wider than Archivo.
+	// Line 1: "DELAY" in cyan (10.5:1 on the plate), "30 s" in mist, 7 px
+	// apart, on one baseline. Scaled down together if a fallback font is wider
+	// than Archivo.
 	const BrandFonts &fonts = Fonts();
 	const QString labelFamily = fonts.display;
 	const QString valueFamily = fonts.displayBold.isEmpty() ? fonts.display : fonts.displayBold;
@@ -133,7 +145,6 @@ QImage RenderDelayBadge(const QString &label, const QString &value)
 	}
 	constexpr qreal kTextLeft = 60.0;
 	constexpr qreal kTextRight = 190.0;
-	constexpr qreal kBaseline = 39.5;
 	constexpr qreal kGap = 7.0;
 
 	qreal factor = 1.0;
@@ -155,30 +166,69 @@ QImage RenderDelayBadge(const QString &label, const QString &value)
 		factor *= 0.95;
 	}
 
+	// Line 2: the "By Trigglow" signature in Geist Mono 500, the dock's face
+	// for labels and figures, so it reads as a credit and not as part of the
+	// delay; kSignaturePixelSize is 10 px on a 720p stream. Mist at 62 % stays
+	// above 6.1:1 on the plate over any footage (AA for small text) and
+	// quieter than "30 s". Drawn as given, not uppercased: it's a name.
+	const QString signatureText = signature.trimmed();
+	const QString signatureFamily = fonts.mono.isEmpty() ? fonts.display : fonts.mono;
+	const int signatureWeight = fonts.mono.isEmpty() && !fonts.display.isEmpty() ? 600 : 500;
+	constexpr qreal kLineGap = 7.0; // From the "30 s" baseline to the signature's cap height.
+	QFont signatureFont;
+	qreal signatureLeft = kTextLeft;
+	qreal signatureFactor = 1.0;
+	for (int attempt = 0; attempt < 12 && !signatureText.isEmpty(); ++attempt) {
+		signatureFont = BadgeFont(signatureFamily, signatureWeight, kSignaturePixelSize * signatureFactor);
+		// Optically flush with "DELAY": both first letters' ink starts at the
+		// same x, whatever their side bearings.
+		const qreal labelBearing = labelText.isEmpty() ? 0.0
+							       : QFontMetricsF(labelFont).leftBearing(labelText.at(0));
+		signatureLeft =
+			kTextLeft + labelBearing - QFontMetricsF(signatureFont).leftBearing(signatureText.at(0));
+		if (signatureLeft + QFontMetricsF(signatureFont).horizontalAdvance(signatureText) <= kTextRight)
+			break;
+		signatureFactor *= 0.95;
+	}
+
+	// The block -- from the cap height of "30 s" to the signature's baseline --
+	// is centered like the mark; without a signature, line 1 alone is.
+	const qreal valueCap = QFontMetricsF(valueFont).capHeight();
+	const qreal signatureCap = signatureText.isEmpty() ? 0.0 : QFontMetricsF(signatureFont).capHeight();
+	const qreal blockHeight = valueCap + (signatureText.isEmpty() ? 0.0 : kLineGap + signatureCap);
+	const qreal baseline = kCenterY - blockHeight / 2.0 + valueCap;
+
 	p.setFont(labelFont);
 	p.setPen(kCyan);
-	p.drawText(QPointF(kTextLeft, kBaseline), labelText);
+	p.drawText(QPointF(kTextLeft, baseline), labelText);
 	p.setFont(valueFont);
 	p.setPen(kMist);
-	p.drawText(QPointF(kTextLeft + labelWidth + kGap, kBaseline), valueText);
+	p.drawText(QPointF(kTextLeft + labelWidth + kGap, baseline), valueText);
+	if (!signatureText.isEmpty()) {
+		p.setFont(signatureFont);
+		p.setPen(WithAlpha(kMist, 0.62));
+		p.drawText(QPointF(signatureLeft, baseline + kLineGap + signatureCap), signatureText);
+	}
 	p.end();
 	return image;
 }
 
 DelayBadgeFiles::DelayBadgeFiles(QString directory) : directory_(std::move(directory)) {}
 
-QString DelayBadgeFiles::PathFor(uint32_t seconds, const QString &label, const QString &value)
+QString DelayBadgeFiles::PathFor(uint32_t seconds, const QString &label, const QString &value, const QString &signature)
 {
 	seconds = overlaylayout::ClampSeconds(seconds);
 	if (directory_.isEmpty())
 		return {};
+	// The name carries the render version, so a PNG an older build drew
+	// differently is never picked up, not even off the UI thread below.
 	const QString path = QDir(directory_).filePath(QString::fromStdString(overlaylayout::BadgeFileName(seconds)));
 	// In memory only: every value is redrawn the first time it is asked for
-	// in a session, before the badge is shown, so a PNG an older build left
-	// on disk (other drawing, other texts) is never what OBS displays and no
-	// render version is needed.
-	const QString key =
-		QStringLiteral("%1\x1f%2\x1f%3\x1f%4").arg(label, value, Fonts().display, Fonts().displayBold);
+	// in a session, before the badge is shown, so a PNG left on disk with
+	// other texts or fonts (OBS language switched since) is never what OBS
+	// displays.
+	const QString key = QStringLiteral("%1\x1f%2\x1f%3\x1f%4\x1f%5\x1f%6")
+				    .arg(label, value, signature, Fonts().display, Fonts().displayBold, Fonts().mono);
 
 	if (renderedKeys_.value(seconds) == key && QFileInfo::exists(path))
 		return path;
@@ -190,7 +240,11 @@ QString DelayBadgeFiles::PathFor(uint32_t seconds, const QString &label, const Q
 	}
 
 	QDir().mkpath(directory_);
-	const QImage image = RenderDelayBadge(label, value);
+	if (!staleFilesRemoved_) {
+		staleFilesRemoved_ = true;
+		RemoveStaleFiles();
+	}
+	const QImage image = RenderDelayBadge(label, value, signature);
 	// QSaveFile: OBS never reads a half-written PNG.
 	QSaveFile file(path);
 	const bool ok = file.open(QIODevice::WriteOnly) && image.save(&file, "PNG") && file.commit();
@@ -204,6 +258,21 @@ QString DelayBadgeFiles::PathFor(uint32_t seconds, const QString &label, const Q
 	}
 	renderedKeys_.insert(seconds, key);
 	return path;
+}
+
+void DelayBadgeFiles::RemoveStaleFiles()
+{
+	// Right before the first badge of the session is written, i.e. before OBS
+	// is pointed at a current one: until then the image source may still name
+	// an old file, which it only shows while the badge is visible.
+	const QDir dir(directory_);
+	int removed = 0;
+	for (const QString &name : dir.entryList({QStringLiteral("delay-badge-*.png")}, QDir::Files)) {
+		if (overlaylayout::IsStaleBadgeFile(name.toStdString()) && QFile::remove(dir.filePath(name)))
+			++removed;
+	}
+	if (removed > 0)
+		TRIGGLOW_LOG_INFO(kComponent, "removed %d delay badge(s) drawn by an older version", removed);
 }
 
 } // namespace trigglow::ui

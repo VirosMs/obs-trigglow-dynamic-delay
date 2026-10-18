@@ -26,14 +26,22 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // libobs/Qt: tests/overlay_layout_tests.cpp.
 namespace trigglow::overlaylayout {
 
-// The badge as designed for a 1920x1080 canvas, in canvas pixels: a 200x58
-// plate including its 1 px outer ring.
+// The badge as designed for a 1920x1080 canvas, in canvas pixels: a 200x72
+// plate including its 1 px outer ring ("DELAY 30 s" over the "By Trigglow"
+// signature; 200x58 before the signature).
 inline constexpr float kDesignWidth = 200.0f;
-inline constexpr float kDesignHeight = 58.0f;
+inline constexpr float kDesignHeight = 72.0f;
 inline constexpr float kDesignCanvasHeight = 1080.0f;
-// The PNG is rendered at 2.5x the design size (500x145) so it stays sharp when
+// The PNG is rendered at 2.5x the design size (500x180) so it stays sharp when
 // OBS scales it, at 1080p and above.
 inline constexpr float kRenderScale = 2.5f;
+// Pixel size of the "By Trigglow" signature, in design units: 15 px on a
+// 1080p canvas and 10 px on a 720p one, where the badge is drawn at 0.67x.
+inline constexpr float kSignaturePixelSize = 15.0f;
+// Bumped whenever the drawing changes, and part of the PNG's file name, so a
+// badge an older build left in the folder is never what OBS shows (nor reused
+// off the UI thread). 2: the "By Trigglow" signature and the taller plate.
+inline constexpr uint32_t kRenderVersion = 2;
 // Seconds the badge can show: the dock's spin box range.
 inline constexpr uint32_t kMinSeconds = 1;
 inline constexpr uint32_t kMaxSeconds = 60;
@@ -79,6 +87,9 @@ struct AppliedLayout {
 	float x = 0.0f;
 	float y = 0.0f;
 	float scale = 0.0f;
+	// kDesignHeight of the badge it was placed for. 0: placed by a build that
+	// didn't store it (the 58 px plate, before the signature).
+	float designHeight = 0.0f;
 };
 
 // The item's position and scale as OBS has them now.
@@ -96,14 +107,22 @@ bool IsUntouched(const AppliedLayout &applied, const ItemTransform &current);
 // Whether showing the badge has to (re)place it with Place(). The position and
 // size the user gives it in OBS are kept: it is placed the first time, again
 // whenever the corner chosen in the dock changes, and on a canvas size change
-// only while the user hasn't moved or scaled it (left where the plugin put
-// it, it follows the new canvas; placed by the user, it stays put).
+// or a new badge size (kDesignHeight) only while the user hasn't moved or
+// scaled it (left where the plugin put it, it follows the new canvas and keeps
+// its margin in a bottom corner; placed by the user, it stays put).
 bool ShouldPlace(const AppliedLayout &applied, const ItemTransform &current, float canvasWidth, float canvasHeight,
 		 uint32_t corner);
 
-// "delay-badge-30s.png": one file per value, so OBS reloads the image source
-// when the value changes. Values outside [kMinSeconds, kMaxSeconds] are clamped.
+// "delay-badge-r2-30s.png" (render version, seconds): one file per value, so
+// OBS reloads the image source when the value changes. Values outside
+// [kMinSeconds, kMaxSeconds] are clamped.
 std::string BadgeFileName(uint32_t seconds);
 uint32_t ClampSeconds(uint32_t seconds);
+
+// True for a badge PNG of another render version ("delay-badge-30s.png" from
+// before versioned names, "delay-badge-r1-30s.png"...): left over in the
+// overlay folder, to be deleted. False for the current version and for any
+// file that isn't a badge.
+bool IsStaleBadgeFile(const std::string &fileName);
 
 } // namespace trigglow::overlaylayout

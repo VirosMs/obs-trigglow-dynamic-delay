@@ -63,11 +63,14 @@ void TestMargin()
 void TestPlacement1080p()
 {
 	g_currentTest = "1080p placement";
-	// Same size as the v0.5.x badge: 2.5x PNG shown at 0.4 = 200x58.
+	// The v0.5.x badge's width, 14 px taller for the "By Trigglow" line: the
+	// 2.5x PNG (500x180) shown at 0.4 = 200x72.
+	CHECK(Near(kDesignWidth, 200.0f));
+	CHECK(Near(kDesignHeight, 72.0f));
 	Placement tl = Place(1920.0f, 1080.0f, 0);
 	CHECK(Near(tl.scale, 0.4f));
 	CHECK(Near(tl.width, 200.0f));
-	CHECK(Near(tl.height, 58.0f));
+	CHECK(Near(tl.height, 72.0f));
 	CHECK(Near(tl.x, 24.0f));
 	CHECK(Near(tl.y, 24.0f));
 
@@ -77,11 +80,11 @@ void TestPlacement1080p()
 
 	Placement bl = Place(1920.0f, 1080.0f, 2);
 	CHECK(Near(bl.x, 24.0f));
-	CHECK(Near(bl.y, 1080.0f - 58.0f - 24.0f));
+	CHECK(Near(bl.y, 1080.0f - 72.0f - 24.0f));
 
 	Placement br = Place(1920.0f, 1080.0f, 3);
 	CHECK(Near(br.x, 1920.0f - 200.0f - 24.0f));
-	CHECK(Near(br.y, 1080.0f - 58.0f - 24.0f));
+	CHECK(Near(br.y, 1080.0f - 72.0f - 24.0f));
 
 	// Out-of-range corners behave like top-left (BufferModeController clamps too).
 	Placement bad = Place(1920.0f, 1080.0f, 7);
@@ -91,9 +94,14 @@ void TestPlacement1080p()
 void TestPlacementOtherCanvases()
 {
 	g_currentTest = "other canvases";
-	// Keeps its share of the canvas height.
+	// Keeps its share of the canvas height: 133x48 at 720p.
 	Placement p720 = Place(1280.0f, 720.0f, 3);
-	CHECK(Near(p720.height / 720.0f, 58.0f / 1080.0f, 0.001f));
+	CHECK(Near(p720.height / 720.0f, 72.0f / 1080.0f, 0.001f));
+	CHECK(Near(p720.height, 48.0f));
+	// The "By Trigglow" line stays legible on the stream: 10 px at 720p, 15
+	// px at 1080p.
+	CHECK(kSignaturePixelSize * kRenderScale * p720.scale >= 9.99f);
+	CHECK(Near(kSignaturePixelSize * kRenderScale * Place(1920.0f, 1080.0f, 0).scale, 15.0f));
 	CHECK(Near(p720.margin, 16.0f));
 	CHECK(Near(p720.x + p720.width + p720.margin, 1280.0f));
 	CHECK(Near(p720.y + p720.height + p720.margin, 720.0f));
@@ -126,15 +134,15 @@ void TestVerticalAndUltrawide()
 {
 	g_currentTest = "vertical and ultrawide canvases";
 	// 1080x1920 (vertical video): sized by the short side, i.e. exactly the
-	// 1080p badge -- 200x58, 18.5 % of the frame's width -- not the 355 px
+	// 1080p badge -- 200x72, 18.5 % of the frame's width -- not the 355 px
 	// that scaling by the height gave.
 	Placement vertical = Place(1080.0f, 1920.0f, 3);
 	CHECK(Near(vertical.scale, 0.4f));
 	CHECK(Near(vertical.width, 200.0f));
-	CHECK(Near(vertical.height, 58.0f));
+	CHECK(Near(vertical.height, 72.0f));
 	CHECK(Near(vertical.margin, 24.0f));
 	CHECK(Near(vertical.x, 1080.0f - 200.0f - 24.0f));
-	CHECK(Near(vertical.y, 1920.0f - 58.0f - 24.0f));
+	CHECK(Near(vertical.y, 1920.0f - 72.0f - 24.0f));
 	// Never wider than a fifth of the vertical frame.
 	CHECK(vertical.width / 1080.0f < 0.2f);
 
@@ -164,6 +172,7 @@ AppliedLayout Applied(float canvasWidth, float canvasHeight, uint32_t corner)
 	a.x = p.x;
 	a.y = p.y;
 	a.scale = p.scale;
+	a.designHeight = kDesignHeight;
 	return a;
 }
 
@@ -208,17 +217,63 @@ void TestKeepsTheUsersTransform()
 	CHECK(!IsUntouched(tl1080, ItemTransform{tl1080.x, tl1080.y, tl1080.scale, tl1080.scale * 1.5f}));
 }
 
+void TestTallerBadge()
+{
+	g_currentTest = "taller badge";
+	// Placed bottom-right by an earlier 0.6 build: the 58 px plate, and no
+	// design height stored (0).
+	AppliedLayout old = Applied(1920.0f, 1080.0f, 3);
+	old.designHeight = 0.0f;
+	old.y = 1080.0f - 58.0f - 24.0f;
+	const ItemTransform asPlaced = Transform(old.x, old.y, old.scale);
+
+	// Left there: placed again, so the 72 px badge keeps its 24 px margin
+	// instead of sitting 10 px from the bottom edge.
+	CHECK(ShouldPlace(old, asPlaced, 1920.0f, 1080.0f, 3));
+	CHECK(Near(Place(1920.0f, 1080.0f, 3).y, 1080.0f - 72.0f - 24.0f));
+	// Moved or scaled by the user: stays where they put it.
+	CHECK(!ShouldPlace(old, Transform(600.0f, 300.0f, old.scale), 1920.0f, 1080.0f, 3));
+	CHECK(!ShouldPlace(old, Transform(old.x, old.y, 0.5f), 1920.0f, 1080.0f, 3));
+
+	// Placed by this build: nothing to do.
+	const AppliedLayout current = Applied(1920.0f, 1080.0f, 3);
+	CHECK(!ShouldPlace(current, Transform(current.x, current.y, current.scale), 1920.0f, 1080.0f, 3));
+}
+
 void TestFileNames()
 {
 	g_currentTest = "file names";
-	CHECK(BadgeFileName(30) == "delay-badge-30s.png");
-	CHECK(BadgeFileName(5) == "delay-badge-5s.png");
-	CHECK(BadgeFileName(60) == "delay-badge-60s.png");
-	CHECK(BadgeFileName(0) == "delay-badge-1s.png");
-	CHECK(BadgeFileName(600) == "delay-badge-60s.png");
+	// The render version is part of the name: a badge drawn by an older
+	// build (no signature, 58 px plate) is never picked up.
+	CHECK(kRenderVersion == 2);
+	CHECK(BadgeFileName(30) == "delay-badge-r2-30s.png");
+	CHECK(BadgeFileName(5) == "delay-badge-r2-5s.png");
+	CHECK(BadgeFileName(60) == "delay-badge-r2-60s.png");
+	CHECK(BadgeFileName(0) == "delay-badge-r2-1s.png");
+	CHECK(BadgeFileName(600) == "delay-badge-r2-60s.png");
 	CHECK(ClampSeconds(0) == kMinSeconds);
 	CHECK(ClampSeconds(61) == kMaxSeconds);
 	CHECK(ClampSeconds(42) == 42);
+}
+
+void TestStaleFiles()
+{
+	g_currentTest = "stale files";
+	// Older badges: deleted.
+	CHECK(IsStaleBadgeFile("delay-badge-30s.png")); // Unversioned names, before "By Trigglow".
+	CHECK(IsStaleBadgeFile("delay-badge-5s.png"));
+	CHECK(IsStaleBadgeFile("delay-badge-r1-30s.png"));
+	CHECK(IsStaleBadgeFile("delay-badge-r20-30s.png")); // Not "r2-".
+	// Current badges: kept.
+	CHECK(!IsStaleBadgeFile(BadgeFileName(30)));
+	CHECK(!IsStaleBadgeFile(BadgeFileName(1)));
+	CHECK(!IsStaleBadgeFile(BadgeFileName(60)));
+	// Anything else in the folder: never touched.
+	CHECK(!IsStaleBadgeFile("notes.txt"));
+	CHECK(!IsStaleBadgeFile("delay-badge.png"));
+	CHECK(!IsStaleBadgeFile("delay-badge-.png"));
+	CHECK(!IsStaleBadgeFile("delay-badge-30s.png.tmp"));
+	CHECK(!IsStaleBadgeFile(""));
 }
 
 } // namespace
@@ -230,7 +285,9 @@ int main()
 	TestPlacementOtherCanvases();
 	TestVerticalAndUltrawide();
 	TestKeepsTheUsersTransform();
+	TestTallerBadge();
 	TestFileNames();
+	TestStaleFiles();
 
 	std::printf("overlay_layout_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

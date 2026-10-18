@@ -296,6 +296,7 @@ constexpr const char *kBadgeCanvasHeightKey = "trigglow_overlay_canvas_height";
 constexpr const char *kBadgeXKey = "trigglow_overlay_x";
 constexpr const char *kBadgeYKey = "trigglow_overlay_y";
 constexpr const char *kBadgeScaleKey = "trigglow_overlay_scale";
+constexpr const char *kBadgeDesignHeightKey = "trigglow_overlay_design_height";
 
 bool HasBadgeMarker(obs_sceneitem_t *item)
 {
@@ -344,6 +345,7 @@ overlaylayout::AppliedLayout ReadAppliedLayout(obs_data_t *priv)
 	applied.x = static_cast<float>(obs_data_get_double(priv, kBadgeXKey));
 	applied.y = static_cast<float>(obs_data_get_double(priv, kBadgeYKey));
 	applied.scale = static_cast<float>(obs_data_get_double(priv, kBadgeScaleKey));
+	applied.designHeight = static_cast<float>(obs_data_get_double(priv, kBadgeDesignHeightKey)); // 0 if absent.
 	return applied;
 }
 
@@ -359,6 +361,7 @@ void WriteAppliedLayout(obs_data_t *priv, uint32_t corner, float canvasWidth, fl
 	obs_data_set_double(priv, kBadgeXKey, placement.x);
 	obs_data_set_double(priv, kBadgeYKey, placement.y);
 	obs_data_set_double(priv, kBadgeScaleKey, placement.scale);
+	obs_data_set_double(priv, kBadgeDesignHeightKey, overlaylayout::kDesignHeight);
 }
 
 // Removes the overlay sources earlier versions put in the wrapper scene and
