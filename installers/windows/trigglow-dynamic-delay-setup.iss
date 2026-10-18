@@ -110,10 +110,12 @@ Source: "{#PluginStageDir}\data\locale\es-ES.ini"; DestDir: "{app}\data\obs-plug
 Source: "{#PluginStageDir}\data\images\delay-badge.png"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\images"; Flags: ignoreversion
 ; Brand fonts for the dock and the overlay (Archivo, Geist Mono; SIL OFL 1.1),
 ; with their licenses next to them as the OFL requires. Loaded by
-; src/ui-theme.cpp's LoadBrandFonts() from data/fonts; if they're missing the
-; plugin falls back to OBS's UI font, so the installer doesn't fail without them.
-Source: "{#PluginStageDir}\data\fonts\*.ttf"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion skipifsourcedoesntexist
-Source: "{#PluginStageDir}\data\fonts\OFL-*.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion skipifsourcedoesntexist
+; src/ui-theme.cpp's LoadBrandFonts() from data/fonts. The plugin can fall back
+; to OBS's UI font at runtime, but a release must ship them: a staged build
+; without the fonts or their licenses fails to compile here instead of quietly
+; packaging an installer without them.
+Source: "{#PluginStageDir}\data\fonts\*.ttf"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion
+Source: "{#PluginStageDir}\data\fonts\OFL-*.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion
 ; Notices of third-party assets compiled into the plugin (Lucide icons, ISC).
 Source: "{#PluginStageDir}\data\licenses\*.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\licenses"; Flags: ignoreversion
 ; v0.3.0 Phase 0 (FFmpeg groundwork, docs/ROADMAP.md): CMake's install() rule
