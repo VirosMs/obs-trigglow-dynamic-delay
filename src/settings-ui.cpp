@@ -322,6 +322,10 @@ void TrigglowDelayDock::BuildUi()
 	liveSceneCombo_->setMinimumContentsLength(8);
 	liveSceneCombo_->setToolTip(T("Dock.Scene.Live.Tooltip"));
 	liveSceneCombo_->setAccessibleName(T("Dock.Scene.Live"));
+	// Nothing preselected until the user picks a scene (index -1 shows this),
+	// so choosing the first one is a real selection, and the field never
+	// shows a scene while the requirement list says none is chosen.
+	liveSceneCombo_->setPlaceholderText(T("Dock.Scene.Live.Placeholder"));
 	liveSceneCombo_->SetRefreshCallback(
 		[this] { RefreshSceneCombo(liveSceneCombo_, bufferController_.GetStatus().liveSceneName, false); });
 	{
@@ -888,7 +892,12 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	// up front is a clearer signal than a click that visibly bounces. The
 	// requirement list right below says which of the two is missing.
 	const bool loggedIn = authManager_.IsLoggedIn();
-	const bool hasScene = !status.liveSceneName.empty();
+	// The saved live scene counts once it's in the picker (a deleted scene or
+	// the helper scene isn't); until OBS has loaded the collection the picker
+	// is still empty and the saved name is trusted.
+	const QString liveName = QString::fromStdString(status.liveSceneName);
+	const int liveIndex = liveName.isEmpty() ? -1 : liveSceneCombo_->findText(liveName);
+	const bool hasScene = liveIndex >= 0 || (!liveName.isEmpty() && liveSceneCombo_->count() == 0);
 	enableButton_->setEnabled(!busy && hasScene && loggedIn);
 	disableButton_->setEnabled(busy);
 	// One button at a time, full width: Enable while inactive, Disable
@@ -926,9 +935,7 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	overlayCornerCombo_->setEnabled(status.showOverlay);
 
 	const QSignalBlocker blockLive(liveSceneCombo_);
-	int liveIndex = liveSceneCombo_->findText(QString::fromStdString(status.liveSceneName));
-	if (liveIndex >= 0)
-		liveSceneCombo_->setCurrentIndex(liveIndex);
+	liveSceneCombo_->setCurrentIndex(liveIndex); // -1: the placeholder, no scene shown as chosen.
 
 	const QSignalBlocker blockLoading(loadingSceneCombo_);
 	int loadingIndex = status.loadingSceneName.empty()
@@ -1113,11 +1120,12 @@ void TrigglowDelayDock::RefreshSceneCombo(SceneComboBox *combo, const std::strin
 	for (const auto &name : bufferController_.ListAvailableScenes())
 		combo->addItem(QString::fromStdString(name));
 
-	if (!previousValue.isEmpty()) {
-		int idx = combo->findText(previousValue);
-		if (idx >= 0)
-			combo->setCurrentIndex(idx);
-	}
+	// The live picker shows its placeholder (-1) unless the saved scene is in
+	// the list; the loading picker falls back to "None" (0).
+	int idx = previousValue.isEmpty() ? -1 : combo->findText(previousValue);
+	if (idx < 0 && includeNoneOption)
+		idx = 0;
+	combo->setCurrentIndex(idx);
 }
 
 void TrigglowDelayDock::RefreshAvailableScenes()
@@ -1126,10 +1134,12 @@ void TrigglowDelayDock::RefreshAvailableScenes()
 	RefreshSceneCombo(loadingSceneCombo_, bufferController_.GetStatus().loadingSceneName, true);
 	// The combos above are repopulated under a QSignalBlocker (see
 	// RefreshSceneCombo), so selecting the live scene for the first time
-	// here won't have triggered RefreshFitEstimate() via the normal
-	// currentIndexChanged path -- refresh it explicitly so the estimate
-	// isn't left showing "choose a scene" when one was actually restored.
-	RefreshFitEstimate();
+	// here won't have gone through the normal currentIndexChanged path --
+	// refresh explicitly: whether the saved scene is in the list decides the
+	// requirement list and the Enable button, and the estimate (refreshed at
+	// the end of RefreshFromStatus) mustn't keep saying "choose a scene" when
+	// one was actually restored.
+	RefreshFromStatus(bufferController_.GetStatus());
 }
 
 void TrigglowDelayDock::OnReportBugClicked()

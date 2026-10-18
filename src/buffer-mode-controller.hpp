@@ -126,9 +126,11 @@ public:
 
 	BufferModeStatus GetStatus() const { return status_; }
 
-	// Passthrough so settings-ui never needs to touch ObsFrontendBridge
-	// directly — mirrors DelayController::ListAvailableScenes().
-	std::vector<std::string> ListAvailableScenes() const { return bridge_.ListSceneNames(); }
+	// The scenes the dock offers as live/loading scene, so settings-ui never
+	// needs to touch ObsFrontendBridge directly: every scene of the collection
+	// in OBS's order except the wrapper scene (current or v0.5.1 name), which
+	// the delay itself shows and can never be one of them.
+	std::vector<std::string> ListAvailableScenes() const;
 
 	// Informational only (bytes) -- what the video buffer's VRAM budget
 	// actually is on this machine right now, detected from real hardware

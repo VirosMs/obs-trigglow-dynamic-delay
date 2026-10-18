@@ -17,9 +17,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "buffer-mode-controller.hpp"
+#include "auto-names.hpp"
 #include "i18n.hpp"
 #include "logging.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace trigglow {
@@ -51,6 +53,15 @@ BufferModeController::BufferModeController(ObsFrontendBridge &bridge) : bridge_(
 	// controller (see plugin-main.cpp), leaving it wired to nothing. See
 	// SetSceneListRefreshCallback's comment for why this is needed.
 	bridge_.Init([this](FrontendEvent event) { OnFrontendEvent(event); });
+}
+
+std::vector<std::string> BufferModeController::ListAvailableScenes() const
+{
+	std::vector<std::string> names = bridge_.ListSceneNames();
+	names.erase(std::remove_if(names.begin(), names.end(),
+				   [](const std::string &name) { return autonames::IsWrapperSceneName(name); }),
+		    names.end());
+	return names;
 }
 
 void BufferModeController::SetLiveScene(std::string sceneName)

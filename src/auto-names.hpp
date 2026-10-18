@@ -70,6 +70,9 @@ std::string MigratedName(std::string_view name);
 // replaces: the v0.5.x "Delay Ns" text source and earlier prototypes. They are
 // removed from the wrapper scene on sight.
 bool IsRetiredOverlayName(std::string_view name);
+// The wrapper scene under its current or an earlier name: the helper scene the
+// delay itself shows, never a live or loading scene to offer in the dock.
+bool IsWrapperSceneName(std::string_view name);
 // Any overlay item the wrapper scene may hold, current or old: never the live
 // scene the delay filter attaches to.
 bool IsOverlayName(std::string_view name);

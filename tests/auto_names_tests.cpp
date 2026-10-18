@@ -161,6 +161,19 @@ void TestOverlayNames()
 	CHECK(!IsOverlayName(""));
 }
 
+void TestWrapperSceneNames()
+{
+	g_currentTest = "wrapper scene names";
+	// Kept out of the dock's scene pickers, under both names.
+	CHECK(IsWrapperSceneName(kWrapperScene));
+	CHECK(IsWrapperSceneName("Trigglow Delay Buffer (no tocar)"));
+	CHECK(!IsWrapperSceneName("Gameplay"));
+	CHECK(!IsWrapperSceneName("Trigglow Delay Buffer"));
+	CHECK(!IsWrapperSceneName("Trigglow Delay Buffer (auto) 2"));
+	CHECK(!IsWrapperSceneName(kOverlayBadge));
+	CHECK(!IsWrapperSceneName(""));
+}
+
 void TestRenamePlan()
 {
 	g_currentTest = "rename plan";
@@ -180,6 +193,7 @@ int main()
 	TestLookupOrder();
 	TestMigratedName();
 	TestOverlayNames();
+	TestWrapperSceneNames();
 	TestRenamePlan();
 
 	std::printf("auto_names_tests: %d checks, %d failures\n", g_checks, g_failures);

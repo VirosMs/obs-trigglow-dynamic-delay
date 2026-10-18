@@ -130,6 +130,11 @@ bool IsOverlayName(std::string_view name)
 	return name == kOverlayBadge || Contains(kLegacyOverlayBadges, name) || IsRetiredOverlayName(name);
 }
 
+bool IsWrapperSceneName(std::string_view name)
+{
+	return name == kWrapperScene || Contains(kLegacyWrapperScenes, name);
+}
+
 RenamePlan PlanRename(bool legacyExists, bool currentNameTaken)
 {
 	if (!legacyExists)
