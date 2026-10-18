@@ -103,10 +103,16 @@ bool MjpegCodec::OpenEncoder(uint32_t width, uint32_t height, uint32_t sliceThre
 		huffmanResult = av_opt_set(encoder_->priv_data, "huffman", "default", 0);
 		encoder_->width = static_cast<int>(width);
 		encoder_->height = static_cast<int>(height);
-		// Plain 4:2:0 planar plus an explicit full-range color_range: what the
-		// deprecated AV_PIX_FMT_YUVJ420P meant.
+		// Plain 4:2:0 planar, labelled with the range the shader really writes:
+		// BT.601 studio range (Y 16-235: PSDrawY in video-delay-filter.cpp), not
+		// JPEG's full range. MJPEG only carries that label (a "CS=ITU601"
+		// comment), never converts a sample: the decoded planes are bit for bit
+		// the same with either label (checked with the QA round trip at every
+		// ladder size), and playback (DrawI420) expects studio range. FFmpeg
+		// accepts it for MJPEG only below strict compliance.
 		encoder_->pix_fmt = AV_PIX_FMT_YUV420P;
-		encoder_->color_range = AVCOL_RANGE_JPEG;
+		encoder_->color_range = AVCOL_RANGE_MPEG;
+		encoder_->strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL;
 		encoder_->time_base = AVRational{1, static_cast<int>(std::max<uint32_t>(1, options_.timeBaseFps))};
 		encoder_->flags |= AV_CODEC_FLAG_QSCALE;
 		encoder_->qmin = options_.quality;
