@@ -271,16 +271,21 @@ was prepared but never published: everything in it ships here.
 
 **Changed / Live overlay:**
 - The "DELAY 30 s" overlay is now **one image the plugin renders itself** (ink plate, brand rule,
-  Dynamic Delay mark, Archivo), written to the plugin's config folder (`overlay/delay-badge-30s.png`)
-  and shown by a single image source. It looks the same on Windows, macOS and Linux (the old text
-  used Segoe UI, Windows only) and moves in one piece. It sits 2.2% of the canvas's short side away
-  from the chosen corner and keeps its size relative to that side: the same as before on landscape
-  canvases (200x58 at 1080p), and on a 1080x1920 vertical canvas the 1080p size instead of a third
-  of the frame's width. It shows the delay really in effect.
+  Dynamic Delay mark, Archivo), written to the plugin's config folder
+  (`overlay/delay-badge-r2-30s.png`) and shown by a single image source. It looks the same on
+  Windows, macOS and Linux (the old text used Segoe UI, Windows only) and moves in one piece. It
+  sits 2.2% of the canvas's short side away from the chosen corner and keeps its size relative to
+  that side: as wide as before on landscape canvases (200x72 at 1080p, 200x58 in v0.5.x), and on a
+  1080x1920 vertical canvas the 1080p size instead of a third of the frame's width. It shows the
+  delay really in effect.
+- **Signed "By Trigglow"**: a small line under "30 s", in Geist Mono and dimmed mist (6:1 contrast
+  or more on the plate over any footage), the same in every language. It is 15 px tall at 1080p and
+  10 px on a 720p stream. The file names carry a render version, so a badge an earlier build left
+  in that folder (without the signature) is never shown, and it is deleted.
 - **Move or resize it in OBS and it stays that way.** The plugin places it in the chosen corner the
-  first time and again only when you pick another corner in the dock (or when the canvas size
-  changes, as long as you haven't moved or resized it). An existing image source already called
-  "Trigglow Delay Badge (auto)" is reused instead of adding "... 2" copies.
+  first time and again only when you pick another corner in the dock (or when the canvas size or
+  the badge's own size changes, as long as you haven't moved or resized it). An existing image
+  source already called "Trigglow Delay Badge (auto)" is reused instead of adding "... 2" copies.
 - The old text source ("Trigglow Delay Overlay Text (auto, no tocar)") is removed automatically.
   Its text can no longer be edited: a custom font or color applied to it is lost; the image can be
   moved or scaled and keeps that.

@@ -498,21 +498,25 @@ Mientras el delay está `Active` y "Mostrar overlay de delay en el directo" est�
 contenedora muestra una insignia "DELAY 30 s" con el delay que de verdad se aplica
 (`BufferModeStatus::effectiveDelaySeconds`). Desde la v0.6.0 es **una única imagen que pinta el
 propio plugin** (`src/overlay-badge.*`, QPainter solo en el hilo de UI: placa tinta, regla de marca,
-marca de Dynamic Delay, la Archivo empaquetada o, si no está, la fuente de interfaz del sistema),
-guardada como un PNG por cada valor de segundos en la carpeta de configuración del plugin
-(`overlay/delay-badge-<N>s.png`, 500x145, 2,5 veces el diseño de 200x58 para que siga nítida) y
-mostrada por una sola fuente de imagen, **Trigglow Delay Badge (auto)**. Sustituye al PNG de la
-insignia más una fuente de texto aparte en Segoe UI de la v0.5.x (solo Windows, con desplazamientos
-mágicos para alinear las dos); su texto ya no se puede editar, y la fuente de texto antigua se borra
-en cuanto se encuentra.
+marca de Dynamic Delay, la Archivo empaquetada o, si no está, la fuente de interfaz del sistema, y
+bajo "DELAY 30 s" la línea pequeña `Overlay.Signature`, "By Trigglow" en todos los idiomas, en la
+Geist Mono empaquetada a 15 px y mist al 62 %: 10 px en un directo a 720p), guardada como un PNG por
+cada valor de segundos en la carpeta de configuración del plugin (`overlay/delay-badge-r2-<N>s.png`,
+500x180, 2,5 veces el diseño de 200x72 para que siga nítida) y mostrada por una sola fuente de
+imagen, **Trigglow Delay Badge (auto)**. El `r2` es `overlaylayout::kRenderVersion`, que sube cada
+vez que cambia el dibujo: un PNG que dejó en esa carpeta una compilación anterior no se muestra
+nunca, y el primer dibujo de la sesión lo borra. Sustituye al PNG de la insignia más una fuente de
+texto aparte en Segoe UI de la v0.5.x (solo Windows, con desplazamientos mágicos para alinear las
+dos); su texto ya no se puede editar, y la fuente de texto antigua se borra en cuanto se encuentra.
 
 Colocación (`src/overlay-layout.*`, pura, `tests/overlay_layout_tests.cpp`): a un 2,2% del lado
 corto del lienzo de la esquina elegida (24 px a 1080p), conservando la proporción del lado corto que
 tiene a 1080p, así que se lee igual a 720p, 1440p y 4K y no se extiende por un lienzo vertical de
-1080x1920. Lo último que aplicó el plugin (esquina, tamaño del lienzo, posición, escala) se guarda en
-los ajustes privados del elemento de escena: el plugin la vuelve a colocar solo cuando cambia la
-esquina en el dock, o cuando cambia el tamaño del lienzo y el elemento sigue donde lo puso el plugin.
-Se conserva la posición o el tamaño que el usuario haya puesto en OBS. Si ya existe una fuente de
+1080x1920. Lo último que aplicó el plugin (esquina, tamaño del lienzo, posición, escala, alto de la
+insignia) se guarda en los ajustes privados del elemento de escena: el plugin la vuelve a colocar
+solo cuando cambia la esquina en el dock, o cuando cambia el tamaño del lienzo o el alto de la
+insignia (`kDesignHeight`, 58 antes de la firma) y el elemento sigue donde lo puso el plugin. Se
+conserva la posición o el tamaño que el usuario haya puesto en OBS. Si ya existe una fuente de
 imagen con ese nombre, se reutiliza en vez de añadir copias "... 2".
 
 ### 3.7. Nombres de los objetos que gestiona el plugin (v0.6.0)

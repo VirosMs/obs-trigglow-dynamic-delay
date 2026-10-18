@@ -301,16 +301,22 @@ que nunca se publicó: todo lo que llevaba sale aquí.
 **Cambiado / Overlay del directo:**
 - El overlay "DELAY 30 s" es ahora **una única imagen que pinta el propio plugin** (placa tinta,
   regla de marca, marca de Dynamic Delay, Archivo), guardada en la carpeta de configuración del
-  plugin (`overlay/delay-badge-30s.png`) y mostrada por una sola fuente de imagen. Se ve igual en
-  Windows, macOS y Linux (el texto anterior usaba Segoe UI, solo Windows) y se mueve de una pieza.
-  Queda a un 2,2% del lado corto del lienzo de la esquina elegida y mantiene su tamaño relativo a
-  ese lado: igual que antes en lienzos horizontales (200x58 a 1080p), y en un lienzo vertical
-  1080x1920 el tamaño de 1080p en vez de un tercio del ancho del encuadre. Muestra el delay que de
-  verdad se aplica.
+  plugin (`overlay/delay-badge-r2-30s.png`) y mostrada por una sola fuente de imagen. Se ve igual
+  en Windows, macOS y Linux (el texto anterior usaba Segoe UI, solo Windows) y se mueve de una
+  pieza. Queda a un 2,2% del lado corto del lienzo de la esquina elegida y mantiene su tamaño
+  relativo a ese lado: el mismo ancho que antes en lienzos horizontales (200x72 a 1080p, 200x58 en
+  la v0.5.x), y en un lienzo vertical 1080x1920 el tamaño de 1080p en vez de un tercio del ancho
+  del encuadre. Muestra el delay que de verdad se aplica.
+- **Firmado "By Trigglow"**: una línea pequeña bajo "30 s", en Geist Mono y mist atenuado
+  (contraste de 6:1 o más sobre la placa con cualquier imagen detrás), igual en todos los idiomas.
+  Mide 15 px a 1080p y 10 px en un directo a 720p. Los nombres de archivo llevan una versión de
+  dibujo, así que nunca se muestra una insignia que dejó en esa carpeta una compilación anterior
+  (sin la firma), y se borra.
 - **Si lo mueves o lo escalas en OBS, se queda así.** El plugin lo coloca en la esquina elegida la
   primera vez y de nuevo solo cuando eliges otra esquina en el dock (o cuando cambia el tamaño del
-  lienzo, siempre que no lo hayas movido ni escalado). Si ya existe una fuente de imagen llamada
-  "Trigglow Delay Badge (auto)", se reutiliza en vez de añadir copias "... 2".
+  lienzo o el de la propia insignia, siempre que no lo hayas movido ni escalado). Si ya existe una
+  fuente de imagen llamada "Trigglow Delay Badge (auto)", se reutiliza en vez de añadir
+  copias "... 2".
 - La fuente de texto antigua ("Trigglow Delay Overlay Text (auto, no tocar)") se elimina sola. Su
   texto ya no se puede editar: si le habías cambiado la fuente o el color, ese ajuste se pierde; la
   imagen se puede mover o escalar y lo conserva.
