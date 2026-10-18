@@ -42,6 +42,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QPainter>
+#include <QPixmap>
 #include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
@@ -64,6 +66,8 @@ constexpr const char *kComponent = "settings-ui";
 constexpr int kStatusIconSize = 18;
 constexpr int kAccountIconSize = 16;
 constexpr int kInlineIconSize = 14;
+// The lock inside a locked field, where its arrows were.
+constexpr int kFieldLockSize = 12;
 constexpr int kButtonIconSize = 15;
 // Icon box of a button: the glyph plus its gap to the text.
 constexpr int kButtonIconGap = 7;
@@ -123,6 +127,32 @@ const char *HealthCauseKey(PipelineLoad cause)
 	return "Dock.Health.Cause.Other";
 }
 } // namespace
+
+// A pixmap painted as is, whatever the enabled state: a QLabel grays its
+// pixmap out when disabled, and the field lock lives inside a disabled field.
+class FieldIcon : public QWidget {
+public:
+	explicit FieldIcon(QWidget *parent) : QWidget(parent) { setAttribute(Qt::WA_TransparentForMouseEvents); }
+
+	void SetPixmap(const QPixmap &pixmap)
+	{
+		pixmap_ = pixmap;
+		update();
+	}
+
+protected:
+	void paintEvent(QPaintEvent * /*event*/) override
+	{
+		if (pixmap_.isNull())
+			return;
+		QPainter painter(this);
+		const QSizeF size = pixmap_.deviceIndependentSize();
+		painter.drawPixmap(QPointF((width() - size.width()) / 2.0, (height() - size.height()) / 2.0), pixmap_);
+	}
+
+private:
+	QPixmap pixmap_;
+};
 
 TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, AuthManager &authManager, QWidget *parent)
 	: QWidget(parent),
@@ -195,6 +225,23 @@ void TrigglowDelayDock::BuildUi()
 		if (buddy)
 			label->setBuddy(buddy);
 		return label;
+	};
+
+	// A lock where a locked field's arrows were (ui-theme.cpp hides them while
+	// the field is disabled), so the field itself says it can't change now;
+	// shown by RefreshFromStatus() while the delay runs. Its own layout on the
+	// field only places the lock: the field's value and popup are untouched.
+	auto addFieldLock = [this](QWidget *field) {
+		auto *layout = new QHBoxLayout(field);
+		layout->setSizeConstraint(QLayout::SetNoConstraint);
+		layout->setContentsMargins(0, 0, 9, 0);
+		layout->setSpacing(0);
+		layout->addStretch(1);
+		auto *lock = new FieldIcon(field);
+		lock->setFixedSize(kFieldLockSize, kFieldLockSize);
+		lock->setVisible(false);
+		layout->addWidget(lock, 0, Qt::AlignVCenter);
+		fieldLocks_.emplace_back(field, lock);
 	};
 
 	// --- Update notice: hidden until/unless CheckForUpdateAsync() (fired
@@ -420,6 +467,7 @@ void TrigglowDelayDock::BuildUi()
 		configLayout->addLayout(row);
 	}
 	configLayout->addWidget(liveSceneCombo_);
+	addFieldLock(liveSceneCombo_);
 	RefreshSceneCombo(liveSceneCombo_, bufferController_.GetStatus().liveSceneName, false);
 
 	configLayout->addSpacing(7);
@@ -445,6 +493,7 @@ void TrigglowDelayDock::BuildUi()
 		configLayout->addLayout(row);
 	}
 	configLayout->addWidget(loadingSceneCombo_);
+	addFieldLock(loadingSceneCombo_);
 	RefreshSceneCombo(loadingSceneCombo_, bufferController_.GetStatus().loadingSceneName, true);
 
 	// Delay + quality side by side -- two related, similarly-sized controls;
@@ -464,6 +513,7 @@ void TrigglowDelayDock::BuildUi()
 	secondsSpin_->setAccessibleName(T("Dock.Delay.Label"));
 	delayColumn->addWidget(makeEyebrow(T("Dock.Delay.Label"), secondsSpin_));
 	delayColumn->addWidget(secondsSpin_);
+	addFieldLock(secondsSpin_);
 	tuningRow->addLayout(delayColumn, /*stretch=*/1);
 
 	auto *qualityColumn = new QVBoxLayout();
@@ -478,6 +528,7 @@ void TrigglowDelayDock::BuildUi()
 	minResolutionCombo_->setAccessibleName(T("Dock.Quality.Label"));
 	qualityColumn->addWidget(makeEyebrow(T("Dock.Quality.Label"), minResolutionCombo_));
 	qualityColumn->addWidget(minResolutionCombo_);
+	addFieldLock(minResolutionCombo_);
 	tuningRow->addLayout(qualityColumn, /*stretch=*/1);
 
 	configLayout->addLayout(tuningRow);
@@ -861,6 +912,9 @@ void TrigglowDelayDock::ApplyStaticIcons()
 	SetIcon(updateExternalIcon_, ui::IconId::ExternalLink, QStringLiteral("muted"), kInlineIconSize);
 	SetIcon(delayLockedIcon_, ui::IconId::Lock, QStringLiteral("muted"), kInlineIconSize);
 	SetIcon(healthIcon_, ui::IconId::Sliders, QStringLiteral("warning"), kInlineIconSize);
+	for (const auto &[field, lock] : fieldLocks_)
+		lock->SetPixmap(ui::IconPixmap(ui::IconId::Lock, ToneColor(QStringLiteral("muted")), kFieldLockSize,
+					       lock->devicePixelRatioF()));
 	SetButtonIcon(enableButton_, ui::IconId::Shield, ui::ToQColor(t.onGradient));
 	SetButtonIcon(disableButton_, ui::IconId::X, ui::ToQColor(t.dangerButtonText));
 	// Right to left: the icon follows the text, so the gap goes on its left.
@@ -991,14 +1045,20 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	RefreshPipelineHealth(status); // Also sets the card's accessible name.
 	AnnounceStatus(status.state);
 
+	// Scenes, seconds and quality are locked while the delay runs (a disabled
+	// control is also out of the tab order): no arrows, the card's background
+	// and a lock inside each (ui-theme.cpp, tgLocked), and the line under the
+	// seconds says how to unlock them -- also what screen readers hear.
 	liveSceneCombo_->setEnabled(!busy);
 	loadingSceneCombo_->setEnabled(!busy);
-	// Locked while the delay runs, like the quality (a disabled control is
-	// also out of the tab order); the line under them says how to unlock.
 	secondsSpin_->setEnabled(!busy);
-	secondsSpin_->setAccessibleDescription(busy ? T("Dock.Delay.Locked") : QString());
-	delayLockedRow_->setVisible(busy);
 	minResolutionCombo_->setEnabled(!busy);
+	for (const auto &[field, lock] : fieldLocks_) {
+		ui::SetStyleProperty(field, "tgLocked", busy ? QStringLiteral("true") : QStringLiteral("false"));
+		lock->setVisible(busy);
+		field->setAccessibleDescription(busy ? T("Dock.Delay.Locked") : QString());
+	}
+	delayLockedRow_->setVisible(busy);
 	// Also requires a live scene chosen -- previously Enable was clickable
 	// with no scene selected, which just bounced back into an Error state
 	// ("Elige primero una escena en directo") instead of preventing the

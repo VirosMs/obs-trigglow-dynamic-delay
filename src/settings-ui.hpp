@@ -68,6 +68,7 @@ namespace trigglow {
 
 class SceneComboBox;
 class AuthManager;
+class FieldIcon;
 struct UpdateCheckResult;
 
 class TrigglowDelayDock : public QWidget {
@@ -230,6 +231,10 @@ private:
 	// while both are locked (Filling, Active).
 	QWidget *delayLockedRow_ = nullptr;
 	QLabel *delayLockedIcon_ = nullptr;
+	// (field, lock): the lock drawn inside the live/loading scene pickers, the
+	// seconds and the quality while they're locked (Filling, Active), where
+	// their arrows were.
+	std::vector<std::pair<QWidget *, FieldIcon *>> fieldLocks_;
 	// "Calidad minima" -- floor on the delayed video's resolution; see
 	// BufferModeStatus::minResolutionHeight / VideoDelayFilter::EnsureRingSized.
 	QComboBox *minResolutionCombo_ = nullptr;

@@ -417,13 +417,21 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 	add(QStringLiteral("QPlainTextEdit:focus { border: 1px solid %1; border-bottom: 2px solid %1; }").arg(focus));
 	// Locked fields still show something the user needs (the live scene, the
 	// seconds in effect while the delay runs), so their value stays AA in the
-	// muted text color rather than the faint disabled one; the hairline
-	// border, the muted spin arrows and the dock's "turn it off" line mark
-	// them as locked.
+	// muted text color rather than the faint disabled one. What marks them as
+	// locked: the hairline border instead of the 3:1 one and, on the dock's
+	// combo and spin boxes, the card's background instead of the field's (the
+	// box sinks into the card), no spin arrows and no drop-down arrow (below,
+	// after the spin box rules), and the lock the dock draws where the arrows
+	// were (tgLocked) with its "turn it off" line. High contrast has one color
+	// for card, field and both borders, so there the border turns dashed.
 	add(QStringLiteral(
 		    "QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled { color: "
 		    "%1; border-color: %2; }")
 		    .arg(muted, line));
+	add(QStringLiteral("QComboBox:disabled, QSpinBox:disabled { background-color: %1; %2 }")
+		    .arg(card, hc ? QStringLiteral("border-style: dashed;") : QString()));
+	// Room for the lock (12 px, 9 px from the edge).
+	add(QStringLiteral("QComboBox[tgLocked=\"true\"], QSpinBox[tgLocked=\"true\"] { padding-right: 26px; }"));
 	// Spin box buttons: ours, so a theme without spin box rules (OBS's System
 	// theme) never leaves Qt's fallback of two dots side by side. Two 14 px
 	// halves at the right of the padding box, a hairline apart; chevrons in the
@@ -447,10 +455,17 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 	add(QStringLiteral("QSpinBox::down-arrow { image: url(:/trigglow/icons/chevron-down-%1.svg); width: 10px; "
 			   "height: 10px; }")
 		    .arg(arrow));
-	add(QStringLiteral("QSpinBox::up-arrow:disabled, QSpinBox::up-arrow:off { image: "
-			   "url(:/trigglow/icons/chevron-up-muted.svg); }"));
-	add(QStringLiteral("QSpinBox::down-arrow:disabled, QSpinBox::down-arrow:off { image: "
-			   "url(:/trigglow/icons/chevron-down-muted.svg); }"));
+	add(QStringLiteral("QSpinBox::up-arrow:off { image: url(:/trigglow/icons/chevron-up-muted.svg); }"));
+	add(QStringLiteral("QSpinBox::down-arrow:off { image: url(:/trigglow/icons/chevron-down-muted.svg); }"));
+	// Disabled: no arrows at all, the spin box's and the combo box's (the OBS
+	// theme's drop-down, which the enabled combo box keeps). The value then
+	// runs up to the padding.
+	add(QStringLiteral(
+		"QSpinBox::up-button:disabled, QSpinBox::down-button:disabled, QComboBox::drop-down:disabled { "
+		"width: 0px; border: none; background: transparent; }"));
+	add(QStringLiteral(
+		"QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled, QComboBox::down-arrow:disabled { "
+		"image: none; width: 0px; height: 0px; }"));
 	add(QStringLiteral("QLineEdit[tgInvalid=\"true\"], QPlainTextEdit[tgInvalid=\"true\"] { border: 1px solid %1; "
 			   "border-bottom: 2px solid %1; }")
 		    .arg(dangerText));
