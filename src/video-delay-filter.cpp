@@ -887,6 +887,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 		return; // Already correctly sized.
 
 	const double fps = static_cast<double>(in.fpsNum) / in.fpsDen;
+	bool restarted = false;
 	if (ring_) {
 		const size_t buffered = ring_->GetCounts().buffered;
 		if (buffered > 0) {
@@ -894,7 +895,10 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 			// (canvas, output or fps -- OBS only allows that with no outputs
 			// running), the delay/quality changed while the delay was on, or
 			// the kill switch flipped. The ring restarts from empty, so the
-			// delayed view is blank for `delay` seconds while it refills.
+			// delayed view is blank for `delay` seconds while it refills:
+			// kBufferRestartedSignal below has the controller show the loading
+			// scene meanwhile.
+			restarted = true;
 			TRIGGLOW_LOG_WARN(
 				kComponent,
 				"buffer geometry changed (%ux%u, %zu slots -> %ux%u, %llu slots) with %zu frames "
@@ -999,6 +1003,15 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 			  lowest.captureDivisor > 1 ? " at half frame rate" : "", arena.blockBytes / (1024 * 1024),
 			  static_cast<unsigned long long>(arena.limitBytes / (1024 * 1024)));
 	PublishHealth(true);
+
+	if (restarted) {
+		// ObsFrontendBridge hops this to the UI thread for BufferModeController.
+		uint8_t stack[128];
+		calldata_t data;
+		calldata_init_fixed(&data, stack, sizeof(stack));
+		calldata_set_ptr(&data, "source", filterSource_);
+		signal_handler_signal(obs_source_get_signal_handler(filterSource_), kBufferRestartedSignal, &data);
+	}
 }
 
 void VideoDelayFilter::ApplyCurrentRung()
@@ -1680,6 +1693,9 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 	auto *filter = new VideoDelayFilter(source);
 	filter->Update(settings);
 
+	if (signal_handler_t *signals = obs_source_get_signal_handler(source))
+		signal_handler_add(signals, "void buffer_restarted(ptr source)");
+
 	proc_handler_t *procHandler = obs_source_get_proc_handler(source);
 	if (procHandler) {
 		proc_handler_add(procHandler, "void release_buffers()", &VideoDelayFilter::ReleaseBuffersProc, filter);
@@ -1729,31 +1745,47 @@ void VideoDelayFilter::ReleaseBuffersTask(void *param)
 				      "the reaper thread to free, codecs closed, GPU objects freed");
 }
 
-namespace {
-// Bundles what GetEffectiveDelaySecondsTask needs -- params outlives the
-// graphics-thread hop since GetEffectiveDelaySecondsProc blocks on it
-// (obs_queue_task's wait=true).
-struct EffectiveDelayQuery {
-	VideoDelayFilter *filter;
-	calldata_t *params;
-};
-} // namespace
-
 void VideoDelayFilter::GetEffectiveDelaySecondsProc(void *data, calldata_t *params)
 {
-	EffectiveDelayQuery query{static_cast<VideoDelayFilter *>(data), params};
-	obs_queue_task(OBS_TASK_GRAPHICS, &VideoDelayFilter::GetEffectiveDelaySecondsTask, &query, true);
-}
-
-void VideoDelayFilter::GetEffectiveDelaySecondsTask(void *param)
-{
-	auto *query = static_cast<EffectiveDelayQuery *>(param);
 	// Design A.4 (v0.6.0): bufferfit's whole-second effective delay, which is
 	// exactly what Render() delays video by too. BufferModeController gives
 	// audio this value when it's below the requested delay, so a RAM-trimmed
 	// ring no longer leaves video up to ~1s away from audio (v0.5.1 used the
-	// fractional span for video). 0 while no ring is sized.
-	calldata_set_int(query->params, "seconds", query->filter->effectiveDelaySeconds_.load());
+	// fractional span for video). Computed here from the current settings, so
+	// audio gets the new value the moment a setting changes, not a Render()
+	// later.
+	calldata_set_int(params, "seconds", static_cast<VideoDelayFilter *>(data)->PlannedEffectiveDelaySeconds());
+}
+
+uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
+{
+	// What EnsureRingSized() reads, read the same way: the target's base size,
+	// OBS's video info (Tick() keeps the filter's copy current) and the
+	// filter's settings -- obs_source_update() merges new settings into them
+	// right away, it only defers calling Update().
+	obs_source_t *target = obs_filter_get_target(filterSource_);
+	if (!target)
+		return 0;
+	const uint32_t sourceWidth = obs_source_get_base_width(target);
+	const uint32_t sourceHeight = obs_source_get_base_height(target);
+	obs_video_info ovi = {};
+	if (sourceWidth == 0 || sourceHeight == 0 || !obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+		return 0;
+	obs_data_t *settings = obs_source_get_settings(filterSource_);
+	if (!settings)
+		return 0;
+	const auto delaySeconds = static_cast<uint32_t>(obs_data_get_int(settings, kSettingDelaySeconds));
+	auto minResolutionHeight = static_cast<uint32_t>(obs_data_get_int(settings, kSettingMinResolutionHeight));
+	if (minResolutionHeight == 0)
+		minResolutionHeight = kDefaultMinResolutionHeight;
+	const bool capToOutput = obs_data_get_bool(settings, kSettingBufferOutputCap);
+	obs_data_release(settings);
+	if (delaySeconds == 0)
+		return 0;
+	return EstimateBufferFit(delaySeconds, minResolutionHeight, sourceWidth, sourceHeight, ovi.base_width,
+				 ovi.base_height, ovi.output_width, ovi.output_height, ovi.fps_num, ovi.fps_den,
+				 capToOutput)
+		.effectiveSeconds;
 }
 
 void VideoDelayFilter::GetPipelineStateProc(void *data, calldata_t *params)

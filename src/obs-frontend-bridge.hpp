@@ -72,6 +72,10 @@ namespace trigglow {
 // Mirrors the subset of obs_frontend_event we care about, so callers outside
 // this file never need to include obs-frontend-api.h themselves.
 enum class FrontendEvent {
+	// Not an obs_frontend_event: the video delay filter emptied its ring while
+	// the delay was on (VideoDelayFilter::kBufferRestartedSignal), delivered
+	// on the UI thread like the rest.
+	BufferRestarted,
 	StreamingStarting,
 	StreamingStarted,
 	StreamingStopping,
@@ -208,7 +212,8 @@ public:
 
 	// Enables/disables the buffer filter attached by EnsureBufferWrapperScene.
 	// No-op (returns false) if that hasn't been called successfully yet for
-	// the current live scene.
+	// the current live scene. Enabling also subscribes to the filter's
+	// kBufferRestartedSignal (FrontendEvent::BufferRestarted).
 	bool SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const;
 
 	// Pushes `seconds` into the already-attached filter's configured delay.
@@ -362,6 +367,12 @@ private:
 	// liveSceneRenderSource_ into liveSceneRenderTarget_ (never the real
 	// Program output) — see AcquireLiveSceneRendering's comment.
 	static void RenderLiveSceneCallback(void *param, uint32_t cx, uint32_t cy);
+
+	// VideoDelayFilter::kBufferRestartedSignal handler (graphics thread):
+	// queues BufferRestartedTask() on the UI thread, which hands handler_
+	// FrontendEvent::BufferRestarted -- unless this bridge shut down meanwhile.
+	static void BufferRestartedSignal(void *param, calldata_t *data);
+	static void BufferRestartedTask(void *param);
 
 	// Locates the video-delay filter previously attached to `liveSceneName`'s
 	// source by EnsureBufferWrapperScene, if the wrapper scene, its

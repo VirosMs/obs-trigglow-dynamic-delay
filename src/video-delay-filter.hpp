@@ -112,6 +112,14 @@ class VideoDelayFilter {
 public:
 	static const char *Id();
 
+	// Signal "void buffer_restarted(ptr source)" on the filter's own source,
+	// emitted on the graphics thread when a hard resize threw away buffered
+	// frames -- a delay or quality change, a reset of OBS's video settings --
+	// so the delayed view stays blank until the new ring fills.
+	// ObsFrontendBridge forwards it to BufferModeController, which shows the
+	// loading scene meanwhile.
+	static constexpr const char *kBufferRestartedSignal = "buffer_restarted";
+
 	// Registers this filter type with OBS. Call once from obs_module_load().
 	static void Register();
 
@@ -301,10 +309,18 @@ private:
 	// audio's delay down to what video really delivers -- see
 	// BufferModeController::SyncAudioDelayToVideoEffective. Since v0.6.0
 	// (design A.4) video uses exactly this whole-second value too, so the two
-	// match. Hops onto the graphics thread and blocks (wait=true) like
-	// ReleaseBuffersProc, so it never reads a ring being resized.
+	// match. Since the QA fixes it's PlannedEffectiveDelaySeconds(), computed
+	// on the calling thread from the filter's settings as they are right now:
+	// before, it hopped to the graphics thread and read what the ring had been
+	// sized for, and a change of delay reached it only on the next Render()
+	// -- obs_source_update() defers a video filter's update to the next video
+	// tick -- so a 30 -> 40 s change left audio at 30 s.
 	static void GetEffectiveDelaySecondsProc(void *data, calldata_t *params);
-	static void GetEffectiveDelaySecondsTask(void *param);
+	// The whole-second delay the ring will have once Render() sizes it for the
+	// current settings, OBS video settings and target size: the same
+	// bufferfit::Compute() call as EnsureRingSized(). 0 without a target, video
+	// info or delay. Any thread.
+	uint32_t PlannedEffectiveDelaySeconds() const;
 
 	// "get_pipeline_state(in ptr health)" proc handler (v0.6.0, design B.8):
 	// copies the current PipelineHealth into *health. Doesn't hop to the

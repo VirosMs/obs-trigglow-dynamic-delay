@@ -215,10 +215,10 @@ private:
 	// its OWN actual delay (EnsureRingSized), but AudioDelayFilter always
 	// buffers the full requested seconds (cheap PCM, never RAM-shortened) --
 	// so audio kept drifting noticeably behind the shorter video delay
-	// whenever this happened. Called after Enable() (where video's ring
-	// isn't sized yet, so this is a no-op reporting the raw requested value)
-	// and again once the fill window elapses (OnFillTimerElapsed -- by then
-	// the ring IS sized, so this is where the real correction happens), plus
+	// whenever this happened. The filter answers from its settings as they
+	// are at the call (VideoDelayFilter::PlannedEffectiveDelaySeconds), so
+	// this is right from Enable() on; called again when the fill window
+	// elapses (OnFillTimerElapsed) and on a buffer restart, plus
 	// on any later delay/quality change while Active, since either can
 	// change whether shortening is needed.
 	void SyncAudioDelayToVideoEffective();
@@ -226,6 +226,19 @@ private:
 	// Shows (Active + enabled in settings) or hides the "Delay Ns" overlay,
 	// with the delay really in effect (video may have been shortened).
 	void UpdateOverlay();
+
+	// A hard resize empties the video ring, so the delayed view is blank for
+	// `delay` seconds: Active goes back to Filling with the loading scene on
+	// Program (and the fill timer armed again by the dock) instead of showing
+	// black. BufferRestartsWith() predicts it for a setting the controller
+	// changes itself (so Program switches BEFORE the filter empties the ring);
+	// OnBufferRestarted() handles the filter's own report
+	// (FrontendEvent::BufferRestarted: any hard resize, OBS video resets
+	// included -- in Filling it starts the fill window over).
+	bool BufferRestartsWith(uint32_t previousDelaySeconds, uint32_t previousMinResolutionHeight) const;
+	void ShowLoadingSceneForRefill();
+	void EnterRefill(const char *reason);
+	void OnBufferRestarted();
 
 	// While Filling/Active with the output cap on: logs a WARN, once per
 	// encoder and size per delay cycle, for each video encoder of an active
