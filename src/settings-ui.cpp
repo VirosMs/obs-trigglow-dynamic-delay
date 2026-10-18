@@ -1065,7 +1065,7 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 		healthTimer_->stop();
 	statusAccessibleName_ = QStringLiteral("%1: %2. %3").arg(T("Dock.Status.Eyebrow"), headline, detail);
 	RefreshPipelineHealth(status); // Also sets the card's accessible name.
-	AnnounceStatus(status.state);
+	AnnounceStatus(status.state, QStringLiteral("%1. %2").arg(headline, detail));
 
 	// Scenes, seconds and quality are locked while the delay runs (a disabled
 	// control is also out of the tab order): no arrows, the card's background
@@ -1152,11 +1152,13 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 		RefreshFitEstimate();
 }
 
-void TrigglowDelayDock::AnnounceStatus(BufferModeState state)
+void TrigglowDelayDock::AnnounceStatus(BufferModeState state, const QString &message)
 {
 	// Screen readers learn about the change without the user having to go
-	// looking for it (NVDA/Narrator/VoiceOver read the card's new name;
-	// errors as an alert). Only on real state changes, not every refresh.
+	// looking for it, errors first. Only on real state changes, not every
+	// refresh. No NameChanged of our own: setAccessibleName() already sends
+	// one when the card's name changes (Qt 6), and a second one made screen
+	// readers read the change twice.
 	if (hasAnnouncedState_ && announcedState_ == state)
 		return;
 	const bool first = !hasAnnouncedState_;
@@ -1164,9 +1166,32 @@ void TrigglowDelayDock::AnnounceStatus(BufferModeState state)
 	announcedState_ = state;
 	if (first || !QAccessible::isActive())
 		return;
-	QAccessibleEvent event(statusCard_,
-			       state == BufferModeState::Error ? QAccessible::Alert : QAccessible::NameChanged);
+	const bool error = state == BufferModeState::Error;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+	Announce(message, error);
+#else
+	// No announcement event before Qt 6.8: the card's NameChanged is what
+	// screen readers get, plus an alert for errors.
+	(void)message;
+	if (error) {
+		QAccessibleEvent event(statusCard_, QAccessible::Alert);
+		QAccessible::updateAccessibility(&event);
+	}
+#endif
+}
+
+void TrigglowDelayDock::Announce(const QString &message, bool assertive)
+{
+	if (!QAccessible::isActive() || message.isEmpty())
+		return;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+	QAccessibleAnnouncementEvent event(statusCard_, message);
+	event.setPoliteness(assertive ? QAccessible::AnnouncementPoliteness::Assertive
+				      : QAccessible::AnnouncementPoliteness::Polite);
 	QAccessible::updateAccessibility(&event);
+#else
+	(void)assertive;
+#endif
 }
 
 void TrigglowDelayDock::RefreshPipelineHealth(const BufferModeStatus &status)
@@ -1218,30 +1243,42 @@ void TrigglowDelayDock::RefreshPipelineHealth(const BufferModeStatus &status)
 		healthStats_->setVisible(repeated || dropped);
 	}
 
+	// Screen readers hear the notice appear, go away (with the delay still
+	// on) or change cause -- not every rung change, nor the once-a-second
+	// poll: the card's accessible name only changes with the first two.
+	const PipelineLoad cause = show ? health.cause : PipelineLoad::None;
+	const bool appeared = show && !healthShown_;
+	const bool gone = !show && healthShown_;
+	const bool causeChanged = show && healthShown_ && cause != healthCause_;
+	healthCause_ = cause;
 	if (show != healthShown_) {
 		healthShown_ = show;
 		healthNotice_->setVisible(show);
 		// The notice says what the buffer holds now; the RAM estimate in the
 		// settings card (full size) would contradict it.
 		fitRow_->setVisible(!show);
-		UpdateStatusAccessibleName();
-		// Screen readers hear it appear and go, not every once-a-second poll.
-		if (QAccessible::isActive()) {
-			QAccessibleEvent event(statusCard_, QAccessible::NameChanged);
-			QAccessible::updateAccessibility(&event);
-		}
-	} else {
-		UpdateStatusAccessibleName();
 	}
+	UpdateStatusAccessibleName();
+	if (appeared || causeChanged)
+		Announce(QStringLiteral("%1. %2").arg(healthTitle_->text(), healthBody_->text()), false);
+	else if (gone && busy)
+		Announce(T("Dock.Health.Restored"), false);
 }
 
 void TrigglowDelayDock::UpdateStatusAccessibleName()
 {
+	// The name changes only with the state and when the notice appears or
+	// goes (setAccessibleName() sends NameChanged even for the same text, so
+	// it's only called on a real change); what was lowered, which changes
+	// with each rung, goes in the description.
 	QString name = statusAccessibleName_;
 	if (healthShown_)
-		name += QStringLiteral(" %1. %2").arg(healthTitle_->text(), healthBody_->text());
+		name += QStringLiteral(" %1.").arg(healthTitle_->text());
 	if (statusCard_->accessibleName() != name)
 		statusCard_->setAccessibleName(name);
+	const QString description = healthShown_ ? healthBody_->text() : QString();
+	if (statusCard_->accessibleDescription() != description)
+		statusCard_->setAccessibleDescription(description);
 }
 
 void TrigglowDelayDock::resizeEvent(QResizeEvent *event)

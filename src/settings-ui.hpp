@@ -108,7 +108,13 @@ private:
 	void FitUpdateBanner();
 	// Icons that don't depend on state (banner, footer, buttons).
 	void ApplyStaticIcons();
-	void AnnounceStatus(BufferModeState state);
+	// On a real state change, announces `message` (headline and detail) to
+	// screen readers -- assertively for errors.
+	void AnnounceStatus(BufferModeState state, const QString &message);
+	// A QAccessibleAnnouncementEvent on the status card (Qt 6.8+; earlier Qt
+	// has no such event and this does nothing), only while a screen reader
+	// is active.
+	void Announce(const QString &message, bool assertive);
 	QLocale UiLocale() const;
 	// Reflows rows that don't fit side by side at the current dock width.
 	void ApplyNarrowLayout(int width);
@@ -122,8 +128,9 @@ private:
 	// is Filling or Active (the only states with a buffer) and on every
 	// status change; anywhere else the notice is hidden and nothing is polled.
 	void RefreshPipelineHealth(const BufferModeStatus &status);
-	// The status card's accessible name: state, detail and, while shown, the
-	// degradation notice.
+	// The status card's accessible name -- state, detail and, while shown,
+	// the degradation notice's title -- and its description (what the notice
+	// says was lowered).
 	void UpdateStatusAccessibleName();
 
 	// Wired to authManager_'s own status-changed callback (same pattern as
@@ -227,6 +234,9 @@ private:
 	QLabel *healthStats_ = nullptr;
 	QTimer *healthTimer_ = nullptr;
 	bool healthShown_ = false;
+	// The cause the notice gave last (None while hidden): a new cause is
+	// announced, a new rung for the same cause isn't.
+	PipelineLoad healthCause_ = PipelineLoad::None;
 	SceneComboBox *liveSceneCombo_ = nullptr;
 	SceneComboBox *loadingSceneCombo_ = nullptr;
 	QSpinBox *secondsSpin_ = nullptr;
