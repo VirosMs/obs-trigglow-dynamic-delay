@@ -99,10 +99,10 @@ constexpr double kRamFractionForBuffer = 0.50;                          // Don't
 // stopped being true the moment that budgeted-allocation change landed).
 //
 // 2026-09-07: retuned from 3.0 to 5.0 using the first real measurement this
-// plugin has ever had (encodeSampleCount_'s periodic "compression check" log
-// line, added the same day specifically to get this) -- a live 30s/1080p/
-// 60fps session (competitive FPS gameplay, HUD included) held a STEADY
-// ~11-15x instantaneous ratio throughout, with individual frames sampled up
+// plugin has ever had (the periodic "compression check" log line, added the
+// same day specifically to get this; part of "perf check" since v0.5.1) --
+// a live 30s/1080p/60fps session (competitive FPS gameplay, HUD included)
+// held a STEADY ~11-15x instantaneous ratio throughout, with individual frames sampled up
 // to ~299000 bytes, and the ring's real memory never grew even once past its
 // 3.0-budgeted ~1.78GB the entire session. 5.0 budgets ~622KB/slot -- still
 // roughly 2x headroom over every frame size actually observed, while cutting
@@ -390,12 +390,34 @@ void VideoDelayFilter::Register()
 	obs_register_source(&info);
 }
 
-VideoDelayFilter::VideoDelayFilter(obs_source_t *filterSource) : filterSource_(filterSource) {}
+VideoDelayFilter::VideoDelayFilter(obs_source_t *filterSource) : filterSource_(filterSource)
+{
+	// Real fps and mix geometry from the start, not the 30fps placeholders:
+	// the first Render() can come before the first Tick().
+	RefreshVideoInfo();
+}
 
 VideoDelayFilter::~VideoDelayFilter()
 {
 	ReleaseRing();
 	ReleaseGpuObjects();
+}
+
+bool VideoDelayFilter::RefreshVideoInfo()
+{
+	obs_video_info ovi = {};
+	if (!obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+		return false;
+	fpsNum_ = ovi.fps_num;
+	fpsDen_ = ovi.fps_den;
+	// 1e9 * den / num: exact for fractional rates (59.94 -> 16683333ns).
+	// Never 0, it's a divisor in Render().
+	frameIntervalNs_ = std::max<uint64_t>(1, bufferfit::FrameIntervalNs(ovi.fps_num, ovi.fps_den));
+	mixBaseWidth_ = ovi.base_width;
+	mixBaseHeight_ = ovi.base_height;
+	mixOutputWidth_ = ovi.output_width;
+	mixOutputHeight_ = ovi.output_height;
+	return true;
 }
 
 void VideoDelayFilter::ReleaseRing()
@@ -645,7 +667,6 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 		return; // Already open at the current bufferWidth_/bufferHeight_.
 
 	loggedFirstEncode_ = false; // New contexts at a possibly new resolution -- log a fresh ratio for them.
-	encodeSampleCount_ = 0;
 	encodeCompressedBytesTotal_ = 0;
 	encodeRawBytesTotal_ = 0;
 	encodeGrowthCount_ = 0;
@@ -679,7 +700,10 @@ void VideoDelayFilter::EnsureCodecContextsOpen()
 		// (JPEG-range) formats meant anyway.
 		encoderCtx_->pix_fmt = AV_PIX_FMT_YUV420P;
 		encoderCtx_->color_range = AVCOL_RANGE_JPEG;
-		encoderCtx_->time_base = AVRational{1, static_cast<int>(std::max<uint32_t>(1, currentFps_))};
+		// Integer fps (59.94 -> 59), as always: pts is just a frame counter and
+		// MJPEG is all-intra, so the time base only has to be valid.
+		encoderCtx_->time_base = AVRational{
+			1, static_cast<int>(std::max<uint32_t>(1, fpsNum_ / std::max<uint32_t>(1, fpsDen_)))};
 		// Fixed quality via AV_CODEC_FLAG_QSCALE rather than a bitrate target --
 		// simpler for a first pass, no rate-control ramp-up/lookahead to reason
 		// about (irrelevant anyway for an all-intra codec with no lookahead).
@@ -870,7 +894,7 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 	// EnsureRingSized()) and grows a given slot only as far as an individual
 	// frame actually needs, so dst.pixels.size() no longer reflects a fixed
 	// worst-case ceiling the way it did in Phase 1.
-	size_t rawFrameBytes = (static_cast<size_t>(bufferWidth_) * bufferHeight_ * 3) / 2;
+	const auto rawFrameBytes = static_cast<size_t>(bufferfit::Nv12FrameBytes(bufferWidth_, bufferHeight_));
 	if (packetSize > rawFrameBytes) {
 		// Should never happen in practice (compressed output exceeding the
 		// raw NV12 worst-case), but never write out of bounds.
@@ -902,12 +926,11 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 		loggedFirstEncode_ = true;
 	}
 
-	// See encodeSampleCount_'s comment in the header: the "first encode" line
-	// above is almost always the loading scene (a static graphic), not real
-	// content -- the periodic "perf check" line (LogPerfWindow()) reports these
-	// cumulative totals plus this window's own ratio, covering whatever's
-	// really been on screen since Enable().
-	++encodeSampleCount_;
+	// See encodeCompressedBytesTotal_'s comment in the header: the "first
+	// encode" line above is almost always the loading scene (a static
+	// graphic), not real content -- the periodic "perf check" line
+	// (LogPerfWindow()) reports these cumulative totals plus this window's own
+	// ratio, covering whatever's really been on screen since Enable().
 	encodeCompressedBytesTotal_ += packetSize;
 	encodeRawBytesTotal_ += rawFrameBytes;
 	perf_.encodedBytes += packetSize;
@@ -961,6 +984,11 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	if (origWidth == 0 || origHeight == 0)
 		return;
 
+	// The constructor and every Tick() already read these; this only retries
+	// if obs_get_video_info() wasn't available yet back then.
+	if (mixBaseWidth_ == 0 || mixOutputWidth_ == 0)
+		RefreshVideoInfo();
+
 	bufferfit::Input in;
 	in.sourceWidth = origWidth;
 	in.sourceHeight = origHeight;
@@ -970,18 +998,6 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	in.outputHeight = mixOutputHeight_;
 	in.fpsNum = fpsNum_;
 	in.fpsDen = fpsDen_;
-	if (mixBaseWidth_ == 0 || mixOutputWidth_ == 0) {
-		// Before the first Tick(): read the mix geometry directly.
-		obs_video_info ovi = {};
-		if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0) {
-			in.baseWidth = ovi.base_width;
-			in.baseHeight = ovi.base_height;
-			in.outputWidth = ovi.output_width;
-			in.outputHeight = ovi.output_height;
-			in.fpsNum = ovi.fps_num;
-			in.fpsDen = ovi.fps_den;
-		}
-	}
 	in.delaySeconds = configuredDelaySeconds_;
 	in.minResolutionHeight = configuredMinResolutionHeight_;
 	in.budgetBytes = GetBufferBudget();
@@ -1058,7 +1074,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	// plane at half resolution ((bufferWidth_/2)*(bufferHeight_/2)*2 bytes,
 	// i.e. bufferWidth_*bufferHeight_/2) -- 1.5 bytes/pixel total. Always an
 	// exact integer since bufferfit::Compute() forces both dimensions even.
-	size_t frameBytes = (static_cast<size_t>(bufferWidth_) * bufferHeight_ * 3) / 2;
+	const auto frameBytes = static_cast<size_t>(bufferfit::Nv12FrameBytes(bufferWidth_, bufferHeight_));
 
 	// v0.3.0 Phase 2: slots start at a BUDGETED size (frameBytes divided by
 	// the same kAssumedCompressionRatio bufferfit::Compute() already assumed
@@ -1229,19 +1245,7 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 
 void VideoDelayFilter::Tick(float /*secondsSinceLastTick*/)
 {
-	obs_video_info ovi = {};
-	if (!obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
-		return;
-	currentFps_ = ovi.fps_num / ovi.fps_den; // Codec time_base only.
-	fpsNum_ = ovi.fps_num;
-	fpsDen_ = ovi.fps_den;
-	// 1e9 * den / num: exact for fractional rates (59.94 -> 16683333ns).
-	// Never 0, it's a divisor in Render().
-	frameIntervalNs_ = std::max<uint64_t>(1, bufferfit::FrameIntervalNs(ovi.fps_num, ovi.fps_den));
-	mixBaseWidth_ = ovi.base_width;
-	mixBaseHeight_ = ovi.base_height;
-	mixOutputWidth_ = ovi.output_width;
-	mixOutputHeight_ = ovi.output_height;
+	RefreshVideoInfo();
 }
 
 void VideoDelayFilter::Render()
@@ -1299,8 +1303,9 @@ void VideoDelayFilter::Render()
 	// a "30s" video delay was really ~20-38s while the audio was exactly 30s.
 	const uint64_t nowNs = os_gettime_ns();
 	// Exact 1/fps from Tick() (fps_den/fps_num): 16.683ms at 59.94fps. The
-	// integer 1e9/currentFps_ used before made it 1e9/59 = 16.949ms, so ~1 of
-	// every 60 real frames was never captured and the delayed view repeated one.
+	// integer 1e9/(fps_num/fps_den) used before made it 1e9/59 = 16.949ms, so
+	// ~1 of every 60 real frames was never captured and the delayed view
+	// repeated one.
 	const uint64_t frameIntervalNs = frameIntervalNs_;
 	const uint64_t captureCell = nowNs / frameIntervalNs;
 	const bool doCapture = captureCell != lastCaptureCell_;

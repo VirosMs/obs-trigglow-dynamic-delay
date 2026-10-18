@@ -370,6 +370,25 @@ void TestCapDisabled()
 	}
 }
 
+void TestTinySource()
+{
+	g_currentTest = "17 EvenDim floor of 2 wins over the source size";
+	// NV12 needs at least one chroma sample: 2, even when that is larger than
+	// the source (never 0, which Compute() would report as invalid input).
+	CHECK_EQ(EvenDim(1, 1.0), 2u);
+	CHECK_EQ(EvenDim(1, 0.25), 2u);
+	CHECK_EQ(EvenDim(0, 1.0), 2u);
+	CHECK_EQ(EvenDim(2, 0.1), 2u);
+	CHECK_EQ(EvenDim(3, 1.0), 2u);
+	Result r = Compute(MakeInput(1, 1, 1, 1));
+	CHECK_EQ(r.bufferWidth, 2u);
+	CHECK_EQ(r.bufferHeight, 2u);
+	CHECK_EQ(r.actualFrames, r.desiredFrames);
+	Result thin = Compute(MakeInput(1, 1080, 1, 1080));
+	CHECK_EQ(thin.bufferWidth, 2u);
+	CHECK_EQ(thin.bufferHeight, 1080u);
+}
+
 void TestProperties()
 {
 	g_currentTest = "15 property sweep";
@@ -464,6 +483,7 @@ int main()
 	TestFractionalFps();
 	TestProperties();
 	TestCapDisabled();
+	TestTinySource();
 
 	std::printf("buffer_fit_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

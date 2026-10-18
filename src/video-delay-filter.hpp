@@ -267,6 +267,11 @@ private:
 	uint32_t GetWidth() const;
 	uint32_t GetHeight() const;
 
+	// Reads obs_get_video_info() into fpsNum_/fpsDen_/frameIntervalNs_ and the
+	// mix geometry. From the constructor (before the filter renders) and from
+	// Tick(). False (members untouched) if OBS has no video info yet.
+	bool RefreshVideoInfo();
+
 	// Resizes ring_ (RAM-budget-capped) for the given target resolution and
 	// current output frame rate. No-op if the ring is already correct for
 	// this width/height/frame count. Must be called from within a
@@ -389,19 +394,19 @@ private:
 	// canvas, the keep-alive callback...) or slower than fps under load;
 	// capturing at most once per cell keeps the ring at <= fps slots/second.
 	uint64_t lastCaptureCell_ = UINT64_MAX;
-	// Updated from obs_get_video_info() each Tick(). Integer, so only for the
-	// codec time_base -- nothing timing-related uses it anymore (see below).
-	uint32_t currentFps_ = 30;
-	// Exact frame rate and frame interval, also from Tick() (v0.5.1): the
+	// Exact frame rate and frame interval from obs_get_video_info()
+	// (RefreshVideoInfo(): constructor, then every Tick(); v0.5.1): the
 	// capture cell, the ring span and the ring sizing all use these, so
-	// 59.94fps gets 16.683ms cells instead of integer currentFps_'s
-	// 1e9 / 59 = 16.949ms (which captured ~59 of every 59.94 frames).
+	// 59.94fps gets 16.683ms cells instead of the old integer fps's
+	// 1e9 / 59 = 16.949ms (which captured ~59 of every 59.94 frames). The
+	// 30fps values below only stand if OBS had no video info at creation.
 	uint32_t fpsNum_ = 30;
 	uint32_t fpsDen_ = 1;
 	uint64_t frameIntervalNs_ = 1000000000ULL / 30;
-	// OBS main mix geometry, also from Tick(): base_* is the canvas, output_*
-	// the scaled output. EnsureRingSized() never buffers above the output
-	// (bufferfit::OutputCapScale). 0 until the first Tick().
+	// OBS main mix geometry, also from RefreshVideoInfo(): base_* is the
+	// canvas, output_* the scaled output. EnsureRingSized() never buffers
+	// above the output (bufferfit::OutputCapScale) unless configuredOutputCap_
+	// is false. 0 while OBS has no video info.
 	uint32_t mixBaseWidth_ = 0;
 	uint32_t mixBaseHeight_ = 0;
 	uint32_t mixOutputWidth_ = 0;
@@ -503,14 +508,13 @@ private:
 	// whatever content was actually on screen, plus the ring's actual current
 	// memory footprint -- both needed before kAssumedCompressionRatio can be
 	// safely retuned with real numbers instead of another guess.
-	uint64_t encodeSampleCount_ = 0;
 	uint64_t encodeCompressedBytesTotal_ = 0;
 	uint64_t encodeRawBytesTotal_ = 0;
 	// How many times a slot has needed to grow past its budgeted allocation
 	// this cycle (dst.pixels.resize() in EncodeScratchNv12Into() past its
 	// current size) -- the direct signal for whether kAssumedCompressionRatio
 	// above is set too aggressively for real content. Reset alongside the
-	// three counters above.
+	// two counters above.
 	uint64_t encodeGrowthCount_ = 0;
 #endif
 

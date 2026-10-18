@@ -79,6 +79,11 @@ uint32_t EvenDim(uint32_t orig, double scale)
 	long long v = std::llround(static_cast<double>(orig) * scale);
 	if (v > static_cast<long long>(orig))
 		v = static_cast<long long>(orig);
+	// Deliberately NOT clamped back to orig: NV12 needs even dimensions of at
+	// least 2 (one chroma sample), so a 1-pixel source still gets a 2-pixel
+	// buffer (the capture just stretches it). Returning 0 instead would make
+	// Compute() report invalid input, and the filter would then pass that
+	// source through undelayed while its audio stays delayed.
 	if (v < 2)
 		v = 2;
 	// NV12 chroma subsampling needs even dimensions.

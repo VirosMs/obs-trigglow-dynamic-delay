@@ -78,7 +78,9 @@ Result Compute(const Input &in);
 
 // Exposed for tests and for VideoDelayFilter's own bookkeeping.
 double OutputCapScale(const Input &in);
-uint32_t EvenDim(uint32_t orig, double scale); // llround, clamp to [2, orig], then forced even.
+// llround, clamp to [2, orig], then forced even. The floor of 2 (one NV12
+// chroma sample) wins over the orig ceiling: orig 0 or 1 gives 2, never 0.
+uint32_t EvenDim(uint32_t orig, double scale);
 uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen);
 uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen); // 1e9 * den / num; 0 if num == 0.
 uint64_t Nv12FrameBytes(uint32_t width, uint32_t height);   // width * height * 3 / 2.
