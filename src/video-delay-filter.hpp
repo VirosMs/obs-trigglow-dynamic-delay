@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "buffer-fit.hpp"
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -208,6 +210,49 @@ private:
 		uint64_t captureNs = 0;     // When that frame was captured (becomes Slot::timestampNs).
 	};
 
+	// v0.5.1 telemetry: per-phase wall-clock samples for one "perf check"
+	// window (kPerfLogIntervalNs in the .cpp). Fixed-size storage, so nothing
+	// is allocated per frame or per window; Summarize() reorders the samples
+	// with std::nth_element, so it's only called right before a reset. Past
+	// kCapacity samples in one window the oldest are overwritten (percentiles
+	// then cover the most recent kCapacity); max stays exact.
+	struct PerfSeries {
+		static constexpr size_t kCapacity = 4096;    // > 10s of 3 views at 120fps.
+		std::array<uint32_t, kCapacity> samplesNs{}; // Clamped to UINT32_MAX (~4.3s).
+		uint64_t count = 0;
+		uint64_t maxNs = 0;
+		void Push(uint64_t ns);
+		void Reset();
+		// p50/p95/max in milliseconds; all 0 for an empty series.
+		void Summarize(double &p50Ms, double &p95Ms, double &maxMs);
+	};
+	struct PerfWindow {
+		uint64_t startNs = 0;      // Start of the first Render() measured (0 = window empty).
+		uint64_t lastSampleNs = 0; // End of the last Render() measured.
+		PerfSeries render;         // Whole Render() call (main path), EnsureRingSized() included.
+		PerfSeries readback;       // Staging map + memcpy + unmap (Y and UV).
+		PerfSeries encode;         // MJPEG encode, or the raw copy when that isn't available/fails.
+		PerfSeries decode;         // MJPEG decode of the playback slot.
+		PerfSeries upload;         // Both gs_texture_set_image() calls.
+		uint64_t calls = 0;        // Render() calls that reached the main path.
+		uint64_t captures = 0;     // 1/fps cells captured (ring writes).
+		uint64_t uploads = 0;      // Playback textures uploaded with a new slot.
+		uint64_t holds = 0;        // Slot due couldn't be shown; the last uploaded frame was redrawn.
+		uint64_t rawFallbacks = 0; // FFmpeg platforms: frames stored raw because the encode failed.
+		uint64_t encodedBytes = 0;
+		uint64_t encodedRawBytes = 0;
+		// OBS's own counters (obs_get_total_frames/obs_get_lagged_frames,
+		// video_output_get_skipped_frames) at the window's first and last
+		// sample; the line logs the deltas.
+		uint64_t obsTotalFramesStart = 0;
+		uint64_t obsLaggedFramesStart = 0;
+		uint64_t obsSkippedFramesStart = 0;
+		uint64_t obsTotalFramesLast = 0;
+		uint64_t obsLaggedFramesLast = 0;
+		uint64_t obsSkippedFramesLast = 0;
+		void Reset();
+	};
+
 	explicit VideoDelayFilter(obs_source_t *filterSource);
 	~VideoDelayFilter();
 
@@ -232,6 +277,15 @@ private:
 	// Forgets which ring slot yPlaybackTexture_/uvPlaybackTexture_ hold (see
 	// havePlaybackFrame_). Called whenever the ring or those textures go away.
 	void InvalidatePlaybackCache();
+
+	// v0.5.1 telemetry (see PerfWindow). BeginRenderSample() closes the
+	// window early after a pause in rendering; FinishRenderSample() records
+	// one Render() call and logs the window every kPerfLogIntervalNs;
+	// LogPerfWindow() writes the "perf check" line and resets the window.
+	// Graphics thread only.
+	void BeginRenderSample(uint64_t renderStartNs);
+	void FinishRenderSample(uint64_t renderStartNs);
+	void LogPerfWindow(const char *reason);
 
 	// Resizes audioRing_ for the given channel count/sample rate and the
 	// current configuredDelaySeconds_. Plain CPU memory (no graphics
@@ -341,6 +395,9 @@ private:
 	uint32_t mixBaseHeight_ = 0;
 	uint32_t mixOutputWidth_ = 0;
 	uint32_t mixOutputHeight_ = 0;
+	// What the current ring was sized from and to, for the perf check line.
+	bufferfit::Input lastFitInput_;
+	bufferfit::Result lastFit_;
 
 	// The fixed, small GPU object pool -- see this file's header comment.
 	// Independent of ring_.size(): a 5s buffer and a 60s buffer both use
@@ -381,6 +438,8 @@ private:
 	static constexpr size_t kStagingSlotCount = 2;
 	StagingSlot stagingSlots_[kStagingSlotCount];
 	uint64_t captureFrameCounter_ = 0; // Parity counter picking which staging slot kicks off vs. gets harvested.
+
+	PerfWindow perf_; // v0.5.1 telemetry, graphics thread only.
 
 	// One frame's raw NV12 bytes (tightly packed, same layout as Slot::pixels
 	// used to always have) -- the harvest step below writes here every tick
@@ -428,8 +487,8 @@ private:
 	// the "not representative" caveat docs/ROADMAP.md already flagged).
 	// These accumulate every successful encode for the life of the current
 	// codec context (reset in EnsureCodecContextsOpen(), same as
-	// loggedFirstEncode_) so a periodic log line (kCompressionLogIntervalFrames
-	// in video-delay-filter.cpp) can report a REAL cumulative ratio from
+	// loggedFirstEncode_) so a periodic log line (the "perf check" line since
+	// v0.5.1, see LogPerfWindow()) can report a REAL cumulative ratio from
 	// whatever content was actually on screen, plus the ring's actual current
 	// memory footprint -- both needed before kAssumedCompressionRatio can be
 	// safely retuned with real numbers instead of another guess.

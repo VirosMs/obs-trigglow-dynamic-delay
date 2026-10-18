@@ -23,6 +23,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <thread> // std::thread::hardware_concurrency(), for the MJPEG encoder's slice threads
 
@@ -115,13 +117,6 @@ constexpr double kAssumedCompressionRatio = 5.0;
 // Fixed for this first pass, not a dock setting yet (see docs/ROADMAP.md).
 constexpr int kMjpegQuality = 5;
 
-// How often EncodeScratchNv12Into() logs a real, cumulative compression
-// ratio + the ring's actual current memory footprint -- see
-// encodeSampleCount_'s comment in video-delay-filter.hpp for why this exists
-// at all. 300 frames is ~5s at 60fps / ~10s at 30fps: frequent enough to
-// catch a real gameplay session, rare enough not to spam the log every tick.
-constexpr uint64_t kCompressionLogIntervalFrames = 300;
-
 // Upper bound on the MJPEG encoder's slice threads (v0.5.1). The encode runs
 // synchronously on OBS's graphics thread, so slices cut its WALL time there
 // (measured with the vendored n9.0.2: 1080p encode 4.5 -> 1.8ms with 4
@@ -139,6 +134,16 @@ int EncodeSliceThreadCount()
 #else
 constexpr double kAssumedCompressionRatio = 1.0;
 #endif
+
+// v0.5.1 telemetry: one "perf check" line per this much rendering (it replaced
+// the old 300-frame "compression check" line, whose numbers it includes).
+constexpr uint64_t kPerfLogIntervalNs = 10ULL * 1000000000ULL;
+// A pause in Render() calls longer than this (filter hidden, OBS stalled)
+// closes the current window, so its per-second rates aren't diluted.
+constexpr uint64_t kPerfGapResetNs = 1000000000ULL;
+// Windows shorter than this (e.g. right after the last periodic line when the
+// filter is disabled) aren't worth a line of their own.
+constexpr uint64_t kPerfMinWindowNs = 1000000000ULL;
 
 uint64_t GetBufferBudget()
 {
@@ -399,6 +404,165 @@ void VideoDelayFilter::InvalidatePlaybackCache()
 	havePlaybackFrame_ = false;
 	playbackSlotIndex_ = SIZE_MAX;
 	playbackSlotTimestampNs_ = 0;
+}
+
+void VideoDelayFilter::PerfSeries::Push(uint64_t ns)
+{
+	samplesNs[static_cast<size_t>(count % kCapacity)] = static_cast<uint32_t>(std::min<uint64_t>(ns, UINT32_MAX));
+	++count;
+	maxNs = std::max(maxNs, ns);
+}
+
+void VideoDelayFilter::PerfSeries::Reset()
+{
+	count = 0;
+	maxNs = 0;
+}
+
+void VideoDelayFilter::PerfSeries::Summarize(double &p50Ms, double &p95Ms, double &maxMs)
+{
+	const auto n = static_cast<size_t>(std::min<uint64_t>(count, kCapacity));
+	if (n == 0) {
+		p50Ms = 0.0;
+		p95Ms = 0.0;
+		maxMs = 0.0;
+		return;
+	}
+	const size_t i50 = n / 2;
+	const size_t i95 = std::min(n - 1, (n * 95) / 100);
+	auto first = samplesNs.begin();
+	auto last = first + static_cast<std::ptrdiff_t>(n);
+	std::nth_element(first, first + static_cast<std::ptrdiff_t>(i50), last);
+	const uint32_t p50Ns = samplesNs[i50];
+	// Everything after i50 is now >= the median: p95 only needs that part.
+	std::nth_element(first + static_cast<std::ptrdiff_t>(i50), first + static_cast<std::ptrdiff_t>(i95), last);
+	p50Ms = static_cast<double>(p50Ns) / 1e6;
+	p95Ms = static_cast<double>(samplesNs[i95]) / 1e6;
+	maxMs = static_cast<double>(maxNs) / 1e6;
+}
+
+void VideoDelayFilter::PerfWindow::Reset()
+{
+	startNs = 0;
+	lastSampleNs = 0;
+	render.Reset();
+	readback.Reset();
+	encode.Reset();
+	decode.Reset();
+	upload.Reset();
+	calls = 0;
+	captures = 0;
+	uploads = 0;
+	holds = 0;
+	rawFallbacks = 0;
+	encodedBytes = 0;
+	encodedRawBytes = 0;
+	obsTotalFramesStart = 0;
+	obsLaggedFramesStart = 0;
+	obsSkippedFramesStart = 0;
+	obsTotalFramesLast = 0;
+	obsLaggedFramesLast = 0;
+	obsSkippedFramesLast = 0;
+}
+
+void VideoDelayFilter::BeginRenderSample(uint64_t renderStartNs)
+{
+	// Render() stopped for a while (filter hidden, OBS stalled...): close the
+	// window at the last sample instead of averaging the pause into its rates.
+	if (perf_.startNs != 0 && renderStartNs - perf_.lastSampleNs > kPerfGapResetNs)
+		LogPerfWindow("resumed after a pause");
+}
+
+void VideoDelayFilter::FinishRenderSample(uint64_t renderStartNs)
+{
+	const uint64_t endNs = os_gettime_ns();
+	// OBS's own counters, snapshotted every call (plain reads) so the deltas
+	// cover exactly [startNs, lastSampleNs] even when a pause closes the window.
+	video_t *video = obs_get_video();
+	perf_.obsTotalFramesLast = obs_get_total_frames();
+	perf_.obsLaggedFramesLast = obs_get_lagged_frames();
+	perf_.obsSkippedFramesLast = video ? video_output_get_skipped_frames(video) : 0;
+	if (perf_.startNs == 0) {
+		perf_.startNs = renderStartNs;
+		perf_.obsTotalFramesStart = perf_.obsTotalFramesLast;
+		perf_.obsLaggedFramesStart = perf_.obsLaggedFramesLast;
+		perf_.obsSkippedFramesStart = perf_.obsSkippedFramesLast;
+	}
+	perf_.render.Push(endNs - renderStartNs);
+	++perf_.calls;
+	perf_.lastSampleNs = endNs;
+	if (endNs - perf_.startNs >= kPerfLogIntervalNs)
+		LogPerfWindow("periodic");
+}
+
+void VideoDelayFilter::LogPerfWindow(const char *reason)
+{
+	if (perf_.calls == 0 || perf_.lastSampleNs - perf_.startNs < kPerfMinWindowNs) {
+		perf_.Reset();
+		return;
+	}
+	const double seconds = static_cast<double>(perf_.lastSampleNs - perf_.startNs) / 1e9;
+
+	double renderP50, renderP95, renderMax;
+	double readbackP50, readbackP95, readbackMax;
+	double encodeP50, encodeP95, encodeMax;
+	double decodeP50, decodeP95, decodeMax;
+	double uploadP50, uploadP95, uploadMax;
+	perf_.render.Summarize(renderP50, renderP95, renderMax);
+	perf_.readback.Summarize(readbackP50, readbackP95, readbackMax);
+	perf_.encode.Summarize(encodeP50, encodeP95, encodeMax);
+	perf_.decode.Summarize(decodeP50, decodeP95, decodeMax);
+	perf_.upload.Summarize(uploadP50, uploadP95, uploadMax);
+
+	size_t ringBytes = 0;
+	for (const auto &slot : ring_)
+		ringBytes += slot.pixels.size();
+
+	const double windowRatio = perf_.encodedBytes > 0 ? static_cast<double>(perf_.encodedRawBytes) /
+								    static_cast<double>(perf_.encodedBytes)
+							  : 0.0;
+	double cycleRatio = 0.0;
+	unsigned long long slotGrowths = 0;
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	if (encodeCompressedBytesTotal_ > 0)
+		cycleRatio =
+			static_cast<double>(encodeRawBytesTotal_) / static_cast<double>(encodeCompressedBytesTotal_);
+	slotGrowths = static_cast<unsigned long long>(encodeGrowthCount_);
+#endif
+
+	auto delta = [](uint64_t last, uint64_t start) {
+		return static_cast<unsigned long long>(last >= start ? last - start : 0);
+	};
+
+	char geometry[160];
+	if (lastFit_.cappedByOutput) {
+		std::snprintf(geometry, sizeof(geometry), "capped to OBS output %ux%u, canvas %ux%u%s",
+			      lastFitInput_.outputWidth, lastFitInput_.outputHeight, lastFitInput_.baseWidth,
+			      lastFitInput_.baseHeight, lastFit_.reducedByRam ? ", reduced for RAM" : "");
+	} else {
+		std::snprintf(geometry, sizeof(geometry), "not capped, source %ux%u, output %ux%u%s",
+			      lastFitInput_.sourceWidth, lastFitInput_.sourceHeight, lastFitInput_.outputWidth,
+			      lastFitInput_.outputHeight, lastFit_.reducedByRam ? ", reduced for RAM" : "");
+	}
+
+	const double fps = static_cast<double>(fpsNum_) / std::max<uint32_t>(1, fpsDen_);
+	TRIGGLOW_LOG_INFO(kComponent,
+			  "perf check (%s, %.1fs): buf=%ux%u (%s) fps=%.2f | render p50/p95/max=%.2f/%.2f/%.2fms "
+			  "readback=%.2f/%.2f/%.2f encode=%.2f/%.2f/%.2f decode=%.2f/%.2f/%.2f "
+			  "upload=%.2f/%.2f/%.2f | calls=%.1f/s captures=%.1f/s uploads=%.1f/s holds=%llu "
+			  "rawFallback=%llu | obs frames+%llu lagged+%llu skipped+%llu | ratio=%.1fx (cycle %.1fx) "
+			  "ring=%lluMB/%zu slots growths=%llu",
+			  reason, seconds, bufferWidth_, bufferHeight_, geometry, fps, renderP50, renderP95, renderMax,
+			  readbackP50, readbackP95, readbackMax, encodeP50, encodeP95, encodeMax, decodeP50, decodeP95,
+			  decodeMax, uploadP50, uploadP95, uploadMax, static_cast<double>(perf_.calls) / seconds,
+			  static_cast<double>(perf_.captures) / seconds, static_cast<double>(perf_.uploads) / seconds,
+			  static_cast<unsigned long long>(perf_.holds),
+			  static_cast<unsigned long long>(perf_.rawFallbacks),
+			  delta(perf_.obsTotalFramesLast, perf_.obsTotalFramesStart),
+			  delta(perf_.obsLaggedFramesLast, perf_.obsLaggedFramesStart),
+			  delta(perf_.obsSkippedFramesLast, perf_.obsSkippedFramesStart), windowRatio, cycleRatio,
+			  static_cast<unsigned long long>(ringBytes / (1024 * 1024)), ring_.size(), slotGrowths);
+	perf_.Reset();
 }
 
 void VideoDelayFilter::ReleaseGpuObjects()
@@ -725,25 +889,14 @@ bool VideoDelayFilter::EncodeScratchNv12Into(Slot &dst)
 
 	// See encodeSampleCount_'s comment in the header: the "first encode" line
 	// above is almost always the loading scene (a static graphic), not real
-	// content -- this periodic line is the actual data point that matters,
-	// covering whatever's really been on screen since Enable().
+	// content -- the periodic "perf check" line (LogPerfWindow()) reports these
+	// cumulative totals plus this window's own ratio, covering whatever's
+	// really been on screen since Enable().
 	++encodeSampleCount_;
 	encodeCompressedBytesTotal_ += packetSize;
 	encodeRawBytesTotal_ += rawFrameBytes;
-	if (encodeSampleCount_ % kCompressionLogIntervalFrames == 0) {
-		size_t ringBytes = 0;
-		for (const auto &slot : ring_)
-			ringBytes += slot.pixels.size();
-		double cumulativeRatio =
-			static_cast<double>(encodeRawBytesTotal_) / std::max<uint64_t>(1, encodeCompressedBytesTotal_);
-		TRIGGLOW_LOG_INFO(kComponent,
-				  "compression check: %llu frames encoded this cycle, cumulative ratio %.1fx, ring_ "
-				  "real memory ~%lluMB across %zu slots (last frame: %zu bytes, %llu slot growths "
-				  "this cycle)",
-				  static_cast<unsigned long long>(encodeSampleCount_), cumulativeRatio,
-				  static_cast<unsigned long long>(ringBytes / (1024 * 1024)), ring_.size(), packetSize,
-				  static_cast<unsigned long long>(encodeGrowthCount_));
-	}
+	perf_.encodedBytes += packetSize;
+	perf_.encodedRawBytes += rawFrameBytes;
 
 	return true;
 }
@@ -877,6 +1030,8 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 
 	bufferWidth_ = fit.bufferWidth;
 	bufferHeight_ = fit.bufferHeight;
+	lastFitInput_ = in;
+	lastFit_ = fit;
 	// NV12: Y plane (bufferWidth_*bufferHeight_ bytes) + interleaved UV
 	// plane at half resolution ((bufferWidth_/2)*(bufferHeight_/2)*2 bytes,
 	// i.e. bufferWidth_*bufferHeight_/2) -- 1.5 bytes/pixel total. Always an
@@ -1061,6 +1216,9 @@ void VideoDelayFilter::Tick(float /*secondsSinceLastTick*/)
 
 void VideoDelayFilter::Render()
 {
+	const uint64_t renderStartNs = os_gettime_ns();
+	BeginRenderSample(renderStartNs);
+
 	obs_source_t *target = obs_filter_get_target(filterSource_);
 	if (!target) {
 		if (!loggedNoTarget_) {
@@ -1119,6 +1277,7 @@ void VideoDelayFilter::Render()
 	bool kicked = false;
 	if (doCapture) {
 		lastCaptureCell_ = captureCell;
+		++perf_.captures;
 		// Not readable until the async readback is harvested; the sentinel
 		// keeps timestamps monotonic for playback's binary search.
 		ring_[writeIndex_].valid = false;
@@ -1213,6 +1372,7 @@ void VideoDelayFilter::Render()
 				// stored form; see EncodeScratchNv12Into()'s fallback below
 				// for why dst still ends up with the same raw bytes when
 				// compression isn't available/fails.
+				const uint64_t readbackStartNs = os_gettime_ns();
 				uint8_t *mappedY = nullptr;
 				uint32_t linesizeY = 0;
 				if (gs_stagesurface_map(harvest.ySurface, &mappedY, &linesizeY)) {
@@ -1237,9 +1397,14 @@ void VideoDelayFilter::Render()
 					gs_stagesurface_unmap(harvest.uvSurface);
 				}
 
+				const uint64_t encodeStartNs = os_gettime_ns();
+				perf_.readback.Push(encodeStartNs - readbackStartNs);
+
 				bool encoded = false;
 #ifdef TRIGGLOW_HAVE_FFMPEG
 				encoded = EncodeScratchNv12Into(dst);
+				if (!encoded)
+					++perf_.rawFallbacks;
 #endif
 				if (!encoded) {
 					// No FFmpeg on this platform, or the encoder isn't open,
@@ -1255,6 +1420,7 @@ void VideoDelayFilter::Render()
 					dst.usedBytes = scratchNv12_.size();
 					dst.compressed = false;
 				}
+				perf_.encode.Push(os_gettime_ns() - encodeStartNs);
 
 				dst.valid = true;
 				dst.timestampNs = harvest.captureNs;
@@ -1355,7 +1521,9 @@ void VideoDelayFilter::Render()
 				bool ready = true;
 				if (src.compressed) {
 #ifdef TRIGGLOW_HAVE_FFMPEG
+					const uint64_t decodeStartNs = os_gettime_ns();
 					ready = DecodeSlotIntoScratchNv12(src);
+					perf_.decode.Push(os_gettime_ns() - decodeStartNs);
 					pixels = scratchNv12_.data();
 #else
 					// A slot marked compressed can't exist on a platform that never
@@ -1376,18 +1544,24 @@ void VideoDelayFilter::Render()
 						gs_texture_create(uvWidth, uvHeight, GS_R8G8, 1, nullptr, GS_DYNAMIC);
 
 				if (ready && pixels && yPlaybackTexture_ && uvPlaybackTexture_) {
+					const uint64_t uploadStartNs = os_gettime_ns();
 					gs_texture_set_image(yPlaybackTexture_, pixels, bufferWidth_, false);
 					gs_texture_set_image(uvPlaybackTexture_, pixels + yBytes, uvWidth * 2, false);
+					perf_.upload.Push(os_gettime_ns() - uploadStartNs);
 					uploaded = true;
 				}
 			}
 
-			if (uploaded)
+			if (uploaded) {
 				havePlaybackFrame_ = true;
-			// Otherwise (the slot due now never got a frame or failed to
-			// decode) the last uploaded frame, if any, is repeated below
-			// rather than flashing nothing. The next slot is still picked by
-			// age, so this is a one-frame stutter, never a drift in the delay.
+				++perf_.uploads;
+			} else if (havePlaybackFrame_) {
+				// The slot due now never got a frame or failed to decode:
+				// repeat the last uploaded one (drawn below) rather than
+				// flashing nothing. The next slot is still picked by age, so
+				// this is a one-frame stutter, never a drift in the delay.
+				++perf_.holds;
+			}
 		}
 
 		if (havePlaybackFrame_ && yPlaybackTexture_ && uvPlaybackTexture_) {
@@ -1413,6 +1587,8 @@ void VideoDelayFilter::Render()
 		writeIndex_ = (writeIndex_ + 1) % ring_.size();
 		bufferedCount_ = std::min(bufferedCount_ + 1, ring_.size());
 	}
+
+	FinishRenderSample(renderStartNs);
 }
 
 uint32_t VideoDelayFilter::GetWidth() const
@@ -1469,6 +1645,9 @@ void VideoDelayFilter::ReleaseBuffersProc(void *data, calldata_t * /*params*/)
 void VideoDelayFilter::ReleaseBuffersTask(void *param)
 {
 	auto *filter = static_cast<VideoDelayFilter *>(param);
+	// Last partial telemetry window of this cycle (needs ring_ for its memory
+	// figure, so before ReleaseRing()); the next cycle starts a fresh one.
+	filter->LogPerfWindow("filter disabled");
 	filter->ReleaseRing();
 	TRIGGLOW_LOG_INFO(kComponent, "released the RAM ring buffer (filter disabled)");
 }
