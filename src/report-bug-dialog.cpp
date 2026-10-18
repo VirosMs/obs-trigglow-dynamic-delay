@@ -80,9 +80,8 @@ struct SubmitResult {
 // Runs on the background thread from OnSubmitClicked() below -- never call
 // this from the UI thread, same BLOCKING contract win-http.hpp documents for
 // every call it makes. Mirrors exactly what the web /support form itself
-// does against the same API (apps/api/src/routes/support.ts in the main
-// streampulse monorepo): create the ticket, then upload one attachment as a
-// second call -- not atomic server-side, so a successful ticket with a
+// does against the same API: create the ticket, then upload one attachment
+// as a second call -- not atomic server-side, so a successful ticket with a
 // failed attachment is a real, expected outcome this handles gracefully
 // (attachmentUploaded=false, ticketCreated=true) rather than as an error.
 SubmitResult SubmitTicket(const std::string &guestName, const std::string &guestEmail, const std::string &message,
@@ -94,9 +93,7 @@ SubmitResult SubmitTicket(const std::string &guestName, const std::string &guest
 	obs_data_set_string(body, "guestName", guestName.c_str());
 	obs_data_set_string(body, "guestEmail", guestEmail.c_str());
 	obs_data_set_string(body, "subject", ("Reporte desde el plugin de OBS (v" + pluginVersion + ")").c_str());
-	// "dynamic_delay" is one of the categories apps/api/src/routes/support.ts already allows for
-	// public/guest tickets (publicCategorySchema) -- no backend change needed for this plugin to
-	// use it.
+	// "dynamic_delay" is one of the support API's public ticket categories.
 	obs_data_set_string(body, "category", "dynamic_delay");
 	obs_data_set_string(body, "message", message.c_str());
 	std::string jsonBody = obs_data_get_json(body);
@@ -144,8 +141,7 @@ SubmitResult SubmitTicket(const std::string &guestName, const std::string &guest
 
 	if (hasLog) {
 		// ticketId/accessToken are both server-generated ASCII (a UUID and a
-		// hex token respectively -- see support.ts), so this byte-for-byte
-		// widening is safe; nothing here ever contains non-ASCII input.
+		// hex token respectively), so this byte-for-byte widening is safe; nothing here ever contains non-ASCII input.
 		std::wstring ticketIdW(result.ticketId.begin(), result.ticketId.end());
 		std::wstring accessTokenW(result.accessToken.begin(), result.accessToken.end());
 		std::wstring path = L"/api/support/public/tickets/" + ticketIdW + L"/attachments?token=" + accessTokenW;

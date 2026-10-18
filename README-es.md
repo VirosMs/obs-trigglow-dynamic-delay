@@ -293,7 +293,7 @@ GPL-2.0-or-later, heredada de `obsproject/obs-plugintemplate` (ver `LICENSE`) �
 formalidad: `libobs` es GPL-2.0, así que enlazar contra ella arrastra la misma licencia a este
 plugin, lo que obliga a publicar el código fuente de cualquier binario distribuido.
 
-Por eso este proyecto vive en **su propio repositorio, separado del monorepo principal de
+Por eso este proyecto vive en **su propio repositorio, separado del repositorio principal de
 Trigglow** (que permanece privado) — publicar solo el plugin aquí cumple la GPL sin exponer el resto
 del producto. Detalle completo de esta decisión en `docs/SPEC.md` §9.
 

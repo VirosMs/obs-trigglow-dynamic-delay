@@ -1,13 +1,13 @@
 <!DOCTYPE RCC>
 <!--
   Compiled into the plugin (AUTORCC) and read through ":/trigglow/...":
-  - icons/: stroke icons from the web's Icons.tsx, Lucide paths (ISC, see
+  - icons/: stroke icons from the Trigglow web app's icon set, Lucide paths (ISC, see
     data/licenses/LICENSE-lucide.txt). "currentColor" is replaced at runtime by
     ui-theme.cpp; check-ink/check-light are the check box's fixed-color checks
     and chevron-{up,down}-{ink,light,muted} the spin box's arrows (QSS url()
     can't tint, so each color is a file).
   - overlay/: the Dynamic Delay mark painted into the live overlay badge
-    (overlay-badge.cpp), the web's trigglow-dynamic-delay-icon.png without its
+    (overlay-badge.cpp), the website's Dynamic Delay icon without its
     background.
   The brand fonts are NOT here: they are files in data/fonts (with their OFL
   licenses next to them), loaded by ui-theme.cpp's LoadBrandFonts().

@@ -39,24 +39,19 @@ namespace trigglow {
 namespace {
 constexpr const char *kComponent = "auth-manager";
 constexpr const char *kAccountFile = "trigglow-account.json";
-// Production uses a split deploy: the web SPA is served from www.trigglow.com, but /auth/* and
-// the rest of the API live on their own host, api.trigglow.com (confirmed live 2026-09-02 by
-// inspecting the production JS bundle's baked-in VITE_API_BASE_URL -- see apps/web/src/lib/
-// api-base.ts in the trigglow monorepo). trigglow.virosms.com (this constant's old value) now
-// 301-redirects to www.trigglow.com, but that's the WEB origin, not the API one -- don't be
-// tempted to "fix" this back to a trigglow.com-style web host if this ever looks wrong again;
-// verify against the production bundle first. The /plugin/link browser page itself is still
-// opened at whatever `verificationUrl` the API response says (www.trigglow.com), unaffected by
-// this constant -- this is only the host AuthManager's own HTTPS calls (win-http.hpp) connect to.
+// The website is www.trigglow.com; /auth/* and the rest of the API live on their own host,
+// api.trigglow.com. Don't "fix" this to the web host: this is only the host AuthManager's own
+// HTTPS calls (win-http.hpp) connect to. The sign-in page itself is opened at whatever
+// `verificationUrl` the API response says, unaffected by this constant.
 constexpr const wchar_t *kApiHost = L"api.trigglow.com";
 // 3s * 100 = 5 minutes, matching the plan's cap on how long the poll timer is allowed to run.
 constexpr int kPollIntervalMs = 3000;
 constexpr int kMaxPollAttempts = 100;
 
-// Only ever called on genuinely ASCII input in this file (the device code is base64url, the
-// stored session token is base64url too -- see session-token.ts on the web side), so a real
-// UTF-8 decode is unnecessary; kept platform-neutral (no <windows.h>) since this file, unlike
-// win-http.cpp, has to compile on every OS win-http.hpp is declared for.
+// Only ever called on genuinely ASCII input in this file (the device code and the stored session
+// token are both base64url), so a real UTF-8 decode is unnecessary; kept platform-neutral (no
+// <windows.h>) since this file, unlike win-http.cpp, has to compile on every OS win-http.hpp is
+// declared for.
 std::wstring Utf8ToWide(const std::string &s)
 {
 	return std::wstring(s.begin(), s.end());
@@ -254,7 +249,7 @@ void AuthManager::PollOnce()
 					NotifyChanged();
 				}
 			} else if (status && std::string(status) == "not_found") {
-				// Code expired (10 min) or was already consumed -- stop waiting,
+				// The link expired or was already used -- stop waiting,
 				// the dock's Sign in button lets the user start over.
 				TRIGGLOW_LOG_WARN(kComponent, "login link code expired or already used");
 				StopPolling();

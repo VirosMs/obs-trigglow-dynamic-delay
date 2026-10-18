@@ -612,7 +612,7 @@ que nunca se publicó: todo lo que llevaba sale aquí.
 **Cambiado:**
 - El instalador de Windows ahora usa branding real de Trigglow — icono
   propio del `.exe`/barra de tareas y banner/logo del asistente, generados
-  a partir de la misma marca usada en trigglow.virosms.com — en vez de los
+  a partir de la misma marca usada en la web de Trigglow — en vez de los
   gráficos genéricos por defecto de Inno Setup.
 
 ## v0.3.0 — 2026-08-27 (Early Access)

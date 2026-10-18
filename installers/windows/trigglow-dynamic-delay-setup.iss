@@ -74,9 +74,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 DisableWelcomePage=no
-; Trigglow branding -- generated from a dedicated Dynamic Delay icon
-; (apps/web/public/trigglow-dynamic-delay-icon.png in the main monorepo,
-; www.trigglow.com as of the 2026-09-02 domain migration) via
+; Trigglow branding -- generated from a dedicated Dynamic Delay icon (from
+; Trigglow's web brand assets) via
 ; installers/windows/branding/generate-assets.py, which also documents the
 ; exact Inno Setup size/aspect-ratio requirements these were built against.
 ; SetupIconFile becomes the .exe's own icon (Explorer,

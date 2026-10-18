@@ -33,10 +33,9 @@ class QPushButton;
 // Small modal dialog for TrigglowDelayDock's "Reportar un problema" button.
 // Replaces the earlier "just copy the log and open the browser" flow: this
 // collects a short description (name/email/message) and submits a real
-// support ticket directly to trigglow.com -- category "dynamic_delay",
-// which apps/api/src/routes/support.ts (main streampulse monorepo) already
-// allows for public/guest tickets -- with OBS's current log attached
-// automatically, no manual attach step left for the user. Mirrors exactly
+// support ticket directly to trigglow.com -- category "dynamic_delay", one
+// of the support API's public ticket categories -- with OBS's current log
+// attached automatically, no manual attach step left for the user. Mirrors exactly
 // what the web /support form itself does (create ticket, then upload one
 // attachment), just from inside OBS.
 //

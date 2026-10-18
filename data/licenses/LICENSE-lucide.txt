@@ -1,6 +1,6 @@
 The interface icons of Trigglow Dynamic Delay (compiled into the plugin from
 src/resources/icons) are paths from Lucide, https://lucide.dev, as adapted in
-the Trigglow web app's Icons.tsx. Lucide is distributed under the ISC License:
+the Trigglow web app's icon set. Lucide is distributed under the ISC License:
 
 ISC License
 

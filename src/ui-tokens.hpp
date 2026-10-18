@@ -28,8 +28,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //
 // Hybrid theming: surfaces (window, cards, fields) follow OBS's palette so the
 // dock sits naturally in Yami, light themes and the system high-contrast mode;
-// the Trigglow brand comes in through the fixed accents below (web tokens from
-// apps/web/src/index.css) and through square shapes, fonts and icons
+// the Trigglow brand comes in through the fixed accents below (the web app's
+// color tokens) and through square shapes, fonts and icons
 // (ui-theme.hpp). Every text token is pushed until it reaches WCAG AA (4.5:1)
 // against the backgrounds it is drawn on, and every component border
 // (fields, secondary buttons, focus ring) reaches 3:1, whatever the theme.
@@ -60,7 +60,7 @@ double ContrastRatio(Rgb a, Rgb b);
 // contrasts more with the backgrounds) until it does, or the pole itself.
 Rgb EnsureContrast(Rgb color, std::initializer_list<Rgb> backgrounds, double minRatio);
 
-// Brand constants (apps/web/src/index.css).
+// Brand constants (the Trigglow web palette).
 namespace brand {
 constexpr Rgb kInk{0x0f, 0x10, 0x16};        // --color-pulse-ink
 constexpr Rgb kMist{0xf2, 0xf1, 0xee};       // --color-pulse-mist

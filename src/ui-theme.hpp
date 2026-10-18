@@ -97,7 +97,7 @@ void ApplyFont(QWidget *widget, FontRole role, double basePt);
 
 // ---- Icons -----------------------------------------------------------------
 
-// Stroke icons from the web's Icons.tsx (Lucide paths, ISC), bundled in
+// Stroke icons from the Trigglow web app's icon set (Lucide paths, ISC), bundled in
 // src/resources/trigglow-ui.qrc and recolored at runtime.
 enum class IconId {
 	AlertTriangle,

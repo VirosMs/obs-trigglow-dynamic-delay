@@ -32,17 +32,15 @@ resources directory would otherwise never find out they exist.
    same one the web app itself uses (email/password or Kick OAuth). The plugin is never involved in
    that exchange at all.
 4. Once confirmed there, the plugin's poll loop (`GET /auth/plugin/poll`, every 3s, capped at 5
-   minutes) picks up a session token, exactly once (the code is consumed server-side on first
-   successful poll).
+   minutes) picks up a session token.
 5. The token is stored locally in this plugin's own OBS module config directory
    (`trigglow-account.json`), in plaintext -- consistent with how `buffer-mode-settings.json`
    already stores this plugin's other local settings (see `plugin-main.cpp`). No new crypto/keychain
    machinery for an Early Access plugin whose installer isn't code-signed yet either.
 
 On every OBS start, `AuthManager::Init()` does exactly one fire-and-forget `GET /auth/me` to confirm
-the stored token still works (and to roll its rolling server-side TTL forward) -- not a loop, not a
-background heartbeat. Outside of an active `StartLogin()` wait, the plugin makes zero network calls
-related to this feature.
+the stored token still works -- not a loop, not a background heartbeat. Outside of an active
+`StartLogin()` wait, the plugin makes zero network calls related to this feature.
 
 ## Enforcement point
 

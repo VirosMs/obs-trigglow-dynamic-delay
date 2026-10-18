@@ -42,8 +42,8 @@ namespace {
 
 constexpr const char *kComponent = "overlay-badge";
 
-// Brand tokens fixed for the overlay, independent of the OBS theme
-// (apps/web/src/index.css).
+// Brand tokens fixed for the overlay, independent of the OBS theme (the
+// Trigglow web palette).
 const QColor kInk(0x0f, 0x10, 0x16);
 const QColor kMist(0xf2, 0xf1, 0xee);
 const QColor kCyan(0x00, 0xd2, 0xff);

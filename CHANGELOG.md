@@ -560,7 +560,7 @@ was prepared but never published: everything in it ships here.
 **Changed:**
 - The Windows installer now uses real Trigglow branding — a custom
   `.exe`/taskbar icon and wizard banner/logo, generated from the same mark
-  used on trigglow.virosms.com — instead of Inno Setup's generic defaults.
+  used on the Trigglow website — instead of Inno Setup's generic defaults.
 
 ## v0.3.0 — 2026-08-27 (Early Access)
 

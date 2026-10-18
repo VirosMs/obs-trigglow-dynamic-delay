@@ -56,12 +56,10 @@ HttpResult HttpsPostJson(const std::wstring &host, const std::wstring &pathAndQu
 			 const std::wstring &bearerToken = L"");
 
 // Single-file multipart/form-data POST -- used by ReportBugDialog to attach OBS's log to a
-// freshly created support ticket (apps/api/src/routes/support.ts's
-// POST /api/support/public/tickets/:id/attachments in the main streampulse monorepo, which reads
-// the file via Fastify's request.file() -- any form field name works server-side there, but
-// fieldName is kept explicit here rather than hardcoded since a raw multipart body is being
-// built by hand, not through a library that would otherwise fix it for us). bearerToken: omit
-// for none -- that endpoint authorizes via its own ?token=... query param instead, not a header.
+// freshly created support ticket (POST /api/support/public/tickets/:id/attachments). fieldName is
+// kept explicit rather than hardcoded since a raw multipart body is being built by hand, not
+// through a library that would otherwise fix it for us. bearerToken: omit for none -- that
+// endpoint authorizes via its own ?token=... query param instead, not a header.
 HttpResult HttpsPostMultipartFile(const std::wstring &host, const std::wstring &pathAndQuery,
 				  const std::string &fieldName, const std::string &fileName,
 				  const std::string &fileContentType, const std::string &fileBytes,

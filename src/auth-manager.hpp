@@ -68,9 +68,9 @@ public:
 
 	// Loads any previously saved session token from the plugin's local config
 	// file (see PersistToken) and, if present, fires one fire-and-forget
-	// GET /auth/me to confirm it still works and roll its rolling TTL
-	// forward. This is the ONLY network activity that happens on every OBS
-	// start -- one request, not a loop. Call once from obs_module_load().
+	// GET /auth/me to confirm it still works. This is the ONLY network
+	// activity that happens on every OBS start -- one request, not a loop.
+	// Call once from obs_module_load().
 	void Init();
 	// Cancels any in-flight login poll timer. Call from obs_module_unload().
 	void Shutdown();
@@ -91,8 +91,7 @@ public:
 	// this hasn't been fetched/loaded yet -- callers must handle that the same
 	// way they already handle an empty DisplayName(). Added so ReportBugDialog
 	// can prefill the reporter's email for an already-logged-in user instead
-	// of asking them to retype it (apps/api/src/routes/auth.ts's /auth/me now
-	// returns it, in the main streampulse monorepo).
+	// of asking them to retype it (GET /auth/me returns it).
 	std::string Email() const { return email_; }
 
 	// Opens the system browser to a one-time device-link page and starts
