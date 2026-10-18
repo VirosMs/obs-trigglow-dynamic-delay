@@ -972,9 +972,11 @@ void TrigglowDelayDock::OnStatusChanged(const BufferModeStatus &status)
 	// Once per fill window (Enable(), a refill): every other update while
 	// Filling -- the overlay switched on or off, another corner -- leaves the
 	// countdown running instead of starting it over.
+	// The window lasts the seconds that really apply: the ring only has to
+	// hold the effective delay when the RAM budget trimmed it.
 	if (!fillArmed_ || status.fillGeneration != armedFillGeneration_) {
 		armedFillGeneration_ = status.fillGeneration;
-		ArmFillTimer(status.delaySeconds);
+		ArmFillTimer(AppliedDelaySeconds(status));
 	}
 }
 
@@ -987,7 +989,14 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 	QString rule = QStringLiteral("none");
 	QString tone = QStringLiteral("text");
 	QString chipTone;
-	QString chipText = T("Dock.Status.Seconds").arg(status.delaySeconds);
+	// What viewers really get -- the same seconds the live overlay shows, from
+	// Filling on. The RAM budget can trim the configured delay (60 s asked,
+	// 35 s fit): then the chip reads "35 / 60 s" in amber and the detail says
+	// why (Filling's comes from the controller, Status.FillingTrimmed).
+	const uint32_t applied = AppliedDelaySeconds(status);
+	const bool trimmed = applied < status.delaySeconds;
+	QString chipText = trimmed ? T("Dock.Status.SecondsOf").arg(applied).arg(status.delaySeconds)
+				   : T("Dock.Status.Seconds").arg(applied);
 	ui::IconId icon = ui::IconId::Circle;
 	QString iconTone = QStringLiteral("muted");
 	switch (status.state) {
@@ -1004,23 +1013,15 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 		icon = ui::IconId::Clock;
 		iconTone = QStringLiteral("warning");
 		break;
-	case BufferModeState::Active: {
-		// What viewers really get -- the same seconds the live overlay shows.
-		// The RAM budget can trim the configured delay (60 s asked, 35 s fit):
-		// then the chip reads "35 / 60 s" in amber and the detail says why.
-		const uint32_t applied = AppliedDelaySeconds(status);
-		const bool trimmed = applied < status.delaySeconds;
+	case BufferModeState::Active:
 		headline = T("Dock.Status.Active");
 		detail = trimmed ? T("Dock.Status.Active.DetailTrimmed").arg(applied).arg(status.delaySeconds)
 				 : T("Dock.Status.Active.Detail").arg(applied);
-		chipText = trimmed ? T("Dock.Status.SecondsOf").arg(applied).arg(status.delaySeconds)
-				   : T("Dock.Status.Seconds").arg(applied);
 		rule = QStringLiteral("active");
 		chipTone = trimmed ? QStringLiteral("warning") : QStringLiteral("accent");
 		icon = ui::IconId::Shield;
 		iconTone = QStringLiteral("accent");
 		break;
-	}
 	case BufferModeState::Error:
 		headline = T("Dock.Status.Error");
 		rule = QStringLiteral("danger");

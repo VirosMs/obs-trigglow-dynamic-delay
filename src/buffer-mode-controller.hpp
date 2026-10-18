@@ -251,6 +251,14 @@ private:
 	// with the delay really in effect (video may have been shortened).
 	void UpdateOverlay();
 
+	// The seconds viewers really get: status_.effectiveDelaySeconds once
+	// known, never above status_.delaySeconds -- what the overlay shows, the
+	// Filling message counts and the dock's fill countdown waits.
+	uint32_t AppliedDelaySeconds() const;
+	// Status.Filling for AppliedDelaySeconds(), or Status.FillingTrimmed
+	// ("41 of your 60 s") when the RAM budget trimmed the delay.
+	std::string FillingMessage() const;
+
 	// A hard resize empties the video ring, so the delayed view is blank for
 	// `delay` seconds: Active goes back to Filling with the loading scene on
 	// Program (and the fill timer armed again by the dock) instead of showing

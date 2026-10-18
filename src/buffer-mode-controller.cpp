@@ -23,24 +23,30 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <cstdio>
+#include <initializer_list>
 
 namespace trigglow {
 
 namespace {
 constexpr const char *kComponent = "buffer-mode-controller";
 
-// Replaces the FIRST "%1" in a Str() template with `value` -- this file has
-// no Qt (no QString::arg) and isn't worth pulling in a format library for
-// the one status message that needs a numeric substitution (Filling's
-// seconds count). Not a general-purpose formatter: only ever called with
-// templates that contain exactly one "%1", by construction (see
-// data/locale/en-US.ini).
-std::string FormatOne(const char *tmpl, const std::string &value)
+// Replaces every "%1".."%9" in a Str() template with the matching value --
+// this file has no Qt (no QString::arg) and isn't worth pulling in a format
+// library for the few status messages that need numbers (Filling's seconds,
+// and the RAM-trimmed variant's two). A "%N" without a value stays as is.
+std::string FormatArgs(const char *tmpl, std::initializer_list<std::string> values)
 {
-	std::string result = tmpl;
-	size_t pos = result.find("%1");
-	if (pos != std::string::npos)
-		result.replace(pos, 2, value);
+	std::string result;
+	for (const char *p = tmpl; *p; ++p) {
+		const size_t index = p[0] == '%' && p[1] >= '1' && p[1] <= '9' ? static_cast<size_t>(p[1] - '1')
+									       : values.size();
+		if (index < values.size()) {
+			result += *(values.begin() + index);
+			++p;
+		} else {
+			result += *p;
+		}
+	}
 	return result;
 }
 } // namespace
@@ -114,8 +120,7 @@ void BufferModeController::SetOverlayCorner(uint32_t corner)
 void BufferModeController::UpdateOverlay()
 {
 	bool visible = status_.showOverlay && status_.state == BufferModeState::Active;
-	uint32_t seconds = status_.effectiveDelaySeconds > 0 ? status_.effectiveDelaySeconds : status_.delaySeconds;
-	bridge_.SetDelayOverlay(visible, seconds, status_.overlayCorner);
+	bridge_.SetDelayOverlay(visible, AppliedDelaySeconds(), status_.overlayCorner);
 }
 
 void BufferModeController::SetMinResolutionHeight(uint32_t heightPixels)
@@ -207,7 +212,7 @@ void BufferModeController::Enable()
 		bridge_.SetCurrentSceneByName(status_.loadingSceneName);
 
 	++status_.fillGeneration; // A new fill window: the dock starts its countdown.
-	SetState(BufferModeState::Filling, FormatOne(Str("Status.Filling"), std::to_string(status_.delaySeconds)));
+	SetState(BufferModeState::Filling, FillingMessage());
 	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s",
 			  status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
 			  bufferOutputCap_ ? "on" : "off", codecWorkers_ ? "on" : "off");
@@ -275,13 +280,28 @@ void BufferModeController::EnterRefill(const char *reason)
 	// fillGeneration changes): OnFillTimerElapsed() switches back to the
 	// wrapper scene once the new ring is full.
 	++status_.fillGeneration;
-	SetState(BufferModeState::Filling, FormatOne(Str("Status.Filling"), std::to_string(status_.delaySeconds)));
+	SetState(BufferModeState::Filling, FillingMessage());
 	TRIGGLOW_LOG_WARN(kComponent, "%s: the video buffer restarted empty -- %s for the next %us while it refills",
 			  reason,
 			  wasFilling                         ? "the fill window starts over"
 			  : status_.loadingSceneName.empty() ? "no loading scene set, the delayed view stays blank"
 							     : "back to the loading scene",
-			  status_.delaySeconds);
+			  AppliedDelaySeconds());
+}
+
+uint32_t BufferModeController::AppliedDelaySeconds() const
+{
+	return status_.effectiveDelaySeconds > 0 ? std::min(status_.effectiveDelaySeconds, status_.delaySeconds)
+						 : status_.delaySeconds;
+}
+
+std::string BufferModeController::FillingMessage() const
+{
+	const uint32_t applied = AppliedDelaySeconds();
+	if (applied < status_.delaySeconds)
+		return FormatArgs(Str("Status.FillingTrimmed"),
+				  {std::to_string(applied), std::to_string(status_.delaySeconds)});
+	return FormatArgs(Str("Status.Filling"), {std::to_string(applied)});
 }
 
 void BufferModeController::OnBufferRestarted()
