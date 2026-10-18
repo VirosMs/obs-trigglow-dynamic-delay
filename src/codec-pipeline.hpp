@@ -220,6 +220,10 @@ public:
 	// call ReleaseDisplay().
 	bool AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, DecodedLease &lease);
 	void ReleaseDisplay(DecodedLease &lease);
+	// Only publishes a target (nothing is shown): lets the decoder start on
+	// the first frames before playback begins, e.g. right before the fill
+	// window ends. No-op in sync mode.
+	void PrimeDecode(uint64_t targetNs);
 
 	// --- Telemetry (any thread) ---
 	void TakeWindowStats(WindowStats &out);

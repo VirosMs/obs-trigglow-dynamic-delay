@@ -125,6 +125,9 @@ uint32_t EncodeSliceThreadCount()
 // screen. MJPEG decode p95 is 5.8ms at 1440p (35% of a 60fps frame), so 2
 // would do; 3 absorbs a slow frame or a short CPU spike from the game.
 constexpr uint32_t kDecodeLookaheadFrames = 3;
+// How long before the fill window ends the decoder is pointed at the oldest
+// frame (CodecPipeline::PrimeDecode()).
+constexpr uint64_t kDecodePrimeWindowNs = 250000000ULL;
 
 // Payload arena blocks (perf2 #3): ~1/16 of the expected ring bytes, between
 // 4 and 32 MiB, and always room for two raw frames (raw fallback).
@@ -1540,8 +1543,14 @@ void VideoDelayFilter::DrawDelayed(uint32_t sourceWidth, uint32_t sourceHeight, 
 		// Program for exactly this window. Right as the window ends the
 		// oldest frame can be a couple of frames younger than the delay:
 		// show it rather than flash nothing.
-		if (oldestNs - targetNs > 2 * captureIntervalNs)
+		if (oldestNs - targetNs > 2 * captureIntervalNs) {
+			// The last quarter second of the fill: have the decoder start
+			// on the oldest frames now, so the first delayed frame is ready
+			// the moment it's due instead of one decode later.
+			if (oldestNs - targetNs <= kDecodePrimeWindowNs)
+				pipeline_->PrimeDecode(oldestNs);
 			return;
+		}
 		targetNs = oldestNs;
 	}
 

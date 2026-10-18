@@ -567,6 +567,20 @@ void CodecPipeline::ReleaseDisplay(DecodedLease &lease)
 	lease = DecodedLease{};
 }
 
+void CodecPipeline::PrimeDecode(uint64_t targetNs)
+{
+	if (!Threaded())
+		return;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (targetNs_ == targetNs)
+			return;
+		targetNs_ = targetNs;
+		++wakeSerial_;
+	}
+	decodeCv_.notify_one();
+}
+
 void CodecPipeline::EncodeLoop(uint32_t worker)
 {
 	if (options_.nameThread) {

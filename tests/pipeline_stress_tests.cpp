@@ -298,6 +298,8 @@ RunStats RunScenario(const Scenario &s)
 			if (!play && oldest <= target + 2 * captureIntervalNs) {
 				target = oldest; // Fill boundary, like the filter.
 				play = true;
+			} else if (!play && oldest <= target + s.delayNs / 4) {
+				pipeline->PrimeDecode(oldest); // Like the filter's last quarter second of fill.
 			}
 			if (play) {
 				DecodedLease lease;
