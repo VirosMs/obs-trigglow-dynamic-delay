@@ -394,6 +394,14 @@ QString BuildStyleSheet(const uitokens::Tokens &t, double basePt)
 	add(QStringLiteral("QComboBox, QSpinBox, QLineEdit { height: 24px; min-height: 24px; max-height: 24px; "
 			   "margin: 0px; padding: 2px 8px 2px 10px; }"));
 	add(QStringLiteral("QPlainTextEdit { padding: 4px 6px; }"));
+	// Placeholders: without their own color Qt draws them in the text color at
+	// half alpha, 3.3:1 on Yami Light's fields; this one reaches AA
+	// (uitokens::Tokens::placeholder; QSS property since Qt 6.5). A combo box
+	// with a style sheet draws its placeholder in `color` instead, so the
+	// empty scene picker is tagged tgEmpty (TrigglowDelayDock) and recolored.
+	add(QStringLiteral("QLineEdit, QPlainTextEdit, QComboBox { placeholder-text-color: %1; }")
+		    .arg(C(t.placeholder)));
+	add(QStringLiteral("QComboBox[tgEmpty=\"true\"] { color: %1; }").arg(C(t.placeholder)));
 	add(QStringLiteral(
 		    "QComboBox:hover, QSpinBox:hover, QLineEdit:hover, QPlainTextEdit:hover { border-color: %1; }")
 		    .arg(muted));

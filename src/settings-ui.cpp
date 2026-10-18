@@ -936,6 +936,9 @@ void TrigglowDelayDock::RefreshFromStatus(const BufferModeStatus &status)
 
 	const QSignalBlocker blockLive(liveSceneCombo_);
 	liveSceneCombo_->setCurrentIndex(liveIndex); // -1: the placeholder, no scene shown as chosen.
+	// Placeholder color (see the tgEmpty rule in ui-theme.cpp).
+	ui::SetStyleProperty(liveSceneCombo_, "tgEmpty",
+			     liveIndex < 0 ? QStringLiteral("true") : QStringLiteral("false"));
 
 	const QSignalBlocker blockLoading(loadingSceneCombo_);
 	int loadingIndex = status.loadingSceneName.empty()

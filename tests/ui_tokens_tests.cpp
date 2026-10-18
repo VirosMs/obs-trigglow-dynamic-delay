@@ -225,6 +225,8 @@ void TestAccessibilityContract()
 		}
 		for (Rgb bg : {t.surface, t.surfaceCard})
 			CheckRatio(t.warningText, bg, 4.5, "warningText", n);
+		// Placeholders ("you@email.com", "Choose a scene...") are text too.
+		CheckRatio(t.placeholder, t.field, 4.5, "placeholder on field", n);
 
 		// Chips and banners.
 		CheckRatio(t.accentText, t.accentTint, 4.5, "accentText on accentTint (seconds chip)", n);

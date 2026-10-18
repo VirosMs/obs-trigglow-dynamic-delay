@@ -95,9 +95,10 @@ struct Tokens {
 	Rgb surfaceCard; // Cards (the theme's base color).
 	Rgb field;       // Combo boxes, spin boxes, line edits: a step darker than the card.
 	Rgb text;
-	Rgb textMuted;  // Labels, details, hints.
-	Rgb line;       // Decorative hairlines (card borders, dividers, progress track).
-	Rgb lineStrong; // Field and secondary-button borders (WCAG 1.4.11: 3:1).
+	Rgb textMuted;   // Labels, details, hints.
+	Rgb placeholder; // Placeholder text in fields (QSS placeholder-text-color): AA on the field.
+	Rgb line;        // Decorative hairlines (card borders, dividers, progress track).
+	Rgb lineStrong;  // Field and secondary-button borders (WCAG 1.4.11: 3:1).
 
 	Rgb accent;     // Cyan fill.
 	Rgb accentText; // Cyan text and icons (darkened on light themes).

@@ -150,6 +150,7 @@ Tokens Compute(const PaletteInput &palette)
 			EnsureContrast(palette.highlight, {palette.base, palette.window}, kComponentContrast);
 		t.field = palette.base;
 		t.textMuted = palette.text;
+		t.placeholder = palette.text;
 		t.line = palette.text;
 		t.lineStrong = palette.text;
 		t.accent = highlight;
@@ -211,6 +212,10 @@ Tokens Compute(const PaletteInput &palette)
 	t.textMuted = EnsureContrast(Mix(palette.text, card, dark ? 0.65 : 0.70),
 				     {card, window, t.field, t.warningTint}, kTextContrast);
 	t.text = EnsureContrast(palette.text, {card, window, t.field, t.warningTint, t.accentTint}, kTextContrast);
+	// Without a color of its own, Qt draws placeholders in the text color at
+	// half alpha: 3.3:1 on Yami Light's fields. The muted text reaches AA on
+	// the field and still reads as "nothing typed yet" next to real text.
+	t.placeholder = EnsureContrast(t.textMuted, {t.field}, kTextContrast);
 
 	t.focus = EnsureContrast(dark ? brand::kCyan : FromHex("#006a8e"), {card, window, t.field}, kComponentContrast);
 	t.focusPrimary = EnsureContrast(palette.text, {window, card}, kComponentContrast);
