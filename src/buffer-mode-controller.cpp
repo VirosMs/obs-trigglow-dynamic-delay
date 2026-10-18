@@ -154,6 +154,7 @@ void BufferModeController::Enable()
 	// Every cycle, so the plugin settings file always wins over whatever the
 	// filter saved with the scene collection.
 	bridge_.SetBufferFilterOutputCap(status_.liveSceneName, bufferOutputCap_);
+	bridge_.SetBufferFilterCodecWorkers(status_.liveSceneName, codecWorkers_);
 
 	// Audio: unlike the video filter, these attach to individual leaf audio
 	// sources inside the live scene (Mic, Desktop, etc.), not the scene
@@ -187,9 +188,9 @@ void BufferModeController::Enable()
 		bridge_.SetCurrentSceneByName(status_.loadingSceneName);
 
 	SetState(BufferModeState::Filling, FormatOne(Str("Status.Filling"), std::to_string(status_.delaySeconds)));
-	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s",
+	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s",
 			  status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
-			  bufferOutputCap_ ? "on" : "off");
+			  bufferOutputCap_ ? "on" : "off", codecWorkers_ ? "on" : "off");
 
 	// New cycle: warn again about any encoder above the buffer, starting with
 	// the outputs already running right now.
@@ -259,9 +260,10 @@ void BufferModeController::Toggle()
 
 void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
 					std::string loadingSceneName, bool showOverlay, uint32_t overlayCorner,
-					bool bufferOutputCap)
+					bool bufferOutputCap, bool codecWorkers)
 {
 	bufferOutputCap_ = bufferOutputCap;
+	codecWorkers_ = codecWorkers;
 	status_.delaySeconds = delaySeconds;
 	status_.minResolutionHeight = minResolutionHeight;
 	status_.liveSceneName = std::move(liveSceneName);
@@ -276,7 +278,16 @@ void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResol
 BufferModeController::SettingsSnapshot BufferModeController::SaveSettings() const
 {
 	return {status_.delaySeconds, status_.minResolutionHeight, status_.liveSceneName, status_.loadingSceneName,
-		status_.showOverlay,  status_.overlayCorner,       bufferOutputCap_};
+		status_.showOverlay,  status_.overlayCorner,       bufferOutputCap_,      codecWorkers_};
+}
+
+PipelineHealth BufferModeController::GetPipelineHealth() const
+{
+	PipelineHealth health;
+	health.codecWorkers = codecWorkers_;
+	if (!status_.liveSceneName.empty())
+		bridge_.GetBufferPipelineHealth(status_.liveSceneName, health);
+	return health;
 }
 
 void BufferModeController::SetState(BufferModeState state, std::string message)

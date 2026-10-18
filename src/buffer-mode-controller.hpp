@@ -26,6 +26,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 #include "obs-frontend-bridge.hpp"
+#include "pipeline-health.hpp"
 
 // buffer-mode-controller owns the state machine for the "no reconnect"
 // delay (issue #173 phase 2, video-only): unlike delay-controller (which
@@ -142,6 +143,15 @@ public:
 						 bufferOutputCap_);
 	}
 
+	// Health of the video buffer's pipeline (v0.6.0, design B.8): the
+	// degradation rung it's on, why, and what it buffers right now -- for a
+	// non-blocking dock notice such as "Buffer reduced to 1280x720 because of
+	// CPU load" (PipelineHealth::Degraded()). Cheap and never blocks on the
+	// graphics thread, so the dock can poll it (e.g. once a second); UI
+	// thread. A default PipelineHealth (running == false) when the filter
+	// doesn't exist yet.
+	PipelineHealth GetPipelineHealth() const;
+
 	// Called once by the dock's fill timer after status_.delaySeconds has
 	// elapsed since Enable(). No-op if we're no longer Filling (e.g. the
 	// user pressed Disable before the timer fired).
@@ -156,9 +166,12 @@ public:
 	// buffer-mode-settings.json (no dock control, by design): false turns off
 	// the v0.5.1 cap at OBS's output resolution (VideoDelayFilter then sizes
 	// like v0.5.0). Only read at load, so changing it needs an OBS restart.
+	// codecWorkers is the hidden "codec_workers" key (v0.6.0 kill switch, same
+	// rules): false runs the MJPEG encode/decode on OBS's graphics thread, as
+	// before v0.6.0, instead of on worker threads.
 	void LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
 			  std::string loadingSceneName, bool showOverlay = true, uint32_t overlayCorner = 0,
-			  bool bufferOutputCap = true);
+			  bool bufferOutputCap = true, bool codecWorkers = true);
 	struct SettingsSnapshot {
 		uint32_t delaySeconds;
 		uint32_t minResolutionHeight;
@@ -167,6 +180,7 @@ public:
 		bool showOverlay;
 		uint32_t overlayCorner;
 		bool bufferOutputCap;
+		bool codecWorkers;
 	};
 	SettingsSnapshot SaveSettings() const;
 
@@ -231,6 +245,7 @@ private:
 
 	uint32_t effectiveDelaySeconds_ = 0; // Set by SyncAudioDelayToVideoEffective().
 	bool bufferOutputCap_ = true;        // Hidden buffer_output_cap setting, see LoadSettings().
+	bool codecWorkers_ = true;           // Hidden codec_workers setting (kill switch), see LoadSettings().
 	// (encoder name, width, height) already warned about this cycle
 	// (WarnAboutEncodersAboveBuffer); cleared by Enable().
 	std::set<std::tuple<std::string, uint32_t, uint32_t>> warnedEncoders_;

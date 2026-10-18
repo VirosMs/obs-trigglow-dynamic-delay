@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <vector>
 
 #include "encoder-check.hpp"      // encodercheck::Scope, for ListActiveVideoEncoders()
+#include "pipeline-health.hpp"    // PipelineHealth, for GetBufferPipelineHealth()
 #include "video-delay-filter.hpp" // VideoDelayFilter::BufferFitEstimate, for EstimateBufferFit()
 
 #include <obs.hpp> // OBSSourceAutoRelease: libobs's own RAII wrapper for owned source references
@@ -225,6 +226,18 @@ public:
 	// it on every Enable(), like the delay and the quality floor. No-op
 	// (returns false) if EnsureBufferWrapperScene hasn't run yet.
 	bool SetBufferFilterOutputCap(const std::string &liveSceneName, bool capToOutput) const;
+
+	// Pushes the hidden codec_workers setting (v0.6.0 kill switch) into the
+	// already-attached filter: false = MJPEG encode/decode on the graphics
+	// thread, no worker threads. Same rules as SetBufferFilterOutputCap().
+	bool SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const;
+
+	// Copies the video filter's pipeline health (degradation rung, buffered
+	// size, encode threads, drop/repeat rates -- see pipeline-health.hpp) into
+	// `out`. Never hops to the graphics thread (the filter's proc only copies
+	// a struct under a small mutex), so it's safe to poll from the UI. False
+	// (out untouched) if the filter doesn't exist.
+	bool GetBufferPipelineHealth(const std::string &liveSceneName, PipelineHealth &out) const;
 
 	// What the video filter is ACTUALLY delaying by right now, in seconds --
 	// can be less than its configured delay if the RAM budget didn't fit the

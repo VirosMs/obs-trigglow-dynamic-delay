@@ -510,6 +510,40 @@ bool ObsFrontendBridge::SetBufferFilterOutputCap(const std::string &liveSceneNam
 	return true;
 }
 
+bool ObsFrontendBridge::SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const
+{
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterCodecWorkers(%s): FindBufferFilter returned null, no-op",
+				  codecWorkers ? "true" : "false");
+		return false;
+	}
+	// Merged onto the filter's existing settings, like the setters around.
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "codec_workers", codecWorkers);
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
+bool ObsFrontendBridge::GetBufferPipelineHealth(const std::string &liveSceneName, PipelineHealth &out) const
+{
+	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	if (!filter)
+		return false;
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return false;
+	PipelineHealth health;
+	calldata_t cd = {};
+	calldata_set_ptr(&cd, "health", &health);
+	const bool ok = proc_handler_call(procHandler, "get_pipeline_state", &cd);
+	calldata_free(&cd);
+	if (ok)
+		out = health;
+	return ok;
+}
+
 bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &liveSceneName,
 							   uint32_t heightPixels) const
 {
