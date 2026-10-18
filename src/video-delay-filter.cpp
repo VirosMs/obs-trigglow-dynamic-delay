@@ -399,6 +399,13 @@ VideoDelayFilter::VideoDelayFilter(obs_source_t *filterSource) : filterSource_(f
 
 VideoDelayFilter::~VideoDelayFilter()
 {
+	// Last partial "perf check" window (OBS closing, or the filter removed
+	// while the delay was on). Safe here: OBS runs a source's destroy only
+	// after detaching it from its parent, so no Render() is in flight, and
+	// LogPerfWindow() reads only this object's own members (perf_, ring_ sizes,
+	// lastFit_, encode totals), no OBS objects. A window already logged by
+	// ReleaseBuffersTask (delay disabled) is empty and writes nothing.
+	LogPerfWindow("filter destroyed");
 	ReleaseRing();
 	ReleaseGpuObjects();
 }
