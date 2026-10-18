@@ -219,7 +219,10 @@ public:
 	// Enables/disables the buffer filter attached by EnsureBufferWrapperScene.
 	// No-op (returns false) if that hasn't been called successfully yet for
 	// the current live scene. Enabling also subscribes to the filter's
-	// kBufferRestartedSignal (FrontendEvent::BufferRestarted).
+	// kBufferRestartedSignal (FrontendEvent::BufferRestarted) and keeps a weak
+	// reference to it until it's disabled again: from then on the bridge
+	// reaches this filter through that reference, not by name, so a live
+	// scene renamed while the delay is on doesn't lose it (disabling included).
 	bool SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const;
 
 	// Pushes `seconds` into the already-attached filter's configured delay.
@@ -243,12 +246,18 @@ public:
 	// thread, no worker threads. Same rules as SetBufferFilterOutputCap().
 	bool SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const;
 
-	// Copies the video filter's pipeline health (degradation rung, buffered
-	// size, encode threads, drop/repeat rates -- see pipeline-health.hpp) into
-	// `out`. Never hops to the graphics thread (the filter's proc only copies
-	// a struct under a small mutex), so it's safe to poll from the UI. False
-	// (out untouched) if the filter doesn't exist.
-	bool GetBufferPipelineHealth(const std::string &liveSceneName, PipelineHealth &out) const;
+	// Copies the pipeline health (degradation rung, buffered size, encode
+	// threads, drop/repeat rates -- see pipeline-health.hpp) of the video
+	// filter SetBufferFilterEnabled(true) switched on into `out`. Polled by
+	// the dock once a second, so it never looks the filter up by name (that
+	// walks the wrapper scene, locking it against the graphics thread that is
+	// rendering it, and logs when the scene is gone): it goes through the
+	// weak reference, and never hops to the graphics thread (the filter's
+	// proc only copies a struct under a small mutex). False (out untouched)
+	// while no filter is switched on, or once it no longer exists (removed,
+	// or the scene collection changed) -- that last case logs one WARN per
+	// activation.
+	bool GetBufferPipelineHealth(PipelineHealth &out) const;
 
 	// What the video filter is ACTUALLY delaying by right now, in seconds --
 	// can be less than its configured delay if the RAM budget didn't fit the
@@ -405,6 +414,14 @@ private:
 	// store the raw pointer past that. Null if any step is missing.
 	OBSSourceAutoRelease FindBufferFilter(const std::string &liveSceneName) const;
 
+	// Owned reference to the filter SetBufferFilterEnabled(true) switched on
+	// (activeBufferFilter_), or null when there's none or it no longer exists.
+	OBSSourceAutoRelease ActiveBufferFilter() const;
+	// ActiveBufferFilter() while the delay is on, else FindBufferFilter().
+	OBSSourceAutoRelease BufferFilterFor(const std::string &liveSceneName) const;
+	// Drops activeBufferFilter_.
+	void ForgetActiveBufferFilter() const;
+
 	// Collects the direct children of `liveSceneName` that advertise
 	// OBS_SOURCE_AUDIO (see EnsureAudioDelayFilters's header comment for
 	// why only direct children, and why this naturally skips nested
@@ -416,6 +433,15 @@ private:
 	FrontendEventHandler handler_;
 	OverlayImageProvider overlayImageProvider_;
 	bool initialized_ = false;
+
+	// Weak reference to the video delay filter SetBufferFilterEnabled(true)
+	// switched on, until SetBufferFilterEnabled(false) (or Shutdown())
+	// releases it; null while the delay is off. Bookkeeping of the const
+	// setters that switch the filter, hence mutable. UI thread only.
+	mutable obs_weak_source_t *activeBufferFilter_ = nullptr;
+	// GetBufferPipelineHealth() logged that the filter went away (once per
+	// activation).
+	mutable bool loggedBufferFilterGone_ = false;
 
 	// Owned strong ref to the scene AcquireLiveSceneRendering() is currently
 	// keeping alive, or null if nothing is held. Only one at a time (matches

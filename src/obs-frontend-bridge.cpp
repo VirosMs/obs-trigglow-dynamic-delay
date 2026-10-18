@@ -83,6 +83,8 @@ void ObsFrontendBridge::Shutdown()
 		liveSceneRenderTarget_ = nullptr;
 	}
 
+	ForgetActiveBufferFilter();
+
 	if (g_eventBridge == this)
 		g_eventBridge = nullptr; // A BufferRestartedTask() still queued finds it gone.
 	if (!initialized_)
@@ -428,6 +430,29 @@ OBSSourceAutoRelease ObsFrontendBridge::FindBufferFilter(const std::string &live
 	return filter;
 }
 
+OBSSourceAutoRelease ObsFrontendBridge::ActiveBufferFilter() const
+{
+	// +1 reference, or null if the filter was destroyed meanwhile.
+	return activeBufferFilter_ ? obs_weak_source_get_source(activeBufferFilter_) : nullptr;
+}
+
+OBSSourceAutoRelease ObsFrontendBridge::BufferFilterFor(const std::string &liveSceneName) const
+{
+	if (activeBufferFilter_) {
+		if (OBSSourceAutoRelease filter = ActiveBufferFilter())
+			return filter;
+	}
+	return FindBufferFilter(liveSceneName);
+}
+
+void ObsFrontendBridge::ForgetActiveBufferFilter() const
+{
+	if (activeBufferFilter_)
+		obs_weak_source_release(activeBufferFilter_);
+	activeBufferFilter_ = nullptr;
+	loggedBufferFilterGone_ = false;
+}
+
 bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneName) const
 {
 	if (liveSceneName.empty())
@@ -562,14 +587,22 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName, bool enabled) const
 {
 	// Held until this function returns: the "release_buffers" call below
-	// blocks on a graphics task that uses the filter's private data.
-	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	// blocks on a graphics task that uses the filter's private data. Switching
+	// off reaches the filter that was switched on, wherever it is now (the
+	// live scene may have been renamed meanwhile); by name otherwise.
+	OBSSourceAutoRelease filter = enabled ? FindBufferFilter(liveSceneName) : BufferFilterFor(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterEnabled(%s): FindBufferFilter returned null, no-op",
 				  enabled ? "true" : "false");
+		if (!enabled)
+			ForgetActiveBufferFilter();
 		return false;
 	}
 	obs_source_set_enabled(filter, enabled);
+	if (enabled) {
+		ForgetActiveBufferFilter();
+		activeBufferFilter_ = obs_source_get_weak_source(filter);
+	}
 
 	if (enabled) {
 		// A hard resize while the delay is on (delay change, OBS video reset)
@@ -599,6 +632,7 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 					  "RAM ring may not have been freed");
 		}
 		calldata_free(&cd);
+		ForgetActiveBufferFilter();
 	}
 
 	TRIGGLOW_LOG_INFO(kComponent, "SetBufferFilterEnabled(%s) applied to filter %p", enabled ? "true" : "false",
@@ -608,7 +642,7 @@ bool ObsFrontendBridge::SetBufferFilterEnabled(const std::string &liveSceneName,
 
 bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveSceneName, uint32_t seconds) const
 {
-	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterDelaySeconds(%us): FindBufferFilter returned null, no-op",
 				  seconds);
@@ -623,7 +657,7 @@ bool ObsFrontendBridge::SetBufferFilterDelaySeconds(const std::string &liveScene
 
 bool ObsFrontendBridge::SetBufferFilterOutputCap(const std::string &liveSceneName, bool capToOutput) const
 {
-	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterOutputCap(%s): FindBufferFilter returned null, no-op",
 				  capToOutput ? "true" : "false");
@@ -639,7 +673,7 @@ bool ObsFrontendBridge::SetBufferFilterOutputCap(const std::string &liveSceneNam
 
 bool ObsFrontendBridge::SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const
 {
-	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterCodecWorkers(%s): FindBufferFilter returned null, no-op",
 				  codecWorkers ? "true" : "false");
@@ -653,11 +687,20 @@ bool ObsFrontendBridge::SetBufferFilterCodecWorkers(const std::string &liveScene
 	return true;
 }
 
-bool ObsFrontendBridge::GetBufferPipelineHealth(const std::string &liveSceneName, PipelineHealth &out) const
+bool ObsFrontendBridge::GetBufferPipelineHealth(PipelineHealth &out) const
 {
-	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
-	if (!filter)
+	// Through the weak reference only (see the header): no scene walk, no
+	// WARN a second, nothing to lock against the graphics thread.
+	OBSSourceAutoRelease filter = ActiveBufferFilter();
+	if (!filter) {
+		if (activeBufferFilter_ && !loggedBufferFilterGone_) {
+			TRIGGLOW_LOG_WARN(kComponent, "the video delay filter switched on by Enable no longer exists "
+						      "(removed, or the scene collection changed): no pipeline health "
+						      "until the delay is turned on again");
+			loggedBufferFilterGone_ = true;
+		}
 		return false;
+	}
 	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
 	if (!procHandler)
 		return false;
@@ -690,7 +733,7 @@ void ObsFrontendBridge::BufferRestartedTask(void *param)
 bool ObsFrontendBridge::SetBufferFilterMinResolutionHeight(const std::string &liveSceneName,
 							   uint32_t heightPixels) const
 {
-	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent,
 				  "SetBufferFilterMinResolutionHeight(%u): FindBufferFilter returned null, no-op",
@@ -710,7 +753,7 @@ uint32_t ObsFrontendBridge::GetVideoEffectiveDelaySeconds(const std::string &liv
 {
 	// Held until this function returns: the proc reads the filter's private
 	// data (on this thread, from its current settings).
-	OBSSourceAutoRelease filter = FindBufferFilter(liveSceneName);
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
 	if (!filter)
 		return 0;
 

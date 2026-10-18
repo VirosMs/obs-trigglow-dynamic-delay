@@ -382,8 +382,7 @@ PipelineHealth BufferModeController::GetPipelineHealth() const
 {
 	PipelineHealth health;
 	health.codecWorkers = codecWorkers_;
-	if (!status_.liveSceneName.empty())
-		bridge_.GetBufferPipelineHealth(status_.liveSceneName, health);
+	bridge_.GetBufferPipelineHealth(health);
 	return health;
 }
 
