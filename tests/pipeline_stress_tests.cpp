@@ -66,6 +66,8 @@ std::atomic<uint64_t> g_decodes{0};
 // Ring lifetimes: which thread frees each one (the simulated graphics thread
 // must never be the one).
 std::thread::id g_graphicsThread;
+// Added to every fake decode (microseconds): a decoder slower than the capture.
+std::atomic<uint32_t> g_decodeExtraUs{0};
 std::atomic<uint64_t> g_ringsCreated{0};
 std::atomic<uint64_t> g_ringsFreed{0};
 std::atomic<uint64_t> g_ringsFreedOnGraphics{0};
@@ -159,7 +161,7 @@ public:
 
 	bool Decode(const uint8_t *packet, size_t bytes, DecodedImage &out) override
 	{
-		SpinFor(std::uniform_int_distribution<uint32_t>(50, 400)(rng_));
+		SpinFor(std::uniform_int_distribution<uint32_t>(50, 400)(rng_) + g_decodeExtraUs.load());
 		++g_decodes;
 		uint32_t magic = 0, width = 0, height = 0;
 		uint64_t stamp = 0;
@@ -431,13 +433,17 @@ void TestRollingWindowTags()
 	CHECK_EQ(w.NewestTag(50), RollingWindow::kAnyTag);
 }
 
-// Rendering stops for 300 ms (OBS stalled, the scene hidden): the decoder had
-// decoded a few frames ahead of the old target, and those are now far older
-// than the frame due. The first frame shown afterwards must be (about) the due
-// one, never one of those (QA: one frame ~280 ms older than due).
-void RunPauseScenario()
+// pause: rendering stops for 300 ms (OBS stalled, the scene hidden): the
+// decoder had decoded a few frames ahead of the old target, and those are now
+// far older than the frame due. The first frame shown afterwards must be
+// (about) the due one, never one of those (QA: one frame ~280 ms older than
+// due). !pause: no pause, but a decoder 2.5 captures slow: it can't decode
+// every frame, and it jumps to the due one each time -- every frame it does
+// decode must still be shown (dropping late frames as stale would freeze the
+// delayed view).
+void RunPlaybackScenario(bool pause)
 {
-	testcheck::g_currentTest = "threaded, 300 ms render pause";
+	testcheck::g_currentTest = pause ? "threaded, 300 ms render pause" : "threaded, decoder slower than capture";
 	CodecPipeline::Options options;
 	options.threaded = true;
 	options.clockNs = &NowNs;
@@ -495,20 +501,34 @@ void RunPauseScenario()
 				std::this_thread::yield();
 		}
 	};
+	g_decodeExtraUs = pause ? 0 : static_cast<uint32_t>(periodNs * 5 / 2 / 1000);
 	runFor(1500000000ULL, false);
-	std::this_thread::sleep_for(std::chrono::milliseconds(300)); // No Render() at all.
-	runFor(100000000ULL, true);
+	if (pause)
+		std::this_thread::sleep_for(std::chrono::milliseconds(300)); // No Render() at all.
+	const uint64_t measureNs = pause ? 100000000ULL : 1000000000ULL;
+	runFor(measureNs, true);
 	CodecPipeline::WindowStats stats;
 	pipeline->TakeWindowStats(stats);
 	pipeline->Shutdown();
-	std::printf("  %s: %llu frames shown in the 100 ms after it, worst %.1f ms older than due (%llu stale "
+	g_decodeExtraUs = 0;
+	std::printf("  %s: %llu frames shown in the %llu ms measured, worst %.1f ms older than due (%llu stale "
 		    "decoded frames dropped)\n",
 		    testcheck::g_currentTest, static_cast<unsigned long long>(shownAfter),
-		    static_cast<double>(worstLagNs) / 1e6, static_cast<unsigned long long>(stats.staleDecoded));
-	CHECK(shownAfter > 0);
-	// The due frame, or one at most kStaleIntervals captures older (plus a
-	// capture interval of jitter between the two clock reads).
-	CHECK(worstLagNs <= (CodecPipeline::kStaleIntervals + 1) * periodNs);
+		    static_cast<unsigned long long>(measureNs / 1000000), static_cast<double>(worstLagNs) / 1e6,
+		    static_cast<unsigned long long>(stats.staleDecoded));
+	if (pause) {
+		CHECK(shownAfter > 0);
+		// The due frame, or one at most a couple of captures older (the decoder
+		// jumps to the due frame and decodes it while this loop renders on).
+		CHECK(worstLagNs <= 3 * periodNs);
+	} else {
+		// ~10.2 ms per decode: up to ~98 frames a second, each shown late
+		// but fresh. Nothing is dropped as stale (a few at most, if this
+		// loop itself stalls past 4 captures: that IS a render pause).
+		CHECK(shownAfter >= 30u);
+		CHECK(stats.staleDecoded <= 5u);
+		CHECK(worstLagNs <= 8 * periodNs);
+	}
 }
 
 } // namespace
@@ -552,7 +572,8 @@ int main(int argc, char **argv)
 	sync.periodNs = 8000000; // The fake codec runs on this thread: leave it room.
 	RunScenario(sync);
 
-	RunPauseScenario();
+	RunPlaybackScenario(true);
+	RunPlaybackScenario(false);
 	TestRollingWindowTags();
 
 	CHECK_EQ(g_tornFrames.load(), 0u);

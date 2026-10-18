@@ -326,6 +326,7 @@ void CodecPipeline::Detach(bool releaseCodecs, std::shared_ptr<FrameRing> retire
 		}
 		targetNs_ = 0;
 		lastShownNs_ = 0;
+		lastAcquireNs_ = 0; // A new cycle's first frame isn't "after a pause".
 		++wakeSerial_;
 	}
 	encodeCv_.notify_all();
@@ -586,12 +587,17 @@ bool CodecPipeline::AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, D
 			dueNs = 0;
 	}
 
+	const uint64_t nowNs = options_.clockNs();
+
 	std::array<std::shared_ptr<void>, kMaxLookaheadFrames + 2> doomed;
 	size_t doomedCount = 0;
 	uint32_t ahead = 0;
 	uint32_t stale = 0;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
+		const uint64_t staleNs = kStaleIntervals * captureIntervalNs_;
+		const bool resumed = lastAcquireNs_ != 0 && nowNs > lastAcquireNs_ + staleNs;
+		lastAcquireNs_ = nowNs;
 		targetNs_ = targetNs;
 		lastShownNs_ = lastShownNs;
 		++wakeSerial_;
@@ -610,12 +616,14 @@ bool CodecPipeline::AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, D
 			else if (!best || entry.captureNs > best->captureNs)
 				best = &entry;
 		}
-		// Stale: decoded ahead of a target that has since moved on by far more
-		// than a decode (a pause in rendering): QA saw one frame shown ~280 ms
-		// older than due right after a 300 ms pause. None of the decoded frames
-		// at or before the target will ever be shown -- the due one is newer --
-		// so they all go, freeing the pool for it.
-		if (best && dueNs > best->captureNs + kStaleIntervals * captureIntervalNs_) {
+		// Stale: rendering just resumed after a pause, and the frames decoded
+		// ahead before it are now far older than the one due: QA saw one shown
+		// ~280 ms older than due right after a 300 ms pause. None of the
+		// decoded frames at or before the target will ever be shown -- the due
+		// one is newer -- so they all go, freeing the pool for it. Only after a
+		// pause: a decoder that is merely slow (frames arrive late but fresh)
+		// must keep having them shown, or the delayed view would freeze.
+		if (resumed && best && dueNs > best->captureNs + staleNs) {
 			for (DecodedEntry &entry : decoded_) {
 				if (entry.state == DecodedEntry::State::Ready && entry.captureNs <= targetNs) {
 					entry.state = DecodedEntry::State::Free;
