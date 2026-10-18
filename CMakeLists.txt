@@ -118,7 +118,9 @@ if(ENABLE_QT)
     # anyway just gets silently rejected ("No functional TLS backend was
     # found") rather than working. WinHTTP has no such dependency: TLS is
     # handled by the OS itself.
-    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
+    # dxgi: the GPU's PCI vendor ID for Trigi's opt-in technical data
+    # (src/diagnostics-collector.cpp).
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp dxgi)
   endif()
 
   target_compile_options(
@@ -180,6 +182,10 @@ target_sources(
     src/log-redact.hpp
     src/chat-text.cpp
     src/chat-text.hpp
+    src/support-diagnostics.cpp
+    src/support-diagnostics.hpp
+    src/diagnostics-collector.cpp
+    src/diagnostics-collector.hpp
     src/bug-report.cpp
     src/bug-report.hpp
     src/report-bug-dialog.cpp
