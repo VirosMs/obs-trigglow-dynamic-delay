@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 using namespace trigglow::uitokens;
 
@@ -77,16 +78,24 @@ PaletteInput P(const char *window, const char *base, const char *text, const cha
 	return p;
 }
 
-// Palettes of the themes the dock has to live in: OBS 31's own .obt files
-// (frontend/data/themes, palette_window/base/text/highlight), the theme the
-// proposal measured in the published dock captures, and the Windows
+// Palettes of the themes the dock has to live in: OBS 31.1.1's own themes
+// (.deps/obs-studio-31.1.1/frontend/data/themes: Yami.obt and its Yami_*.ovt
+// variants; palette_window = bg_window, palette_base = bg_base, palette_text =
+// text, palette_highlight = primary, palette_highlightedText = text), the
+// theme the proposal measured in the published dock captures, other dark and
+// light palettes (white cards, pure black text), and the Windows
 // high-contrast schemes.
 const Theme kThemes[] = {
-	{"Yami (default)", P("#1d1f26", "#272a33", "#ffffff", "#284cb8", "#ffffff"), Scheme::Dark},
+	{"Yami (default, OBS 31)", P("#1d1f26", "#272a33", "#ffffff", "#284cb8", "#ffffff"), Scheme::Dark},
 	{"Captured dark", P("#31363b", "#232629", "#eff0f1", "#3daee9", "#eff0f1"), Scheme::Dark},
-	{"Yami Grey", P("#2f2f2f", "#3a3a3a", "#ffffff", "#4f4f4f", "#ffffff"), Scheme::Dark},
+	{"Yami Grey (OBS 31)", P("#212121", "#2f2f2f", "#ffffff", "#284cb8", "#ffffff"), Scheme::Dark},
+	{"Yami Classic (OBS 31)", P("#3a393a", "#1f1e1f", "#ffffff", "#19344c", "#ffffff"), Scheme::Dark},
+	{"Yami Acri (OBS 31)", P("#101010", "#181819", "#ffffff", "#131a30", "#ffffff"), Scheme::Dark},
+	{"Yami Rachni (OBS 31)", P("#31363b", "#232629", "#ffffff", "#914c67", "#ffffff"), Scheme::Dark},
+	{"Dark grey", P("#2f2f2f", "#3a3a3a", "#ffffff", "#4f4f4f", "#ffffff"), Scheme::Dark},
 	{"Mid grey", P("#4a4a4a", "#3c3c3c", "#dcdcdc", "#5a8dee", "#ffffff"), Scheme::Dark},
-	{"Yami Light", P("#e8e9ec", "#ffffff", "#1a1b20", "#7aa7f4", "#000000"), Scheme::Light},
+	{"Yami Light (OBS 31)", P("#d3d3d3", "#e5e5e5", "#0a0a0a", "#8cb5ff", "#0a0a0a"), Scheme::Light},
+	{"Light, white cards", P("#e8e9ec", "#ffffff", "#1a1b20", "#7aa7f4", "#000000"), Scheme::Light},
 	{"Light grey", P("#f0f0f0", "#ffffff", "#000000", "#0078d4", "#ffffff"), Scheme::Light},
 	{"Light tinted", P("#dcdde3", "#f4f4f6", "#2a2b30", "#3874d8", "#ffffff"), Scheme::Light},
 	{"HC Black (Windows)", P("#000000", "#000000", "#ffffff", "#1aebff", "#000000", true), Scheme::HighContrast},
@@ -144,10 +153,21 @@ void TestSchemeDetection()
 	}
 }
 
+const PaletteInput &PaletteOf(const char *name)
+{
+	for (const Theme &theme : kThemes) {
+		if (std::strcmp(theme.name, name) == 0)
+			return theme.palette;
+	}
+	std::printf("FAIL: no theme called %s\n", name);
+	++g_failures;
+	return kThemes[0].palette;
+}
+
 void TestBrandValuesOnDarkAndLight()
 {
 	g_currentTest = "brand values";
-	const Tokens dark = Compute(kThemes[1].palette);
+	const Tokens dark = Compute(PaletteOf("Captured dark"));
 	// The proposal's dark tokens on the captured theme.
 	CHECK(dark.accentText == brand::kCyan);
 	CHECK(dark.warningText == brand::kAmber);
@@ -164,7 +184,7 @@ void TestBrandValuesOnDarkAndLight()
 	CHECK(dark.onGradient == brand::kOnGradient);
 	CHECK(dark.useGradient);
 
-	const Tokens light = Compute(kThemes[4].palette);
+	const Tokens light = Compute(PaletteOf("Light, white cards"));
 	// Fills stay brand; text variants darken to pass AA on white.
 	CHECK(light.accent == brand::kCyan);
 	CHECK(light.warning == brand::kAmber);
@@ -173,7 +193,15 @@ void TestBrandValuesOnDarkAndLight()
 	CHECK(light.dangerText == FromHex("#b42318"));
 	CHECK(light.useGradient);
 
-	const Tokens hc = Compute(kThemes[7].palette);
+	// OBS 31's Yami Light has grey cards (#e5e5e5 on a #d3d3d3 window): the
+	// text variants are pushed darker than on white cards to keep AA.
+	const Tokens yamiLight = Compute(PaletteOf("Yami Light (OBS 31)"));
+	CHECK(yamiLight.accent == brand::kCyan);
+	CHECK(yamiLight.useGradient);
+	CHECK(RelativeLuminance(yamiLight.accentText) < RelativeLuminance(FromHex("#006a8e")));
+	CHECK(ContrastRatio(yamiLight.accentText, yamiLight.surface) >= 4.5);
+
+	const Tokens hc = Compute(PaletteOf("HC Black (Windows)"));
 	CHECK(!hc.useGradient);
 	CHECK(hc.text == FromHex("#ffffff"));
 	CHECK(hc.textMuted == hc.text);
