@@ -42,6 +42,7 @@ extern "C" {
 #include "logging.hpp"
 #include "obs-frontend-bridge.hpp"
 #include "settings-ui.hpp"
+#include "ui-theme.hpp"
 #include "video-delay-filter.hpp"
 
 OBS_DECLARE_MODULE()
@@ -97,6 +98,34 @@ struct PluginState {
 };
 
 PluginState *g_state = nullptr;
+
+// Registers the bundled Archivo/Geist Mono (data/fonts) for the plugin's own
+// widgets and the overlay -- never as OBS's UI font -- and logs ONE line
+// either way. Without them every role falls back to OBS's UI font.
+void LoadBrandFonts()
+{
+	char *rawDir = obs_module_file("fonts");
+	const QString dir = rawDir ? QString::fromUtf8(rawDir) : QString();
+	bfree(rawDir);
+	const trigglow::ui::BrandFontsReport report = trigglow::ui::LoadBrandFonts(dir);
+	const QByteArray where = dir.isEmpty() ? QByteArray("(no data/fonts folder)") : dir.toUtf8();
+	const QByteArray loaded = report.loaded.join(QStringLiteral(", ")).toUtf8();
+	const QByteArray missing = report.missing.join(QStringLiteral(", ")).toUtf8();
+	if (!report.failed.isEmpty()) {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "brand fonts: could not register %s in %s (loaded: %s); those roles use OBS's UI "
+				  "font",
+				  report.failed.join(QStringLiteral(", ")).toUtf8().constData(), where.constData(),
+				  loaded.isEmpty() ? "none" : loaded.constData());
+	} else if (!report.missing.isEmpty()) {
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "brand fonts not bundled in %s (missing: %s; loaded: %s): using OBS's UI font",
+				  where.constData(), missing.constData(),
+				  loaded.isEmpty() ? "none" : loaded.constData());
+	} else {
+		TRIGGLOW_LOG_INFO(kComponent, "brand fonts loaded from %s: %s", where.constData(), loaded.constData());
+	}
+}
 
 // Moves an unreadable settings file out of the way (rename, or copy if that
 // fails) to "<file>.<yyyyMMdd-HHmmss>.invalid" next to it, so the defaults
@@ -255,6 +284,9 @@ bool obs_module_load(void)
 	trigglow::AudioDelayFilter::Register();
 
 	g_state = new PluginState();
+
+	// Before the dock uses them.
+	LoadBrandFonts();
 
 	g_state->authManager = std::make_unique<trigglow::AuthManager>();
 	g_state->authManager->Init();

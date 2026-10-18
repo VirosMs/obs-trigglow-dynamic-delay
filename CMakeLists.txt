@@ -94,8 +94,11 @@ if(ENABLE_FRONTEND_API)
 endif()
 
 if(ENABLE_QT)
-  find_package(Qt6 COMPONENTS Widgets Core)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+  # Qt6::Svg: QSvgRenderer recolors the dock's SVG icons at runtime
+  # (src/ui-theme.cpp). OBS itself loads Qt6Svg for its themes' icons, and
+  # obs-deps (Windows/macOS) and the Ubuntu build deps (libqt6svg6-dev) ship it.
+  find_package(Qt6 COMPONENTS Widgets Core Svg)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
 
   if(OS_WINDOWS)
     # AuthManager's HTTPS calls (see docs/ACCOUNT_GATE.md, src/auth-manager.hpp,
@@ -161,6 +164,11 @@ target_sources(
     src/update-checker.cpp
     src/update-checker.hpp
     src/i18n.hpp
+    src/ui-tokens.cpp
+    src/ui-tokens.hpp
+    src/ui-theme.cpp
+    src/ui-theme.hpp
+    src/resources/trigglow-ui.qrc
 )
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
@@ -168,7 +176,7 @@ set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STAND
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*). Off by default so plugin packaging is unchanged:
+# src/encoder-check.*, src/ui-tokens.*). Off by default so plugin packaging is unchanged:
 #   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
 #   cmake --build <dir> --config RelWithDebInfo
 #   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure

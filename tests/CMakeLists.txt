@@ -1,6 +1,6 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
-# src/encoder-check.*). No libobs, no Qt, no FFmpeg, no test framework. Two
-# ways to build them:
+# src/encoder-check.*, src/ui-tokens.*). No libobs, no Qt, no FFmpeg, no test
+# framework. Two ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
 #      cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
@@ -48,3 +48,10 @@ add_executable(
 target_include_directories(encoder_check_tests PRIVATE "${_src}")
 set_target_properties(encoder_check_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME encoder_check_tests COMMAND encoder_check_tests)
+
+# Color tokens of the dock and the report dialog: the WCAG AA contract on the
+# palettes of OBS's themes (src/ui-tokens.hpp).
+add_executable(ui_tokens_tests ui_tokens_tests.cpp "${_src}/ui-tokens.cpp" "${_src}/ui-tokens.hpp")
+target_include_directories(ui_tokens_tests PRIVATE "${_src}")
+set_target_properties(ui_tokens_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME ui_tokens_tests COMMAND ui_tokens_tests)
