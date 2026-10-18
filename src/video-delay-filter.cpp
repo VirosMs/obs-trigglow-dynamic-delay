@@ -119,9 +119,9 @@ constexpr int kMjpegQuality = 5;
 
 // Upper bound on the MJPEG encoder's slice threads (v0.5.1). The encode runs
 // synchronously on OBS's graphics thread, so slices cut its WALL time there
-// (measured with the vendored n9.0.2: 1080p encode 4.5 -> 1.8ms with 4
-// slices, same total CPU, ~3.5% bigger packets). More than 4 gains little and
-// competes with the game for cores.
+// (measured with the vendored n9.0.2: the 1080p encode path goes from 5.1 to
+// 1.8ms p50 with 4 slices, same total CPU, ~3.5% bigger packets). More than 4
+// gains little and competes with the game for cores.
 constexpr int kMaxEncodeSliceThreads = 4;
 
 // hardware_concurrency()/4 (logical CPUs), clamped to [1, kMaxEncodeSliceThreads]:
