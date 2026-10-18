@@ -31,6 +31,12 @@ function(set_target_properties_plugin target)
     OPTIONAL
   )
 
+  # The binary records only the PDB's file name, not the absolute build path
+  # (build machine folders and user name). Same effect as /PDBALTPATH:%_PDB%,
+  # whose % the Visual Studio generator escapes into a mangled name.
+  # Debuggers and symbol servers still match the PDB by name and GUID.
+  target_link_options(${target} PRIVATE "/PDBALTPATH:$<TARGET_PDB_FILE_NAME:${target}>")
+
   if(TARGET plugin-support)
     target_link_libraries(${target} PRIVATE plugin-support)
   endif()
