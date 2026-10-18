@@ -31,11 +31,11 @@
             }
         },
         "ffmpeg": {
-            "version": "autobuild-2026-10-03-18-14",
+            "version": "autobuild-2026-09-30-13-08",
             "baseUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download",
             "label": "FFmpeg (avcodec/avutil, BtbN LGPL-shared build, Windows only for now)",
             "hashes": {
-                "windows-x64": "dcd3a8ec5a45cfbf59dfc9336f5ebcb26db28b572c17c77d048bcebf9354add7"
+                "windows-x64": "7157177b8a6cb2174c1650ba8c71b363f2c78cba5330f88c4c02cf5b2b880646"
             }
         }
     },
