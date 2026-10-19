@@ -1227,6 +1227,20 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame, const
 	}
 	ObsEncoders(rank.obsEncodersKnown, rank.obsEncoders);
 	rank.blacklist = Blacklisted();
+	// Never Quick Sync in an elevated OBS. Its encoders reach the Intel
+	// runtime through the oneVPL dispatcher built into avcodec, which looks
+	// for libvpl/libmfx DLLs along a search path that includes places an
+	// unprivileged user (or their environment, ONEVPL_SEARCH_PATH) controls:
+	// a DLL planted there would be loaded into a process running as
+	// administrator. Changing how this process searches for DLLs isn't the
+	// plugin's call (it would change it for OBS and every other plugin), so
+	// that one family is left out; NVENC and AMF load their runtimes from the
+	// driver's own install, and the decode is D3D11VA.
+	rank.quickSyncAllowed = !ProcessIsElevated();
+	if (!rank.quickSyncAllowed && HasVendor(storage::GpuVendor::Intel))
+		Logf(settings_.log, PipelineLogLevel::Info,
+		     "storage codec: OBS runs as administrator -- Quick Sync is not tried (its runtime loader "
+		     "searches DLL paths an elevated process shouldn't trust)");
 	const std::vector<storage::HwCandidate> candidates = storage::RankCandidates(rank);
 	const uint32_t obsNvenc = storage::CountFamily(rank.obsEncoders, storage::EncoderFamily::Nvenc);
 	uint32_t fpsNum = 60, fpsDen = 1;

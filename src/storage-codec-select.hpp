@@ -90,14 +90,16 @@ struct RankInput {
 	bool obsEncodersKnown = false;          // Whether obsEncoders below is real.
 	std::vector<EncoderFamily> obsEncoders; // One per active OBS video encoder.
 	std::vector<std::string> blacklist;     // Encoders that failed hard this session.
+	// false: no Quick Sync candidate (OBS runs elevated, see Provider::Setup()).
+	bool quickSyncAllowed = true;
 };
 
 uint32_t CountFamily(const std::vector<EncoderFamily> &families, EncoderFamily family);
 
 // Design D4: hevc_nvenc, hevc_amf, hevc_qsv, then the h264 ones, keeping only
-// the vendors present, NVENC only under kMaxObsNvencForBuffer, nothing
-// blacklisted; engines OBS doesn't encode on first (an iGPU, say), each group
-// in that order. Empty with buffer_codec=mjpeg, without workers, or off
+// the vendors present, NVENC only under kMaxObsNvencForBuffer, Quick Sync only
+// when quickSyncAllowed, nothing blacklisted; engines OBS doesn't encode on
+// first (an iGPU, say), each group in that order. Empty with buffer_codec=mjpeg, without workers, or off
 // Windows: MJPEG then.
 std::vector<HwCandidate> RankCandidates(const RankInput &in);
 

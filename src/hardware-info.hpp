@@ -54,4 +54,8 @@ struct GpuAdapterInfo {
 // out); empty off Windows or if DXGI fails.
 std::vector<GpuAdapterInfo> QueryGpuAdapters();
 
+// Whether this process runs elevated (Windows' TokenElevation: OBS started
+// "as administrator"). False off Windows, or if the token can't be read.
+bool ProcessIsElevated();
+
 } // namespace trigglow

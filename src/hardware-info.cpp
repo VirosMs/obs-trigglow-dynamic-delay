@@ -65,6 +65,19 @@ std::vector<GpuAdapterInfo> QueryGpuAdapters()
 	return adapters;
 }
 
+bool ProcessIsElevated()
+{
+	HANDLE token = nullptr;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		return false;
+	TOKEN_ELEVATION elevation{};
+	DWORD size = 0;
+	const bool elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) &&
+			      elevation.TokenIsElevated != 0;
+	CloseHandle(token);
+	return elevated;
+}
+
 #else
 
 uint64_t QueryTotalSystemRamBytes()
@@ -78,6 +91,11 @@ uint64_t QueryTotalSystemRamBytes()
 std::vector<GpuAdapterInfo> QueryGpuAdapters()
 {
 	return {}; // v0.7.0: the hardware storage codec is Windows only.
+}
+
+bool ProcessIsElevated()
+{
+	return false; // Only asked by the Windows hardware storage codec.
 }
 
 #endif

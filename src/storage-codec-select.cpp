@@ -198,6 +198,8 @@ std::vector<HwCandidate> RankCandidates(const RankInput &in)
 			continue;
 		if (known.backend == Backend::Nvenc && !nvencAllowed)
 			continue;
+		if (known.backend == Backend::Qsv && !in.quickSyncAllowed)
+			continue;
 		if (std::find(in.blacklist.begin(), in.blacklist.end(), known.encoder) != in.blacklist.end())
 			continue;
 		HwCandidate candidate;

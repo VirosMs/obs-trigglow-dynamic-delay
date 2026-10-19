@@ -704,6 +704,15 @@ void TestSelection()
 	storage::RankInput otherOs = all;
 	otherOs.platformSupported = false;
 	CHECK(storage::RankCandidates(otherOs).empty());
+	// OBS elevated: no Quick Sync (its runtime's DLL search), the rest as before.
+	storage::RankInput elevated = all;
+	elevated.quickSyncAllowed = false;
+	CHECK(Names(storage::RankCandidates(elevated)) == (Names_{"hevc_nvenc", "hevc_amf", "h264_nvenc", "h264_amf"}));
+	storage::RankInput intelOnly;
+	intelOnly.vendors = {GpuVendor::Intel};
+	CHECK(Names(storage::RankCandidates(intelOnly)) == (Names_{"hevc_qsv", "h264_qsv"}));
+	intelOnly.quickSyncAllowed = false;
+	CHECK(storage::RankCandidates(intelOnly).empty());
 
 	// Engine sharing, for the codec policy.
 	using storage::Backend;
