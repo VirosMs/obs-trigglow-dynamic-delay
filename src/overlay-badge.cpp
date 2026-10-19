@@ -245,8 +245,10 @@ QString DelayBadgeFiles::PathFor(uint32_t seconds, const QString &label, const Q
 	if (!ok) {
 		if (!warned_.value(seconds)) {
 			warned_.insert(seconds, true);
-			TRIGGLOW_LOG_WARN(kComponent, "could not write the delay badge to %s: %s",
-					  path.toUtf8().constData(), file.errorString().toUtf8().constData());
+			// File name only: the full path carries the Windows user name.
+			TRIGGLOW_LOG_WARN(kComponent, "could not write the delay badge %s: %s",
+					  QFileInfo(path).fileName().toUtf8().constData(),
+					  file.errorString().toUtf8().constData());
 		}
 		return QFileInfo::exists(path) ? path : QString();
 	}

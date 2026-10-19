@@ -116,7 +116,11 @@ void LoadBrandFonts()
 	const QString dir = rawDir ? QString::fromUtf8(rawDir) : QString();
 	bfree(rawDir);
 	const trigglow::ui::BrandFontsReport report = trigglow::ui::LoadBrandFonts(dir);
-	const QByteArray where = dir.isEmpty() ? QByteArray("(no data/fonts folder)") : dir.toUtf8();
+	// The folder relative to the plugin, never its absolute path: OBS's log is
+	// attached to support tickets, and a portable OBS lives under the user's
+	// profile folder.
+	const QByteArray where = dir.isEmpty() ? QByteArray("(no data/fonts folder)")
+					       : QByteArray("the plugin's data/fonts folder");
 	const QByteArray loaded = report.loaded.join(QStringLiteral(", ")).toUtf8();
 	const QByteArray missing = report.missing.join(QStringLiteral(", ")).toUtf8();
 	if (!report.failed.isEmpty()) {
@@ -159,7 +163,7 @@ QString SetAsideInvalidSettingsFile(const QString &path)
 // drops on load) or true keeps it on, and so does any other type ("false" as
 // a string, 0...), with a WARN: a typo must never quietly change how the
 // buffer works. `what` names the feature for that WARN.
-bool ReadHiddenSwitch(obs_data_t *data, const char *key, const char *what, const char *path)
+bool ReadHiddenSwitch(obs_data_t *data, const char *key, const char *what)
 {
 	obs_data_item_t *item = obs_data_item_byname(data, key);
 	if (!item)
@@ -171,7 +175,7 @@ bool ReadHiddenSwitch(obs_data_t *data, const char *key, const char *what, const
 		TRIGGLOW_LOG_WARN(kComponent,
 				  "\"%s\" in %s is not a JSON boolean -- keeping %s on. Only a literal false (no "
 				  "quotes) turns it off; this value is dropped from the file when OBS closes",
-				  key, path, what);
+				  key, kBufferSettingsFile, what);
 	}
 	obs_data_item_release(&item);
 	return on;
@@ -196,18 +200,19 @@ bool LoadBufferSettings(trigglow::BufferModeController &controller)
 	if (!data) {
 		// Exists but isn't readable JSON (hand-edited, truncated...). libobs
 		// already logged the parse error; keep the file for whoever edited it.
+		// File names only: the full path carries the Windows user name.
 		const QString setAside = SetAsideInvalidSettingsFile(path);
 		if (setAside.isEmpty()) {
 			TRIGGLOW_LOG_WARN(kComponent,
 					  "settings file %s is not valid JSON and could not be renamed or copied -- "
 					  "using defaults this session and leaving the file untouched on exit",
-					  pathUtf8.constData());
+					  kBufferSettingsFile);
 			return false;
 		}
 		TRIGGLOW_LOG_WARN(kComponent,
-				  "settings file %s is not valid JSON -- moved it to %s and using defaults (the "
-				  "file is written again when OBS closes)",
-				  pathUtf8.constData(), setAside.toUtf8().constData());
+				  "settings file %s is not valid JSON -- moved it to %s next to it and using "
+				  "defaults (the file is written again when OBS closes)",
+				  kBufferSettingsFile, QFileInfo(setAside).fileName().toUtf8().constData());
 		return true;
 	}
 
@@ -223,12 +228,10 @@ bool LoadBufferSettings(trigglow::BufferModeController &controller)
 	bool showOverlay = obs_data_has_user_value(data, "show_overlay") ? obs_data_get_bool(data, "show_overlay")
 									 : true;
 	// false brings back v0.5.0's buffer sizing. Read only here, at load.
-	const bool bufferOutputCap =
-		ReadHiddenSwitch(data, "buffer_output_cap", "the output-resolution cap", pathUtf8.constData());
+	const bool bufferOutputCap = ReadHiddenSwitch(data, "buffer_output_cap", "the output-resolution cap");
 	// v0.6.0 kill switch: false runs the MJPEG encode/decode on OBS's
 	// graphics thread again (no codec worker threads). Read only here, at load.
-	const bool codecWorkers =
-		ReadHiddenSwitch(data, "codec_workers", "the codec worker threads", pathUtf8.constData());
+	const bool codecWorkers = ReadHiddenSwitch(data, "codec_workers", "the codec worker threads");
 
 	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
 				loadingScene ? loadingScene : "", showOverlay,
