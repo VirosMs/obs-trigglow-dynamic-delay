@@ -131,18 +131,23 @@ void TestLadder()
 void TestInitialParallelism()
 {
 	testcheck::g_currentTest = "initial parallelism";
+	// At most 2 slices per context since v0.7.0 (RAM): 1x1 -> 2x1 -> 2x2.
 	const std::vector<Parallelism> threaded = BuildParallelismSteps(true);
-	CHECK_EQ(threaded.size(), 4u);
-	CHECK(threaded.back().contexts == 2 && threaded.back().slices == 4);
-	CHECK_EQ(InitialParallelism(threaded, true, 1920, 1080, kInterval60, 4), 0u);     // 1080p60: one context.
-	CHECK_EQ(InitialParallelism(threaded, true, 2560, 1440, kInterval60, 4), 0u);     // 1440p60: one context.
-	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, kInterval60, 4), 1u);     // 4K60: two.
-	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, 2 * kInterval60, 4), 0u); // 4K30: one.
-	CHECK_EQ(InitialParallelism(threaded, true, 7680, 4320, kInterval60, 4), 3u);     // 8K60: everything.
+	CHECK_EQ(threaded.size(), 3u);
+	CHECK(threaded[1].contexts == 2 && threaded[1].slices == 1);
+	CHECK(threaded.back().contexts == 2 && threaded.back().slices == 2);
+	for (const Parallelism &step : threaded)
+		CHECK(step.slices <= 2 && step.contexts <= 2);
+	CHECK_EQ(InitialParallelism(threaded, true, 1920, 1080, kInterval60, 2), 0u);     // 1080p60: one context.
+	CHECK_EQ(InitialParallelism(threaded, true, 2560, 1440, kInterval60, 2), 0u);     // 1440p60: one context.
+	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, kInterval60, 2), 1u);     // 4K60: two (2x1).
+	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, 2 * kInterval60, 2), 0u); // 4K30: one.
+	CHECK_EQ(InitialParallelism(threaded, true, 7680, 4320, kInterval60, 2), 2u);     // 8K60: everything.
 	const std::vector<Parallelism> sync = BuildParallelismSteps(false);
-	CHECK_EQ(sync.size(), 3u);
-	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 4), 2u);
+	CHECK_EQ(sync.size(), 2u);
+	CHECK(sync.back().contexts == 1 && sync.back().slices == 2);
 	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 2), 1u);
+	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 4), 1u); // Never past the last step.
 	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 1), 0u);
 	CHECK_NEAR(SliceSpeedup(4), 2.56, 1e-9);
 	CHECK(PredictEncodeP95Ms(2560, 1440) > 9.0 && PredictEncodeP95Ms(2560, 1440) < 10.0);
@@ -187,9 +192,8 @@ void TestEncodeOverload()
 	// Next change only after another full cooldown.
 	CHECK(p.Evaluate(overloaded(4 * kSecond)).action == Action::None);
 	CHECK(p.Evaluate(overloaded(5 * kSecond)).action == Action::MoreParallelism);
-	CHECK(p.Evaluate(overloaded(7 * kSecond)).action == Action::MoreParallelism);
-	CHECK_EQ(p.ParallelismIndex(), 3u);
-	CHECK(p.Evaluate(overloaded(9 * kSecond)).action == Action::LowerQuality);
+	CHECK_EQ(p.ParallelismIndex(), 2u); // 2x2: the last step.
+	CHECK(p.Evaluate(overloaded(7 * kSecond)).action == Action::LowerQuality);
 	CHECK_EQ(p.RungIndex(), 1u);
 	// All the way down, then nothing more to do (but never a crash or a move up).
 	Run(p, 10 * kSecond, 60 * kSecond, overloaded);
@@ -290,13 +294,12 @@ void TestSyncMode()
 		return s;
 	};
 	std::vector<Decision> d = Run(p, kSecond, 10 * kSecond, heavy);
-	CHECK(d.size() >= 3);
-	if (d.size() >= 3) {
+	CHECK(d.size() >= 2);
+	if (d.size() >= 2) {
 		CHECK(d[0].action == Action::MoreParallelism && d[0].cause == Cause::Graphics);
-		CHECK(d[1].action == Action::MoreParallelism);
-		CHECK(d[2].action == Action::LowerQuality);
+		CHECK(d[1].action == Action::LowerQuality);
 	}
-	CHECK(p.CurrentParallelism().contexts == 1 && p.CurrentParallelism().slices == 4);
+	CHECK(p.CurrentParallelism().contexts == 1 && p.CurrentParallelism().slices == 2);
 }
 
 void TestHysteresisUp()
@@ -429,27 +432,26 @@ void TestRecoveryOrder()
 {
 	testcheck::g_currentTest = "recovery order";
 	Policy p = Threaded1080();
-	// Encode overload: 3 parallelism steps and one rung down.
-	Run(p, kSecond, 9 * kSecond, [&](uint64_t t) {
+	// Encode overload: 2 parallelism steps (to 2x2) and one rung down.
+	Run(p, kSecond, 7 * kSecond, [&](uint64_t t) {
 		Sample s = Healthy(t);
 		s.encodeP95Ms = 0.95 * kIntervalMs * p.CurrentParallelism().contexts;
 		return s;
 	});
-	CHECK_EQ(p.ParallelismIndex(), 3u);
+	CHECK_EQ(p.ParallelismIndex(), 2u);
 	CHECK_EQ(p.RungIndex(), 1u);
 	// Calm (cheap frames even single-threaded): quality first, then threads,
 	// one step per 30 s, never below the initial parallelism.
-	const std::vector<Decision> d = Run(p, 10 * kSecond, 400 * kSecond, [](uint64_t t) {
+	const std::vector<Decision> d = Run(p, 8 * kSecond, 400 * kSecond, [](uint64_t t) {
 		Sample s = Healthy(t);
 		s.encodeP95Ms = 1.0;
 		return s;
 	});
-	CHECK_EQ(d.size(), 4u);
-	if (d.size() == 4) {
+	CHECK_EQ(d.size(), 3u);
+	if (d.size() == 3) {
 		CHECK(d[0].action == Action::RaiseQuality);
 		CHECK(d[1].action == Action::LessParallelism);
 		CHECK(d[2].action == Action::LessParallelism);
-		CHECK(d[3].action == Action::LessParallelism);
 	}
 	CHECK_EQ(p.RungIndex(), 0u);
 	CHECK_EQ(p.ParallelismIndex(), 0u);

@@ -28,9 +28,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //
 // Two independent knobs, never cutting the delay:
 //   - Parallelism: encode contexts x slice threads. Threaded (codec workers):
-//     1x1 -> 2x1 -> 2x2 -> 2x4 (at most 2 encode workers and 4 slices per
-//     context). Sync (kill switch, codec on the graphics thread): slices
-//     1 -> 2 -> 4 on the one context.
+//     1x1 -> 2x1 -> 2x2 (at most 2 encode workers and, since v0.7.0, 2
+//     slices per context: each slice adds an encoder's worth of buffers).
+//     Sync (kill switch, codec on the graphics thread): slices 1 -> 2 on the
+//     one context.
 //   - Quality rung: the fitted buffer size, then smaller sizes in x0.83 steps
 //     down to the user's quality floor, then that floor captured at half the
 //     frame rate (only when the output runs at 48fps or more). Every rung is a

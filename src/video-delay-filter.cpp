@@ -115,11 +115,14 @@ constexpr double kAssumedCompressionRatio = 1.0;
 
 // Sync path (codec_workers=false) only: slice threads for the MJPEG encoder
 // running on the graphics thread, as in v0.5.1 -- hardware_concurrency()/4
-// (logical CPUs), clamped to [1, 4]: 4 on an 8C/16T CPU, 1 on a 4-thread one.
-// They cut the encode's WALL time there (1080p: 5.1 -> 1.8ms p50 with 4
-// slices, same total CPU, ~3.5% bigger packets). With codec workers the
-// degradation policy starts at one context and one slice and adds threads
-// only when the measured load asks for them.
+// (logical CPUs), clamped to [1, CodecPipeline::kMaxSlicesPerContext]: 2 on
+// an 8C/16T CPU, 1 on a 4-thread one. They cut the encode's WALL time there
+// (1080p: 5.1 ms p50 with 1 slice, ~3 ms with 2, 1.8 ms with the 4 v0.6.0
+// allowed; same total CPU, ~3.5% bigger packets). v0.7.0 caps them at 2 for
+// RAM (design 6.2): every slice holds its own encoder buffers, and this path
+// is the kill switch's rescue mode. With codec workers the degradation policy
+// starts at one context and one slice and adds threads only when the
+// measured load asks for them.
 uint32_t EncodeSliceThreadCount()
 {
 	const unsigned logicalCpus = std::thread::hardware_concurrency(); // 0 = unknown -> 1 thread.

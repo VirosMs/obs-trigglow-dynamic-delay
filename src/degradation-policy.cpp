@@ -61,9 +61,12 @@ std::vector<Rung> BuildLadder(uint32_t fullWidth, uint32_t fullHeight, uint32_t 
 
 std::vector<Parallelism> BuildParallelismSteps(bool threaded)
 {
+	// At most 2 slice threads per context since v0.7.0 (design 6.2): every
+	// extra slice costs the encoder ~15 MB at 1440p and ~33 MB at 2160p, and
+	// 2 contexts x 4 slices held ~60/130 MB more than 2 x 2.
 	if (threaded)
-		return {{1, 1}, {2, 1}, {2, 2}, {2, 4}};
-	return {{1, 1}, {1, 2}, {1, 4}};
+		return {{1, 1}, {2, 1}, {2, 2}};
+	return {{1, 1}, {1, 2}};
 }
 
 double PredictEncodeP95Ms(uint32_t width, uint32_t height)

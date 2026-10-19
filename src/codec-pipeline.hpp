@@ -143,8 +143,8 @@ enum class PipelineLogLevel { Info, Warning };
 class CodecPipeline {
 public:
 	static constexpr uint32_t kMaxEncodeContexts = 2;
-	static constexpr uint32_t kMaxSlicesPerContext = 4;
-	static constexpr uint32_t kStaleIntervals = 4; // See AcquireForDisplay().
+	static constexpr uint32_t kMaxSlicesPerContext = 2; // 4 until v0.6.0 (design 6.2: RAM).
+	static constexpr uint32_t kStaleIntervals = 4;      // See AcquireForDisplay().
 
 	struct Options {
 		bool threaded = true;
