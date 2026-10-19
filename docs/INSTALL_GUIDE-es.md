@@ -100,7 +100,7 @@ El panel aparece mostrando `● Inactive` — ya puedes elegir una escena en dir
 ## 6. Inicia sesión una vez
 
 `Activar delay` necesita una cuenta gratuita de trigglow.com, con la sesión iniciada una vez desde
-el dock (solo en Windows en la v0.6.0):
+el dock (solo en Windows en la v0.6.0; macOS y Linux tendrán inicio de sesión en la v0.6.1):
 
 1. Pulsa **Iniciar sesión** en el dock. El navegador abre trigglow.com; inicia sesión ahí o crea una
    cuenta gratuita.
@@ -117,7 +117,8 @@ sección "Iniciar sesión desde el dock" de `docs/TROUBLESHOOTING-es.md`.
 
 Instala la versión nueva encima de la anterior, igual que antes (con OBS cerrado): tus escenas,
 ajustes y atajos se conservan. **Desde la v0.5.x o anterior, actualizar es obligatorio**: el inicio
-de sesión de esas versiones se retira con la v0.6.0. En el primer arranque tu inicio de sesión pasa
+de sesión de esas versiones se apaga cuando se publica la v0.6.0, y las sesiones que ya tienen dejan
+de funcionar tras un periodo de transición. En el primer arranque tu inicio de sesión pasa
 solo al formato nuevo; si el dock te pide iniciar sesión, hazlo una vez (paso 6). Desde la v0.6.0
 los objetos que gestiona el plugin terminan en "(auto)" en vez de "(no tocar)": ver
 `CHANGELOG-es.md` si una acción de Stream Deck u obs-websocket los usa por su nombre.

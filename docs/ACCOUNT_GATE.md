@@ -54,9 +54,10 @@ Sign-ins made with version 0.5.x or earlier are exchanged once, silently, for a 
 first start of 0.6.0, and the old plain-text sign-in file is overwritten and deleted. Until that
 exchange succeeds (for example while offline) the old sign-in keeps Enable working.
 
-The sign-in of 0.5.x and earlier is retired with 0.6.0: those versions can no longer sign in, and
-the sign-ins they already have stop working after a transition period. Updating is therefore
-required to keep using the delay; on 0.6.0 the dock says "This plugin version can't sign in any
+The sign-in of 0.5.x and earlier is switched off on trigglow.com when 0.6.0 is published: from
+then on those versions can no longer sign in, and the sign-ins they already have stop working after
+a transition period, during which 0.6.0 can still exchange them. Updating is therefore required to
+keep using the delay; on 0.6.0 the dock says "This plugin version can't sign in any
 more. Update the plugin." if trigglow.com ever reports the same for it.
 
 On every OBS start, `AuthManager::Init()` makes one `GET /auth/plugin/me` call to confirm the stored

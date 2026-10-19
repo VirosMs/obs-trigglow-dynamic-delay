@@ -83,7 +83,7 @@
   v0.4.0 (currently in production) — small enough on its own that it doesn't need to wait on the
   unrelated features below.
 
-## v0.6.0 (shipped — 2026-10-18)
+## v0.6.0 (shipped — 2026-10-19)
 Performance, adaptivity and the Trigglow look, plus Trigi, a safer sign-in and a security pass. A
 v0.5.1 performance hotfix was prepared but never published; all of it ships here. Reported live
 first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 canvas and a
@@ -100,7 +100,8 @@ first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 c
   microbenchmark). Hidden `codec_workers` kill switch back to the codec on the graphics thread.
 - **Adaptive degradation that never cuts the delay**: more encode threads, then lower resolution
   rungs down to the minimum quality, then half the capture rate; back up with 30 s of hysteresis;
-  amber notice in the dock saying what was lowered and why.
+  amber notice in the dock saying what was lowered and why. The minimum quality goes up to 1440p
+  (2K) and 2160p (4K).
 - **Less RAM, nothing heavy on the graphics thread**: no zero fill, arena by blocks (~1.9 GB →
   ~0.6–0.8 GB for 30 s at 1440p60 in simulation), memory freed on the reaper, codecs and GPU objects
   freed on Disable, I420 conversion on the GPU, standard Huffman tables, each frame decoded and
@@ -116,7 +117,7 @@ first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 c
 - **UI redesign aligned with trigglow.com**: dock, report dialog and live overlay on top of the OBS
   theme, bundled Archivo and Geist Mono (OFL), SVG icons, WCAG AA contrast and keyboard focus,
   sign-in errors shown, the delay seconds locked while the delay runs. The overlay is one generated
-  image, the same on every OS, that keeps the position and size you give it.
+  image, the same on every OS, signed "By Trigglow", that keeps the position and size you give it.
 - **"(auto)" names** for the scene, filters and overlay the plugin manages, migrated automatically.
 - **Trigi, Trigglow's AI support assistant, in "Report a problem"** (Windows, signed in): first-use
   AI and privacy notice, optional OBS technical data (numbers and states only, with a preview), the
@@ -125,15 +126,17 @@ first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 c
 - **Sign-in v2**: a code to compare on the trigglow.com page with "It wasn't me", the plugin's own
   scoped sign-in encrypted with the Windows data protection API, renewed automatically and revoked
   by Sign out (or from trigglow.com's connected apps), and a one-time automatic move from v0.5.x.
-  The v0.5.x-and-earlier sign-in is retired with this version.
+  The v0.5.x-and-earlier sign-in is switched off when this version is published, so updating is
+  required.
 - **Signed-in tickets** with an optional subject and a version footer; the OBS log redacted in
   memory, previewed and attached only with consent; old copies in `%TEMP%` deleted; guests sent to
   the web form when trigglow.com asks for a human check.
 - **Hardening**: one WinHTTP path (no redirects, TLS 1.2+, timeouts, size cap, the token only for
   api.trigglow.com), fixed pages only, no codes, URLs or user paths in the OBS log, the update notice
-  limited to this repo's releases, no build paths in the DLL.
-- **Build/CI**: FFmpeg re-pinned to a BtbN month-end build, 18 unit test suites in CI on every
-  platform, `Qt6::Svg`.
+  limited to this repo's releases, no build paths in the DLL, and every network call cancellable so
+  OBS closes cleanly even while Trigi is answering.
+- **Build/CI**: FFmpeg re-pinned to a BtbN month-end build, 19 unit test suites in CI on every
+  platform, a ThreadSanitizer job, `Qt6::Svg`.
 
 ## Next (v0.6.x)
 - **v0.6.1: an HTTP client on macOS and Linux**, so sign-in (and with it Enable delay), Trigi and

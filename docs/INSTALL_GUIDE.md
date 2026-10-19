@@ -97,7 +97,7 @@ The dock appears, showing `● Inactive` — you're ready to pick a live scene a
 ## 6. Sign in once
 
 `Enable delay` needs a free trigglow.com account, signed in once from the dock (Windows only in
-v0.6.0):
+v0.6.0; macOS and Linux get sign-in in v0.6.1):
 
 1. Press **Sign in** in the dock. Your browser opens trigglow.com; sign in there, or create a free
    account.
@@ -114,7 +114,8 @@ from the dock" section of `docs/TROUBLESHOOTING.md`.
 
 Install the new version over the old one, the same way (with OBS closed): your scenes, settings and
 hotkeys are kept. **From v0.5.x or earlier, updating is required**: the sign-in of those versions is
-retired with v0.6.0. On the first start your sign-in moves to the new format by itself; if the dock
+switched off when v0.6.0 is published, and the sign-ins they already have stop working after a
+transition period. On the first start your sign-in moves to the new format by itself; if the dock
 asks you to sign in, do it once (step 6). Since v0.6.0 the objects the plugin manages end in
 "(auto)" instead of "(no tocar)": see `CHANGELOG.md` if a Stream Deck or obs-websocket action uses
 them by name.

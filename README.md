@@ -54,7 +54,9 @@ less RAM (~0.6–0.8 GB instead of ~1.9 GB for 30 s at 1440p60), keeps audio and
 same delay, really switches off delay filters left on when OBS was closed while Active, and brings a
 redesigned dock, report dialog and live overlay aligned with trigglow.com. The objects the plugin
 manages are renamed from "(no tocar)" to "(auto)": update any Stream Deck or obs-websocket action
-that uses the old names. (A v0.5.1 hotfix was prepared but never published; it's part of v0.6.0.)
+that uses the old names; the live overlay is signed "By Trigglow". The minimum quality now goes up
+to 1440p (2K) and 2160p (4K). (A v0.5.1 hotfix was prepared but never published; it's part of
+v0.6.0.)
 See `CHANGELOG.md` and `docs/TROUBLESHOOTING.md`.
 
 v0.6.0 also brings **Trigi**, Trigglow's AI support assistant, to "Report a problem" (Windows,
@@ -62,10 +64,10 @@ signed in): ask about Dynamic Delay in the dialog and turn the conversation into
 doesn't sort it out. Your OBS log is never sent to the AI, and the OBS technical data is optional,
 with a preview. **Sign-in is new and safer** (a code to compare on trigglow.com, the plugin's own
 sign-in encrypted for your Windows user, revoked by Sign out), reports go to your account with the
-OBS log redacted and only if you agree, and the plugin's network calls are hardened. **The sign-in
-of v0.5.x and earlier is retired with this version: update to keep using the delay.** In v0.6.0
-sign-in, Trigi and reports from OBS work only on Windows; macOS and Linux get them in v0.6.1. See
-`docs/FAQ.md`.
+OBS log redacted and only if you agree, and the plugin's network calls are hardened. **Updating
+is required: once v0.6.0 is published, v0.5.x and earlier can no longer sign in, and the sign-ins
+they already have stop working after a transition period.** In v0.6.0 sign-in, Trigi and reports
+from OBS work only on Windows; macOS and Linux get them in v0.6.1. See `docs/FAQ.md`.
 
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried
@@ -181,13 +183,13 @@ macOS/Linux don't have a one-click installer yet — manual install is the only 
    enable it.
 2. In the dock, pick your **live scene** (required — the scene with your real content) and,
    optionally, a **loading scene** to show while the buffer fills instead of staying on the
-   undelayed live scene. Set **Delay (seconds)** (1–60) and the **minimum quality** floor
-   (480p/720p/1080p) the delayed video won't drop below to save RAM (it's never stored above OBS's
-   output resolution either: with a 720p output the buffer is 720p even with a 1080p minimum). The
-   dock shows a live estimate of whether your chosen seconds actually fit in RAM at that quality
-   *before* you press Enable — if they don't, it warns that the buffered duration will be shortened
-   instead of lowering the quality further, but never blocks your choice. These fields are locked
-   while the delay is preparing or on ("Turn the delay off to change it.").
+   undelayed live scene. Set **Delay (seconds)** (1–60) and the **minimum quality** floor (480p,
+   720p, 1080p, 1440p (2K) or 2160p (4K)) the delayed video won't drop below to save RAM (it's never
+   stored above OBS's output resolution either: with a 720p output the buffer is 720p even with a
+   1080p minimum). The dock shows a live estimate of whether your chosen seconds actually fit in RAM
+   at that quality *before* you press Enable — if they don't, it warns that the buffered duration
+   will be shortened instead of lowering the quality further, but never blocks your choice. These
+   fields are locked while the delay is preparing or on ("Turn the delay off to change it.").
 3. Go to `Settings → Hotkeys`, search for "Trigglow", and assign a key to **Trigglow: Toggle
    Dynamic Delay** (and optionally to Enable/Disable separately; in Spanish they read "Trigglow:
    Activar/desactivar Dynamic Delay", "Activar" and "Desactivar").
@@ -284,6 +286,9 @@ src/
   log-redact.{hpp,cpp}             → pure, line-by-line redaction of the OBS log, unit-tested
   update-checker.{hpp,cpp}         → checks this repo's latest GitHub release against the running
                                      version
+  background-tasks.{hpp,cpp}       → cancellable background jobs (sign-in, Trigi, tickets, update
+  cancel-token.{hpp,cpp}             check) with a bounded shutdown when OBS unloads the plugin,
+  ui-tasks.{hpp,cpp}                 unit-tested; ui-tasks ties them to Qt's event loop
   auth-manager.{hpp,cpp}           → the free-account login gate (see `docs/ACCOUNT_GATE.md`),
                                      on background threads
   auth-client.{hpp,cpp}            → sign-in protocol: device link v2, renewal, sign-out, the
@@ -320,6 +325,8 @@ tests/
   api_client_tests.cpp · token_store_tests.cpp · auth_client_tests.cpp ·
   support_client_tests.cpp · trigi_states_tests.cpp → account, Trigi and ticket client, with
                                      a scripted network stand-in (fake-transport.hpp)
+  background_tasks_tests.cpp       → cancellation and bounded shutdown of the background jobs
+                                     (19 suites in all)
 tools/fonts/                       → how the bundled font subsets are generated
 docs/
   SPEC.md                  → full technical specification (start here)

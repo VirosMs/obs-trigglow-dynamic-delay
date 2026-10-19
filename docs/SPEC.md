@@ -310,11 +310,13 @@ The user picks two things, both fully free choices, never restricted:
 
 - **Delay (seconds)** — 1 to 60 in the dock's spinner (a UI sanity cap; the real limit is the RAM
   math below).
-- **Minimum quality** — 480p / 720p / 1080p. The floor for the RAM reduction below: rather than store
-  the delayed video below this height, the plugin stores fewer seconds. Since v0.6.0 it never raises
-  the buffer above OBS's output resolution, though (rule 1 below): with a 720p output the buffer is
-  720p even with a 1080p minimum, since storing more rows than OBS emits buys nothing. It is also the
-  floor of the adaptive degradation (§4.7).
+- **Minimum quality** — 480p / 720p / 1080p / 1440p (2K) / 2160p (4K). The floor for the RAM
+  reduction below: rather than store the delayed video below this height, the plugin stores fewer
+  seconds. Since v0.6.0 it never raises the buffer above OBS's output resolution, though (rule 1
+  below): with a 720p output the buffer is 720p even with a 1080p minimum, since storing more rows
+  than OBS emits buys nothing. It is also the floor of the adaptive degradation (§4.7). With the
+  floor at the output's height (e.g. 1440p with a 1440p output) the RAM reduction trims seconds
+  instead of rows, and the degradation has only its half-rate rung left.
 
 `EnsureRingSized()` computes a **RAM budget** from the machine's total system RAM (`GlobalMemoryStatusEx`
 on Windows; unimplemented on other platforms, in which case a conservative fallback is used) — 50% of
@@ -424,15 +426,16 @@ A vertical canvas (9:16) on a 16:9 main canvas is always told apart.
 canvas = output, 1440p → 1080p, 4K → 1080p, output above canvas, mismatched aspect ratios, a floor
 above the output, RAM reduction in range, an active floor, rounding, widths multiple of 8, odd
 dimensions, degenerate input, a non-canvas target, zero delay, 59.94fps, the whole-second effective
-delay, the cap switched off, and budget/output sweeps.
-`tests/encoder_check_tests.cpp` exercises the encoder WARN's decision (`encodercheck`), with the
-buffers sized by `bufferfit::Compute()` cap on and off: aspect-ratio matching, a canvas encoder not
-scaled and CPU-scaled, GPU-rescaled encoders above/equal/below the buffer, Enhanced Broadcasting
-tracks, vertical canvases (720x1280, 1080x1920) and a vertical main canvas, and a buffer the cap
-doesn't limit (cap off, output = canvas, RAM-limited). Seven more suites cover the rest of the
-OBS-free code: `ui_tokens_tests` (WCAG contrast on OBS 31's palettes), `auto_names_tests` (§3.7),
-`overlay_layout_tests` (§3.6), `frame_arena_tests`, `frame_ring_tests` and
-`degradation_policy_tests` (§4.6, §4.7), and `pipeline_stress_tests` (§4.6). Off by default, so
+delay, the cap switched off, and budget/output sweeps. `tests/encoder_check_tests.cpp` exercises the
+encoder WARN's decision (`encodercheck`), with the buffers sized by `bufferfit::Compute()` cap on
+and off: aspect-ratio matching, a canvas encoder not scaled and CPU-scaled, GPU-rescaled encoders
+above/equal/below the buffer, Enhanced Broadcasting tracks, vertical canvases (720x1280, 1080x1920)
+and a vertical main canvas, and a buffer the cap doesn't limit (cap off, output = canvas,
+RAM-limited). `buffer_fit_tests` also covers the 1440p and 2160p floors (a 1440p output with a 1440p
+floor stays 2560x1440 and trims the delay to the whole seconds that fit). Seven more suites cover
+the rest of the OBS-free code: `ui_tokens_tests` (WCAG contrast on OBS 31's palettes),
+`auto_names_tests` (§3.7), `overlay_layout_tests` (§3.6), `frame_arena_tests`, `frame_ring_tests`
+and `degradation_policy_tests` (§4.6, §4.7), and `pipeline_stress_tests` (§4.6). Off by default, so
 plugin packaging is unchanged. Two ways to build them (`tests/CMakeLists.txt`):
 
 ```
@@ -564,8 +567,8 @@ The dock and the log never show the link, the codes, the secret or the token.
   the notice version and, only if the box is ticked, the technical data. The conversation ID lives in
   memory only.
 - At most one Trigi request is in flight; a generation counter drops answers that belong to an
-  earlier conversation or a closed dialog. Calls run on background threads and come back to the UI
-  thread through a guarded pointer; nothing runs on OBS's graphics thread.
+  earlier conversation or a closed dialog. Calls run as background jobs (below) and come back to the
+  UI thread; nothing runs on OBS's graphics thread.
 - Three answer shapes: an answer (text plus an optional action), a refusal, or "unavailable". An
   action to a Dynamic Delay ticket or to a person becomes "Create a ticket with this conversation";
   a ticket in any other category becomes "Open support on trigglow.com". Feedback, "resolved",
@@ -617,6 +620,20 @@ The dock and the log never show the link, the codes, the secret or the token.
   once the preview (the first and last 200 lines) has been seen; it says that names of scenes,
   sources, audio devices and windows can remain. No copy is written any more, and copies older
   versions left in `%TEMP%\Trigglow` are deleted at load.
+
+**Background jobs and unloading (`background-tasks.*`, `cancel-token.*`, `ui-tasks.*`).** Every
+network job (the sign-in check, renewal and v0.5.x exchange, the sign-in wait, Trigi, tickets and
+their attachments, reading the log for a ticket or a preview, the update check) runs on its own
+thread with a cancellation token, in a group owned by `AuthManager`, a support dialog or the dock.
+WinHTTP runs in its asynchronous mode, so cancelling a job aborts its call at once (a Trigi answer
+can otherwise take up to 90 s), and a timeout is its own status ("Trigi took too long") instead of
+"no connection". Results reach the UI thread through one queue that the plugin drains; destroying
+an owner cancels its jobs and drops their results, queued ones included. `obs_module_unload()`
+cancels everything, refuses new jobs and waits at most 2 s; on Windows each job thread holds a
+reference to the DLL and exits with `FreeLibraryAndExitThread()`, so no plugin code runs after OBS
+unloads it. Measured against a local stand-in that kept a Trigi answer waiting for 90 s: unloading
+took at most 7 ms. Revoking the token on Sign out and telling trigglow.com that a Trigi conversation
+was abandoned belong to no owner: only unloading cancels them. Tested by `background_tasks_tests`.
 
 **What the OBS log gets.** `[auth-manager]` signed in, signed out, session ended, token renewed,
 migrated legacy login; `[trigi]` session started, message sent (length, technical data on or off),
@@ -1087,6 +1104,8 @@ trigi-page.* / trigi-widgets.* / trigi-states.* → §3.8 -- Trigi's page, its s
 report-bug-dialog.*           → §3.8 -- "Report a problem": Trigi, signed-in and guest tickets
 bug-report.* / log-redact.*   → §3.8 -- OBS's current log, read and redacted in memory
 update-checker.*              → latest GitHub release check; opens only this repo's releases
+background-tasks.* / cancel-token.* / ui-tasks.* → §3.8 -- cancellable background jobs, owners
+                                and the bounded shutdown on unload
 scene-combo-box.*             → dock combo box populated from obs_frontend_get_scene_names()
 settings-ui.*                 → the Qt dock (live/loading scene, seconds, quality, fit estimate,
                                 Enable/Disable, live fill countdown, locked fields, degradation
@@ -1097,12 +1116,13 @@ hotkeys.*                     → registration of the 3 native OBS hotkeys, wire
                                 BufferModeController's Enable()/Disable()/Toggle()
 logging.*                     → logging wrapper with a component prefix
 delay-controller.*            → §6 -- legacy reconnect-mode logic, present but unused
-tests/                        → 18 suites, built only with -DTRIGGLOW_BUILD_TESTS=ON or on their own
+tests/                        → 19 suites, built only with -DTRIGGLOW_BUILD_TESTS=ON or on their own
                                 (cmake -S tests): buffer_fit, encoder_check, ui_tokens, auto_names,
                                 overlay_layout, frame_arena, frame_ring, degradation_policy,
-                                pipeline_stress, json, log_redact, chat_text, support_diagnostics,
-                                api_client, token_store, auth_client, support_client, trigi_states
-                                (the client ones with a scripted network stand-in)
+                                pipeline_stress, background_tasks, json, log_redact, chat_text,
+                                support_diagnostics, api_client, token_store, auth_client,
+                                support_client, trigi_states (the client ones with a scripted
+                                network stand-in)
 ```
 
 Design principle: **`BufferModeController` is the only owner of state**. The dock and the hotkeys both

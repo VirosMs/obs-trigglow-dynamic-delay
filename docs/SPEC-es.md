@@ -340,12 +340,14 @@ El usuario elige dos cosas, ambas de libre elección, nunca restringidas:
 
 - **Delay (segundos)** — de 1 a 60 en el spinner del dock (un límite de cordura de la interfaz; el
   límite real es la aritmética de RAM de abajo).
-- **Calidad mínima** — 480p / 720p / 1080p. El suelo para la reducción por RAM de abajo: antes que
-  guardar el vídeo retrasado por debajo de esta altura, el plugin guarda menos segundos. Eso sí,
-  desde la v0.6.0 nunca eleva el buffer por encima de la resolución de salida de OBS (regla 1 de
-  abajo): con una salida de 720p el buffer es 720p aunque el mínimo sea 1080p, porque guardar más
-  filas de las que OBS emite no aporta nada. También es el suelo de la degradación automática
-  (§4.7).
+- **Calidad mínima** — 480p / 720p / 1080p / 1440p (2K) / 2160p (4K). El suelo para la reducción por
+  RAM de abajo: antes que guardar el vídeo retrasado por debajo de esta altura, el plugin guarda
+  menos segundos. Eso sí, desde la v0.6.0 nunca eleva el buffer por encima de la resolución de
+  salida de OBS (regla 1 de abajo): con una salida de 720p el buffer es 720p aunque el mínimo sea
+  1080p, porque guardar más filas de las que OBS emite no aporta nada. También es el suelo de la
+  degradación automática (§4.7). Con el suelo a la altura de la salida (p. ej. 1440p con una salida
+  1440p), la reducción por RAM recorta segundos en vez de filas, y a la degradación solo le queda el
+  peldaño de mitad de fps.
 
 `EnsureRingSized()` calcula un **presupuesto de RAM** a partir de la RAM total del sistema
 (`GlobalMemoryStatusEx` en Windows; sin implementar en otras plataformas, donde se usa un valor de
@@ -466,16 +468,18 @@ salida, 1440p → 1080p, 4K → 1080p, salida mayor que el lienzo, relaciones de
 suelo por encima de la salida, reducción por RAM dentro de rango, un suelo activo, redondeo, anchos
 múltiplos de 8, dimensiones impares, entradas degeneradas, un objetivo que no es el lienzo, delay
 cero, 59,94fps, el delay efectivo en segundos enteros, el límite desactivado y barridos de
-presupuesto/salida. `tests/encoder_check_tests.cpp` prueba la
-decisión del WARN de encoders (`encodercheck`), con los buffers calculados por `bufferfit::Compute()`
-con y sin límite: coincidencia de relación de aspecto, un encoder del lienzo sin escalar y escalado
-en CPU, encoders reescalados en GPU por encima/igual/por debajo del buffer, pistas de Enhanced
-Broadcasting, lienzos verticales (720x1280, 1080x1920) y un lienzo principal vertical, y un buffer al
-que el límite no afecta (límite desactivado, salida = lienzo, limitado por RAM). Otras siete suites
-cubren el resto del código sin OBS: `ui_tokens_tests` (contraste WCAG en las paletas de OBS 31),
-`auto_names_tests` (§3.7), `overlay_layout_tests` (§3.6), `frame_arena_tests`, `frame_ring_tests` y
-`degradation_policy_tests` (§4.6, §4.7), y `pipeline_stress_tests` (§4.6). Desactivados por defecto,
-así que el empaquetado del plugin no cambia. Dos formas de compilarlos (`tests/CMakeLists.txt`):
+presupuesto/salida. `tests/encoder_check_tests.cpp` prueba la decisión del WARN de encoders
+(`encodercheck`), con los buffers calculados por `bufferfit::Compute()` con y sin límite:
+coincidencia de relación de aspecto, un encoder del lienzo sin escalar y escalado en CPU, encoders
+reescalados en GPU por encima/igual/por debajo del buffer, pistas de Enhanced Broadcasting, lienzos
+verticales (720x1280, 1080x1920) y un lienzo principal vertical, y un buffer al que el límite no
+afecta (límite desactivado, salida = lienzo, limitado por RAM). `buffer_fit_tests` cubre además los
+suelos 1440p y 2160p (una salida 1440p con un suelo 1440p se queda en 2560x1440 y recorta el delay a
+los segundos enteros que caben). Otras siete suites cubren el resto del código sin OBS:
+`ui_tokens_tests` (contraste WCAG en las paletas de OBS 31), `auto_names_tests` (§3.7),
+`overlay_layout_tests` (§3.6), `frame_arena_tests`, `frame_ring_tests` y `degradation_policy_tests`
+(§4.6, §4.7), y `pipeline_stress_tests` (§4.6). Desactivados por defecto, así que el empaquetado del
+plugin no cambia. Dos formas de compilarlos (`tests/CMakeLists.txt`):
 
 ```
 # Desde el build del propio plugin (mismos flags de compilación que el plugin):
@@ -615,8 +619,8 @@ Ni el dock ni el log muestran nunca el enlace, los códigos, el secreto ni el to
   (`obs_dynamic_delay`, versión, SO), la versión del aviso y, solo si la casilla está marcada, los
   datos técnicos. El ID de la conversación solo vive en memoria.
 - Como mucho hay una petición de Trigi en vuelo; un contador de generación descarta las respuestas de
-  una conversación anterior o de un diálogo cerrado. Las llamadas van en hilos en segundo plano y
-  vuelven al hilo de UI a través de un puntero vigilado; nada se ejecuta en el hilo gráfico de OBS.
+  una conversación anterior o de un diálogo cerrado. Las llamadas van como trabajos en segundo
+  plano (abajo) y vuelven al hilo de UI; nada se ejecuta en el hilo gráfico de OBS.
 - Tres formas de respuesta: una respuesta (texto más una acción opcional), un rechazo o "no
   disponible". Una acción hacia un ticket de Dynamic Delay o hacia una persona se convierte en "Crear
   ticket con esta conversación"; un ticket de cualquier otra categoría, en "Abrir soporte en
@@ -675,6 +679,23 @@ Ni el dock ni el log muestran nunca el enlace, los códigos, el secreto ni el to
   avisa de que pueden quedar nombres de escenas, fuentes, dispositivos de audio y ventanas. Ya no se
   escribe ninguna copia, y las que dejaron versiones anteriores en `%TEMP%\Trigglow` se borran al
   cargar.
+
+**Trabajos en segundo plano y descarga del plugin (`background-tasks.*`, `cancel-token.*`,
+`ui-tasks.*`).** Cada trabajo de red (la comprobación de la sesión, la renovación y el cambio desde
+la v0.5.x, la espera del inicio de sesión, Trigi, los tickets y sus adjuntos, la lectura del log
+para un ticket o una vista previa, la comprobación de actualizaciones) va en su propio hilo con un
+token de cancelación, dentro de un grupo cuyo dueño es `AuthManager`, un diálogo de soporte o el
+dock. WinHTTP funciona en modo asíncrono, así que cancelar un trabajo corta su llamada al momento
+(una respuesta de Trigi puede tardar hasta 90 s), y un timeout es un estado propio ("Trigi ha
+tardado demasiado") en vez de "sin conexión". Los resultados llegan al hilo de UI por una única cola
+que vacía el plugin; destruir un dueño cancela sus trabajos y descarta sus resultados, también los
+que ya estaban en cola. `obs_module_unload()` lo cancela todo, rechaza trabajos nuevos y espera como
+mucho 2 s; en Windows cada hilo de trabajo guarda una referencia a la DLL y termina con
+`FreeLibraryAndExitThread()`, así que ningún código del plugin se ejecuta después de que OBS lo
+descargue. Medido contra un sustituto local que retenía una respuesta de Trigi 90 s: la descarga
+tardó como mucho 7 ms. Revocar el token al cerrar sesión y avisar a trigglow.com de que una
+conversación con Trigi se abandonó no tienen dueño: solo la descarga los cancela. Lo prueba
+`background_tasks_tests`.
 
 **Qué llega al log de OBS.** `[auth-manager]` signed in, signed out, session ended, token renewed,
 migrated legacy login; `[trigi]` session started, message sent (longitud, datos técnicos sí o no),
@@ -1189,6 +1210,8 @@ report-bug-dialog.*           → §3.8 -- "Reportar un problema": Trigi, ticket
 bug-report.* / log-redact.*   → §3.8 -- el log actual de OBS, leído y redactado en memoria
 update-checker.*              → comprobación de la última release de GitHub; solo abre las
                                 releases de este repo
+background-tasks.* / cancel-token.* / ui-tasks.* → §3.8 -- trabajos en segundo plano cancelables,
+                                sus dueños y el cierre acotado al descargar el plugin
 scene-combo-box.*             → combo box del dock poblado desde obs_frontend_get_scene_names()
 settings-ui.*                 → el dock de Qt (escena en directo/de carga, segundos, calidad, estimación
                                 de ajuste, Enable/Disable, cuenta atrás de llenado en vivo, campos
@@ -1199,13 +1222,13 @@ hotkeys.*                     → registro de las 3 hotkeys nativas de OBS, cone
                                 Enable()/Disable()/Toggle() de BufferModeController
 logging.*                     → envoltorio de logging con prefijo de componente
 delay-controller.*            → §6 -- lógica heredada del modo reconexión, presente pero sin usar
-tests/                        → 18 suites, solo se compilan con -DTRIGGLOW_BUILD_TESTS=ON o por
+tests/                        → 19 suites, solo se compilan con -DTRIGGLOW_BUILD_TESTS=ON o por
                                 separado (cmake -S tests): buffer_fit, encoder_check, ui_tokens,
                                 auto_names, overlay_layout, frame_arena, frame_ring,
-                                degradation_policy, pipeline_stress, json, log_redact, chat_text,
-                                support_diagnostics, api_client, token_store, auth_client,
-                                support_client, trigi_states (las del cliente, con un sustituto de
-                                red guionizado)
+                                degradation_policy, pipeline_stress, background_tasks, json,
+                                log_redact, chat_text, support_diagnostics, api_client,
+                                token_store, auth_client, support_client, trigi_states (las del
+                                cliente, con un sustituto de red guionizado)
 ```
 
 Principio de diseño: **`BufferModeController` es el único dueño del estado**. Tanto el dock como las

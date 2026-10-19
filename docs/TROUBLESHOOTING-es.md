@@ -100,8 +100,9 @@
 ## El plugin dice que lo actualice
 - "Esta versión del plugin ya no puede iniciar sesión. Actualiza el plugin." (dock), "Actualiza el
   plugin para usar Trigi" (Reportar un problema) y "Actualización necesaria" (página de inicio de
-  sesión de trigglow.com) significan que tu versión es demasiado antigua. Desde la v0.6.0 el inicio de
-  sesión de la v0.5.x y anteriores está retirado, así que esas versiones ya no pueden usar el delay.
+  sesión de trigglow.com) significan que tu versión es demasiado antigua. En cuanto se publica la
+  v0.6.0, la v0.5.x y anteriores ya no pueden iniciar sesión, y las sesiones que ya tienen dejan de
+  funcionar tras un periodo de transición, así que esas versiones ya no pueden usar el delay.
 - Descarga la última versión (**Descargar la actualización** en el diálogo, el aviso de
   actualización del dock o la
   [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) e
@@ -479,7 +480,7 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
   contra el SDK real de OBS y Qt6 real en Windows/macOS/Ubuntu, además de pruebas en directo dentro de
   una instancia real de OBS en Windows) y qué no (pruebas en directo en macOS/Linux, y una corrección
   confirmada para el riesgo de GPU Device-Remove/Reset descrito en `docs/SPEC-es.md` §7). Los tests
-  unitarios (9 suites, sin OBS) se compilan con `-DTRIGGLOW_BUILD_TESTS=ON` o por separado con
+  unitarios (19 suites, sin OBS) se compilan con `-DTRIGGLOW_BUILD_TESTS=ON` o por separado con
   `cmake -S tests -B build_tests`, y CI los ejecuta en todas las plataformas.
 - Un error de compilación en tu propia máquina es información valiosa — probablemente sea una
   diferencia entre la versión exacta de OBS/Qt que estás usando y las fijadas en `buildspec.json`.

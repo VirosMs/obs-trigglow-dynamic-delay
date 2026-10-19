@@ -92,8 +92,9 @@
 ## The plugin says to update
 - "This plugin version can't sign in any more. Update the plugin." (dock), "Update the plugin to use
   Trigi" (Report a problem) and "Update required" (trigglow.com sign-in page) all mean that your
-  version is too old. Since v0.6.0 the sign-in of v0.5.x and earlier is retired, so those versions
-  can't use the delay any more.
+  version is too old. Once v0.6.0 is published, v0.5.x and earlier can no longer sign in, and the
+  sign-ins they already have stop working after a transition period, so those versions can't use
+  the delay any more.
 - Download the latest version (**Get the update** in the dialog, the dock's update notice or the
   [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) and
   install it with OBS closed. Your settings are kept, and a v0.5.x sign-in moves over by itself; if
@@ -448,7 +449,7 @@ again.
 - Check `docs/BUILD_VALIDATION.md` — it documents what's been verified (real CI builds against the
   real OBS SDK and Qt6 on Windows/macOS/Ubuntu, plus live testing inside a real OBS instance on
   Windows) and what hasn't (live testing on macOS/Linux, and a confirmed fix for the GPU
-  Device-Remove/Reset risk described in `docs/SPEC.md` §7). The unit tests (9 suites, no OBS
+  Device-Remove/Reset risk described in `docs/SPEC.md` §7). The unit tests (19 suites, no OBS
   needed) build with `-DTRIGGLOW_BUILD_TESTS=ON` or on their own with `cmake -S tests -B
   build_tests`, and CI runs them on every platform.
 - A compile error on your own machine is valuable information — it's likely a difference between

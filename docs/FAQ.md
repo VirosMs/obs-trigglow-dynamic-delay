@@ -81,7 +81,8 @@ performance is the *output* resolution and frame rate, not the canvas:
   threads.
 - **Minimum quality 1440p (2K) or 2160p (4K):** in the dock since v0.6.0. With a 1440p output and
   a 1440p minimum the buffer never drops below 1440p, neither to save RAM nor when your computer
-  can't keep up (then only the capture frame rate halves): if the seconds don't fit in RAM, the
+  can't keep up (then only the capture frame rate halves, with an output at 48 fps or more): if
+  the seconds don't fit in RAM, the
   delay gets shorter instead, as with 1080p. Above your output it changes nothing: with a 1080p
   output the buffer stays 1080p. To see the RAM the buffer really takes, look for
   `arena=…MB committed` in the `pipeline check` lines of the OBS log (every 10 s while the delay
@@ -118,6 +119,13 @@ obs-websocket or other remote-control actions that use those objects **by name**
 hotkeys aren't affected. If you go back to v0.5.0 or earlier afterwards, it creates its own
 "(no tocar)" set next to the "(auto)" one: delete the set you don't use.
 
+**What is the "By Trigglow" under the live overlay?**
+Since v0.6.0 the "DELAY 30 s" badge is one image the plugin draws itself, with the same look as
+trigglow.com, and it's signed with a small "By Trigglow" under the icon, outside the badge, the same
+in every language. It only shows while the delay is on and **Show delay overlay on stream** is
+ticked in the dock. You can untick it, pick another corner, or move and resize the badge in OBS: it
+stays where you put it.
+
 **What triggers the `Error` state?**
 Anything that would otherwise leave the plugin in a broken but silent condition: no live scene
 chosen, or a chosen live scene that no longer resolves to anything (e.g. it was deleted). The dock
@@ -145,11 +153,12 @@ email isn't stored. **Sign out** in the dock also disconnects it on trigglow.com
 disconnect it from the web too: Settings → Active sessions → Connected apps.
 
 **I'm on v0.5.x or earlier. Do I have to update?**
-Yes. The sign-in of v0.5.x and earlier is retired with v0.6.0: those versions can no longer sign in
-to Trigglow, and the sign-ins they already have stop working after a transition period, so the
-delay stops working there. Install v0.6.0 over your current version, with OBS closed. On the first
-start your sign-in moves to the new format by itself; if the dock asks you to sign in, do it once.
-Your scenes and settings are kept.
+Yes. The sign-in of v0.5.x and earlier is switched off when v0.6.0 is published: from then on
+those versions can no longer sign in to Trigglow, and the sign-ins they already have stop working
+after a transition period, so the delay stops working there. Install v0.6.0 over your current
+version, with OBS closed. On the first start your sign-in moves to the new format by itself; if the
+dock asks you to sign in, do it once. Your scenes and settings are kept. On macOS and Linux, sign-in
+isn't available in the plugin yet, in v0.5.x or in v0.6.0; it arrives with v0.6.1.
 
 **The dock or "Report a problem" says to update the plugin. What do I do?**
 "This plugin version can't sign in any more. Update the plugin." in the dock, "Update the plugin to

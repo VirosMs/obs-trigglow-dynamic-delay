@@ -32,7 +32,7 @@ buffer por encima de la resolución de salida de OBS (Ajustes → Vídeo → Res
 por encima de su salida que emitir. También es el suelo de la reducción automática de calidad cuando
 tu equipo no llega (ver más abajo). El dock muestra una estimación en vivo, no bloqueante, de lo que
 una combinación concreta va a lograr realmente (segundos y resolución) mientras ajustas cualquiera
-de los dos, antes incluso de pulsar Enable. Ver `docs/SPEC.md` §3.5.
+de los dos, antes incluso de pulsar Enable. Ver `docs/SPEC-es.md` §3.5.
 
 **¿Qué pasa si el delay + calidad que pido no caben en RAM?**
 Recibes un aviso claro en el dock *antes* de activarlo — nunca falla en silencio ni crashea. El
@@ -83,14 +83,14 @@ rendimiento lo que cuenta es la resolución y los fps de *salida*, no el lienzo:
   1440p60 (una CPU de 8 núcleos/16 hilos) el trabajo del plugin en el hilo gráfico de OBS es de
   ~1,2–1,7/1,6–2,1 ms p50/p95 por frame, y la compresión y la descompresión ocupan en total menos de
   un núcleo de CPU en sus propios hilos.
-- **Calidad mínima 1440p (2K) o 2160p (4K):** en el dock desde la v0.6.0. Con una salida 1440p y
-  un mínimo de 1440p el buffer nunca baja de 1440p, ni para ahorrar RAM ni cuando tu equipo no llega
-  (entonces solo se capturan la mitad de fps): si los segundos no caben en la RAM, el delay se acorta,
-  igual que con 1080p. Por encima de tu salida no cambia nada: con una salida 1080p el buffer sigue
-  a 1080p. Para ver la RAM que ocupa de verdad el buffer, busca `arena=…MB committed` en las líneas
-  `pipeline check` del log de OBS (cada 10 s con el delay en marcha): a 1440p60 con 30 s espera unos
-  600–900 MB con gameplay (`ratio=` de unas 11–15x). El plugin reserva margen para hasta ~1,9 GB
-  (5x), y el dock avisa antes de activarlo si eso no cabe.
+- **Calidad mínima 1440p (2K) o 2160p (4K):** en el dock desde la v0.6.0. Con una salida 1440p y un
+  mínimo de 1440p el buffer nunca baja de 1440p, ni para ahorrar RAM ni cuando tu equipo no llega
+  (entonces solo se captura a la mitad de fps, con una salida a 48 fps o más): si los segundos no
+  caben en la RAM, el delay se acorta, igual que con 1080p. Por encima de tu salida no cambia nada:
+  con una salida 1080p el buffer sigue a 1080p. Para ver la RAM que ocupa de verdad el buffer, busca
+  `arena=…MB committed` en las líneas `pipeline check` del log de OBS (cada 10 s con el delay en
+  marcha): a 1440p60 con 30 s espera unos 600–900 MB con gameplay (`ratio=` de unas 11–15x). El
+  plugin reserva margen para hasta ~1,9 GB (5x), y el dock avisa antes de activarlo si eso no cabe.
 - **Si tu equipo no llega** con tus ajustes, el plugin baja la resolución del buffer (nunca por
   debajo de tu calidad mínima) y, como último paso, sus fps de captura, en vez de dejar que OBS se
   quede atrás o de cortar el delay. El dock te lo dice con un aviso ámbar (siguiente pregunta).
@@ -120,6 +120,13 @@ Badge (auto)**. Tus colecciones de escenas se renombran solas. Solo tienes que a
 acciones de Stream Deck, obs-websocket u otro control remoto que usen esos objetos **por su
 nombre**; los atajos del plugin no se ven afectados. Si después vuelves a la v0.5.0 o anterior, esa
 versión crea su propio juego "(no tocar)" junto al "(auto)": borra el que no uses.
+
+**¿Qué es el "By Trigglow" bajo el overlay del directo?**
+Desde la v0.6.0 la insignia "DELAY 30 s" es una sola imagen que pinta el propio plugin, con el mismo
+aspecto que trigglow.com, y va firmada con un pequeño "By Trigglow" bajo el icono, fuera de la
+insignia, igual en todos los idiomas. Solo se ve con el delay activo y **Mostrar overlay de delay en
+el directo** marcado en el dock. Puedes desmarcarlo, elegir otra esquina, o mover y escalar la
+insignia en OBS: se queda donde la pongas.
 
 **¿Qué provoca el estado `Error`?**
 Cualquier cosa que de otro modo dejaría al plugin en una condición rota pero silenciosa: no haber
@@ -151,11 +158,13 @@ sesión** en el dock también lo desconecta en trigglow.com, y también puedes d
 web: Ajustes → Sesiones activas → Apps conectadas.
 
 **Tengo la v0.5.x o anterior. ¿Tengo que actualizar?**
-Sí. El inicio de sesión de la v0.5.x y anteriores se retira con la v0.6.0: esas versiones ya no
-pueden iniciar sesión en Trigglow, y las sesiones que ya tienen dejan de funcionar tras un periodo
-de transición, así que el delay deja de funcionar en ellas. Instala la v0.6.0 encima de tu versión,
-con OBS cerrado. En el primer arranque tu inicio de sesión pasa solo al formato nuevo; si el dock te
-pide iniciar sesión, hazlo una vez. Tus escenas y ajustes se conservan.
+Sí. El inicio de sesión de la v0.5.x y anteriores se apaga cuando se publica la v0.6.0: desde ese
+momento esas versiones ya no pueden iniciar sesión en Trigglow, y las sesiones que ya tienen dejan
+de funcionar tras un periodo de transición, así que el delay deja de funcionar en ellas. Instala la
+v0.6.0 encima de tu versión, con OBS cerrado. En el primer arranque tu inicio de sesión pasa solo al
+formato nuevo; si el dock te pide iniciar sesión, hazlo una vez. Tus escenas y ajustes se conservan.
+En macOS y Linux el plugin todavía no tiene inicio de sesión, ni en la v0.5.x ni en la v0.6.0; llega
+con la v0.6.1.
 
 **El dock o "Reportar un problema" me dice que actualice el plugin. ¿Qué hago?**
 "Esta versión del plugin ya no puede iniciar sesión. Actualiza el plugin." en el dock, "Actualiza el

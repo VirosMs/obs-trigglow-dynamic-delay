@@ -92,7 +92,7 @@
   usuario. Ahora incluye ambos. Es el siguiente release después de v0.4.0 (actualmente en
   producción) — lo bastante pequeño como para no esperar a las features no relacionadas de abajo.
 
-## v0.6.0 (entregado — 2026-10-18)
+## v0.6.0 (entregado — 2026-10-19)
 Rendimiento, adaptación y el aspecto de Trigglow, además de Trigi, un inicio de sesión más seguro
 y una revisión de seguridad. Se preparó un hotfix de rendimiento v0.5.1 que nunca se publicó; todo
 lo que llevaba sale aquí. Lo primero que se reportó en directo: sobrecarga al codificar ("Encoding
@@ -111,7 +111,8 @@ overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida
   códec en el hilo gráfico.
 - **Degradación automática que nunca corta el delay**: más hilos de compresión, después peldaños de
   menos resolución hasta la calidad mínima, después la mitad de fps de captura; vuelve a subir con
-  30 s de histéresis; aviso ámbar en el dock con qué se redujo y por qué.
+  30 s de histéresis; aviso ámbar en el dock con qué se redujo y por qué. La calidad mínima llega
+  hasta 1440p (2K) y 2160p (4K).
 - **Menos RAM, nada pesado en el hilo gráfico**: sin relleno de ceros, arena por bloques (~1,9 GB →
   ~0,6–0,8 GB para 30 s a 1440p60 en simulación), memoria liberada en el hilo liberador, códecs y
   objetos de GPU liberados al desactivar, conversión I420 en la GPU, tablas de Huffman estándar, cada
@@ -128,7 +129,7 @@ overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida
   directo sobre el tema de OBS, Archivo y Geist Mono empaquetadas (OFL), iconos SVG, contraste WCAG
   AA y foco de teclado, errores de inicio de sesión visibles, los segundos de delay bloqueados
   mientras el delay está en marcha. El overlay es una sola imagen generada, igual en todos los
-  sistemas, que conserva la posición y el tamaño que le des.
+  sistemas, firmada "By Trigglow", que conserva la posición y el tamaño que le des.
 - **Nombres "(auto)"** para la escena, los filtros y el overlay que gestiona el plugin, migrados
   automáticamente.
 - **Trigi, el asistente de soporte con IA de Trigglow, en "Reportar un problema"** (Windows, con
@@ -140,16 +141,17 @@ overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida
   un inicio de sesión propio del plugin y con alcance limitado, cifrado con la API de protección de
   datos de Windows, renovado solo y revocado con Cerrar sesión (o desde las apps conectadas de
   trigglow.com), y un paso automático y único desde la v0.5.x. El inicio de sesión de la v0.5.x y
-  anteriores se retira con esta versión.
+  anteriores se apaga cuando se publica esta versión, así que actualizar es obligatorio.
 - **Tickets con la cuenta**, con asunto opcional y un pie con las versiones; el log de OBS redactado
   en memoria, con vista previa y adjuntado solo con consentimiento; las copias antiguas de `%TEMP%`
   se borran; los invitados pasan al formulario web cuando trigglow.com pide una comprobación humana.
 - **Endurecimiento**: un único camino WinHTTP (sin redirecciones, TLS 1.2+, timeouts, tope de
   tamaño, el token solo para api.trigglow.com), solo páginas fijas, sin códigos, URLs ni rutas con
   el usuario en el log de OBS, el aviso de actualización limitado a las releases de este repo, sin
-  rutas de compilación en la DLL.
-- **Build/CI**: FFmpeg fijado a un build de fin de mes de BtbN, 18 suites de tests unitarios en CI en
-  todas las plataformas, `Qt6::Svg`.
+  rutas de compilación en la DLL, y todas las llamadas de red se pueden cancelar, así que OBS se
+  cierra limpio aunque Trigi esté respondiendo.
+- **Build/CI**: FFmpeg fijado a un build de fin de mes de BtbN, 19 suites de tests unitarios en CI
+  en todas las plataformas, un job de ThreadSanitizer, `Qt6::Svg`.
 
 ## Siguiente (v0.6.x)
 - **v0.6.1: un cliente HTTP en macOS y Linux**, para que el inicio de sesión (y con él Activar

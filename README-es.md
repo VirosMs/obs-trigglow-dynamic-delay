@@ -59,7 +59,9 @@ cortando el delay) y lo dice en el dock. Además usa menos RAM (~0,6–0,8 GB en
 de delay que quedaban encendidos al cerrar OBS estando Activo, y trae un dock, un diálogo de reporte
 y un overlay del directo rediseñados y alineados con trigglow.com. Los objetos que gestiona el plugin
 pasan de "(no tocar)" a "(auto)": actualiza cualquier acción de Stream Deck u obs-websocket que use
-los nombres antiguos. (Se preparó un hotfix v0.5.1 que nunca se publicó; forma parte de la v0.6.0.)
+los nombres antiguos; el overlay del directo va firmado "By Trigglow". La calidad mínima llega
+ahora hasta 1440p (2K) y 2160p (4K). (Se preparó un hotfix v0.5.1 que nunca se publicó; forma parte
+de la v0.6.0.)
 Ver `CHANGELOG-es.md` y `docs/TROUBLESHOOTING-es.md`.
 
 La v0.6.0 también trae a **Trigi**, el asistente de soporte con IA de Trigglow, a "Reportar un
@@ -68,10 +70,11 @@ conversación en un ticket si no lo resuelve. El log de OBS nunca se envía a la
 técnicos de OBS son opcionales, con vista previa. **El inicio de sesión es nuevo y más seguro** (un
 código que comparar en trigglow.com, un inicio de sesión propio del plugin cifrado para tu usuario
 de Windows, que Cerrar sesión revoca), los reportes van a tu cuenta con el log de OBS redactado y
-solo si quieres, y las conexiones de red del plugin se endurecen. **El inicio de sesión de la
-v0.5.x y anteriores se retira con esta versión: actualiza para seguir usando el delay.** En la
-v0.6.0 el inicio de sesión, Trigi y los reportes desde OBS solo funcionan en Windows; macOS y Linux
-los tendrán en la v0.6.1. Ver `docs/FAQ-es.md`.
+solo si quieres, y las conexiones de red del plugin se endurecen. **Actualizar es obligatorio: en
+cuanto se publique la v0.6.0, la v0.5.x y anteriores ya no podrán iniciar sesión, y las sesiones
+que ya tienen dejarán de funcionar tras un periodo de transición.** En la v0.6.0 el inicio de
+sesión, Trigi y los reportes desde OBS solo funcionan en Windows; macOS y Linux los tendrán en la
+v0.6.1. Ver `docs/FAQ-es.md`.
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
@@ -191,13 +194,13 @@ por ahora (ver `docs/ROADMAP-es.md`).
 2. En el dock, elige tu **escena en directo** (obligatoria — la escena con tu contenido real) y,
    opcionalmente, una **escena de carga** para mostrar mientras se llena el buffer en vez de
    quedarte en la escena en directo sin delay. Configura el **Delay (segundos)** (1–60) y la
-   **calidad mínima** (480p/720p/1080p) por debajo de la cual el vídeo delayed no baja para ahorrar
-   RAM (tampoco se guarda nunca por encima de la resolución de salida de OBS: con una salida de 720p
-   el buffer es 720p aunque el mínimo sea 1080p). El dock muestra una estimación en vivo de si los
-   segundos elegidos caben realmente en la RAM a esa calidad *antes* de pulsar Enable — si no caben,
-   avisa de que el tiempo real de buffer se acortará en vez de bajar más la calidad, pero nunca
-   bloquea tu elección. Estos campos se bloquean mientras el delay se prepara o está activo
-   ("Desactiva el delay para cambiarlo.").
+   **calidad mínima** (480p, 720p, 1080p, 1440p (2K) o 2160p (4K)) por debajo de la cual el vídeo
+   delayed no baja para ahorrar RAM (tampoco se guarda nunca por encima de la resolución de salida
+   de OBS: con una salida de 720p el buffer es 720p aunque el mínimo sea 1080p). El dock muestra una
+   estimación en vivo de si los segundos elegidos caben realmente en la RAM a esa calidad *antes* de
+   pulsar Enable — si no caben, avisa de que el tiempo real de buffer se acortará en vez de bajar
+   más la calidad, pero nunca bloquea tu elección. Estos campos se bloquean mientras el delay se
+   prepara o está activo ("Desactiva el delay para cambiarlo.").
 3. Ve a `Ajustes → Atajos de teclado`, busca "Trigglow" y asigna una tecla a **Trigglow:
    Activar/desactivar Dynamic Delay** (y opcionalmente a "Activar" y "Desactivar" por separado; con
    OBS en inglés se llaman "Trigglow: Toggle/Enable/Disable Dynamic Delay").
@@ -303,6 +306,10 @@ src/
   log-redact.{hpp,cpp}             → redacción pura, línea a línea, del log de OBS, con tests
   update-checker.{hpp,cpp}         → compara la última release de GitHub de este repositorio contra
                                      la versión en ejecución
+  background-tasks.{hpp,cpp}       → trabajos en segundo plano cancelables (inicio de sesión, Trigi,
+  cancel-token.{hpp,cpp}             tickets, comprobación de actualizaciones) con un cierre acotado
+  ui-tasks.{hpp,cpp}                 cuando OBS descarga el plugin, con tests; ui-tasks los une al
+                                     bucle de eventos de Qt
   auth-manager.{hpp,cpp}           → la puerta de login de cuenta gratuita (ver `docs/ACCOUNT_GATE.md`),
                                      en hilos en segundo plano
   auth-client.{hpp,cpp}            → protocolo de inicio de sesión: vinculación v2, renovación,
@@ -342,6 +349,8 @@ tests/
   api_client_tests.cpp · token_store_tests.cpp · auth_client_tests.cpp ·
   support_client_tests.cpp · trigi_states_tests.cpp → cliente de cuenta, Trigi y tickets, con un
                                      sustituto de red guionizado (fake-transport.hpp)
+  background_tasks_tests.cpp       → cancelación y cierre acotado de los trabajos en segundo plano
+                                     (19 suites en total)
 tools/fonts/                       → cómo se generan los subconjuntos de las fuentes empaquetadas
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
