@@ -195,10 +195,7 @@ if(WIN32)
     )
     target_include_directories(hw_storage_codec_tests PRIVATE "${_src}" "${_ffmpeg}/include")
     target_compile_definitions(hw_storage_codec_tests PRIVATE TRIGGLOW_HAVE_FFMPEG TRIGGLOW_HAVE_HW_STORAGE)
-    target_link_libraries(
-      hw_storage_codec_tests
-      PRIVATE "${_ffmpeg}/lib/avcodec.lib" "${_ffmpeg}/lib/avutil.lib" dxgi
-    )
+    target_link_libraries(hw_storage_codec_tests PRIVATE "${_ffmpeg}/lib/avcodec.lib" "${_ffmpeg}/lib/avutil.lib" dxgi)
     set_target_properties(hw_storage_codec_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
     add_custom_command(
       TARGET hw_storage_codec_tests
@@ -226,13 +223,7 @@ add_test(NAME pipeline_gop_stress_tests COMMAND pipeline_gop_stress_tests)
 # v0.7.0 adversarial tests of the pipeline's hardware path (one edge each:
 # evacuations inside a GOP, packet losses, Disable and shutdown during a
 # setup, yields, render pauses, a slow software decode, a tight arena).
-add_executable(
-  adversarial_gop_tests
-  adversarial_gop_tests.cpp
-  check.hpp
-  fake-gop-codec.hpp
-  ${_pipeline_sources}
-)
+add_executable(adversarial_gop_tests adversarial_gop_tests.cpp check.hpp fake-gop-codec.hpp ${_pipeline_sources})
 target_include_directories(adversarial_gop_tests PRIVATE "${_src}")
 target_link_libraries(adversarial_gop_tests PRIVATE Threads::Threads)
 set_target_properties(adversarial_gop_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
