@@ -77,6 +77,12 @@ struct ProviderSettings {
 	std::shared_ptr<storage::InterControl> control; // openEncoders bookkeeping. Optional.
 	// Only these adapters are considered (tests and benchmarks); empty: QueryGpuAdapters().
 	std::vector<GpuAdapterInfo> adapters;
+	// Tests only (tests/hw_storage_codec_tests.cpp), empty in the plugin:
+	// asked before each step that fails on real machines now and then --
+	// "decoder-device" (the decoder's D3D11 device, lost after a TDR or out of
+	// memory), "decoder-open" and "encoder-open" (avcodec_open2()) -- and
+	// true makes that step fail the way FFmpeg would.
+	std::function<bool(const char *step)> injectFailure;
 };
 
 class Provider {

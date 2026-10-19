@@ -77,6 +77,14 @@ void Logf(const PipelineLogFn &log, PipelineLogLevel level, const char *fmt, ...
 	log(level, line);
 }
 
+using InjectFn = std::function<bool(const char *step)>;
+
+// ProviderSettings::injectFailure: whether a test wants `step` to fail.
+bool Injected(const InjectFn &inject, const char *step)
+{
+	return inject && inject(step);
+}
+
 std::string AvError(int code)
 {
 	char text[AV_ERROR_MAX_STRING_SIZE] = "";
@@ -201,12 +209,13 @@ double PsnrY(const uint8_t *source, uint32_t width, uint32_t height, const Decod
 class HwEncoder final : public storage::Encoder {
 public:
 	HwEncoder(const storage::HwCandidate &candidate, const storage::EncoderConfig &config,
-		  std::shared_ptr<storage::InterControl> control, std::function<uint64_t()> clockNs)
+		  std::shared_ptr<storage::InterControl> control, std::function<uint64_t()> clockNs, InjectFn inject)
 		: candidate_(candidate),
 		  config_(config),
 		  nv12_(candidate.backend == Backend::Qsv),
 		  control_(std::move(control)),
-		  clockNs_(std::move(clockNs))
+		  clockNs_(std::move(clockNs)),
+		  inject_(std::move(inject))
 	{
 	}
 	~HwEncoder() override
@@ -269,6 +278,7 @@ private:
 	bool nv12_;
 	std::shared_ptr<storage::InterControl> control_;
 	std::function<uint64_t()> clockNs_;
+	InjectFn inject_;
 	AVCodecContext *ctx_ = nullptr;
 	AVBufferRef *device_ = nullptr;
 	AVPacket *packet_ = nullptr;
@@ -330,7 +340,7 @@ bool HwEncoder::Open(AVBufferRef *device, AVDictionary **options, std::string &e
 		device_ = av_buffer_ref(device);
 		ctx_->hw_device_ctx = av_buffer_ref(device);
 	}
-	const int ret = avcodec_open2(ctx_, codec, options);
+	const int ret = Injected(inject_, "encoder-open") ? AVERROR(EINVAL) : avcodec_open2(ctx_, codec, options);
 	if (ret < 0) {
 		error = "open failed: " + AvError(ret);
 		return false;
@@ -570,26 +580,17 @@ enum AVPixelFormat PickD3d11(AVCodecContext * /*ctx*/, const enum AVPixelFormat 
 
 class HwDecoder final : public storage::Decoder {
 public:
-	HwDecoder(CodecId codec, bool hardware, uint32_t adapterIndex, PipelineLogFn log)
+	HwDecoder(CodecId codec, bool hardware, uint32_t adapterIndex, PipelineLogFn log, InjectFn inject)
 		: codec_(codec),
 		  hardware_(hardware),
 		  adapterIndex_(adapterIndex),
 		  log_(std::move(log)),
+		  inject_(std::move(inject)),
 		  pictures_(std::make_shared<PicturePool>())
 	{
 		std::snprintf(name_, sizeof(name_), "%s %s", storage::CodecName(codec), hardware ? "d3d11va" : "sw");
 	}
-	~HwDecoder() override
-	{
-		if (ctx_)
-			avcodec_free_context(&ctx_);
-		if (frame_)
-			av_frame_free(&frame_);
-		if (packet_)
-			av_packet_free(&packet_);
-		if (device_)
-			av_buffer_unref(&device_);
-	}
+	~HwDecoder() override { Close(); }
 	HwDecoder(const HwDecoder &) = delete;
 	HwDecoder &operator=(const HwDecoder &) = delete;
 
@@ -599,20 +600,28 @@ public:
 	bool Broken() const override { return broken_; }
 	storage::DecodeStatus Decode(const storage::EncodedFrame &in, bool wantImage, DecodedImage &out,
 				     uint64_t &outSeq) override;
+	// Never on a context that isn't open: Open() leaves none behind when it
+	// fails, and avcodec_flush_buffers() on an allocated but unopened context
+	// crashes (a decoder whose D3D11 device couldn't be created after a TDR,
+	// say, is flushed right after its failed Decode()).
 	void Flush() override
 	{
-		if (ctx_)
+		if (ctx_ && avcodec_is_open(ctx_))
 			avcodec_flush_buffers(ctx_);
 	}
 	// Opens the context now (the probe, on the setup thread); otherwise the
-	// first Decode() does, on the decode worker.
+	// first Decode() does, on the decode worker. On failure nothing is left
+	// allocated (ctx_ stays null) and later calls fail without retrying.
 	bool Open(std::string &error);
 
 private:
+	void Close(); // Frees whatever Open() allocated.
+
 	CodecId codec_;
 	bool hardware_;
 	uint32_t adapterIndex_;
 	PipelineLogFn log_;
+	InjectFn inject_;
 	char name_[24] = "";
 	AVCodecContext *ctx_ = nullptr;
 	AVBufferRef *device_ = nullptr;
@@ -622,6 +631,18 @@ private:
 	bool broken_ = false;
 	std::shared_ptr<PicturePool> pictures_;
 };
+
+void HwDecoder::Close()
+{
+	if (ctx_)
+		avcodec_free_context(&ctx_);
+	if (frame_)
+		av_frame_free(&frame_);
+	if (packet_)
+		av_packet_free(&packet_);
+	if (device_)
+		av_buffer_unref(&device_);
+}
 
 bool HwDecoder::Open(std::string &error)
 {
@@ -637,19 +658,26 @@ bool HwDecoder::Open(std::string &error)
 		error = "no decoder in this FFmpeg";
 		return false;
 	}
+	// Every failure below frees what was allocated: a context left allocated
+	// but unopened would look open to Decode() and crash Flush().
 	ctx_ = avcodec_alloc_context3(codec);
 	frame_ = av_frame_alloc();
 	packet_ = av_packet_alloc();
 	if (!ctx_ || !frame_ || !packet_) {
 		error = "out of memory";
+		Close();
 		return false;
 	}
 	if (hardware_) {
 		char device[16];
 		std::snprintf(device, sizeof(device), "%u", adapterIndex_);
-		const int ret = av_hwdevice_ctx_create(&device_, AV_HWDEVICE_TYPE_D3D11VA, device, nullptr, 0);
+		const int ret =
+			Injected(inject_, "decoder-device")
+				? AVERROR(ENODEV)
+				: av_hwdevice_ctx_create(&device_, AV_HWDEVICE_TYPE_D3D11VA, device, nullptr, 0);
 		if (ret < 0) {
 			error = "no D3D11 device on adapter " + std::string(device) + ": " + AvError(ret);
+			Close();
 			return false;
 		}
 		ctx_->hw_device_ctx = av_buffer_ref(device_);
@@ -662,10 +690,10 @@ bool HwDecoder::Open(std::string &error)
 		ctx_->thread_type = FF_THREAD_SLICE;
 	}
 	ctx_->flags |= AV_CODEC_FLAG_LOW_DELAY;
-	const int ret = avcodec_open2(ctx_, codec, nullptr);
+	const int ret = Injected(inject_, "decoder-open") ? AVERROR(EINVAL) : avcodec_open2(ctx_, codec, nullptr);
 	if (ret < 0) {
 		error = "open failed: " + AvError(ret);
-		avcodec_free_context(&ctx_);
+		Close();
 		return false;
 	}
 	openFailed_ = false;
@@ -867,7 +895,8 @@ Opened OpenEncoder(const storage::HwCandidate &c, const storage::EncoderConfig &
 		if (attempt == 1 && !device)
 			break;
 		AVBufferRef *use = attempt == 0 ? device : nullptr;
-		auto encoder = std::make_unique<HwEncoder>(c, config, settings.control, settings.clockNs);
+		auto encoder = std::make_unique<HwEncoder>(c, config, settings.control, settings.clockNs,
+							   settings.injectFailure);
 		AVDictionary *options = nullptr;
 		SetOptions(c, config.quality, config.keyframeInterval, &options);
 		std::string error;
@@ -958,7 +987,7 @@ bool ProbeEncode(HwEncoder &encoder, uint32_t frames, std::vector<std::vector<ui
 	return true;
 }
 
-ProbeOutcome Probe(HwEncoder &encoder, bool quick, uint32_t decodeAdapter, const PipelineLogFn &log)
+ProbeOutcome Probe(HwEncoder &encoder, bool quick, const ProviderSettings &settings)
 {
 	ProbeOutcome outcome;
 	const storage::EncoderConfig &config = encoder.Config();
@@ -996,7 +1025,8 @@ ProbeOutcome Probe(HwEncoder &encoder, bool quick, uint32_t decodeAdapter, const
 	}
 
 	// The decoder: 0-7 in order, then from the second key on a flushed decoder.
-	auto decoder = std::make_unique<HwDecoder>(codec, true, decodeAdapter, log);
+	auto decoder = std::make_unique<HwDecoder>(codec, true, settings.obsAdapterIndex, settings.log,
+						   settings.injectFailure);
 	std::string error;
 	if (!decoder->Open(error)) {
 		outcome.reason = "hardware decode: " + error;
@@ -1136,14 +1166,15 @@ std::unique_ptr<storage::Decoder> Provider::MakeHardwareDecoder(CodecId codec) c
 {
 	if (codec != CodecId::Hevc && codec != CodecId::H264)
 		return nullptr;
-	return std::make_unique<HwDecoder>(codec, true, settings_.obsAdapterIndex, settings_.log);
+	return std::make_unique<HwDecoder>(codec, true, settings_.obsAdapterIndex, settings_.log,
+					   settings_.injectFailure);
 }
 
 std::unique_ptr<storage::Decoder> Provider::MakeSoftwareDecoder(CodecId codec) const
 {
 	if (codec != CodecId::Hevc && codec != CodecId::H264)
 		return nullptr;
-	return std::make_unique<HwDecoder>(codec, false, 0, settings_.log);
+	return std::make_unique<HwDecoder>(codec, false, 0, settings_.log, settings_.injectFailure);
 }
 
 storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
@@ -1213,7 +1244,7 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 		const bool quick = entry.ok;
 		if (entry.copyParameterSets)
 			opened.encoder->CopyParameterSets();
-		ProbeOutcome probe = Probe(*opened.encoder, quick, settings_.obsAdapterIndex, settings_.log);
+		ProbeOutcome probe = Probe(*opened.encoder, quick, settings_);
 		const double probeMs = static_cast<double>(SteadyNs() - candidateNs) / 1e6;
 		if (!probe.ok) {
 			note(candidate.encoder, probe.reason);

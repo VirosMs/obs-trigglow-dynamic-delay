@@ -10,8 +10,9 @@
 # the account, Trigi and ticket client: src/json.*, src/log-redact.*,
 # src/chat-text.*, src/support-diagnostics.*, src/api-client.*,
 # src/token-store.*, src/auth-client.*, src/support-client.*) and the support
-# dialog's Trigi states (src/trigi-states.*). No libobs, no Qt, no FFmpeg, no
-# test framework, no network (a scripted transport stands in for it). Two
+# dialog's Trigi states (src/trigi-states.*). No libobs, no Qt, no FFmpeg (but
+# for hw_storage_codec_tests, Windows only, when .deps has the plugin's FFmpeg),
+# no test framework, no network (a scripted transport stands in for it). Two
 # ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
@@ -167,6 +168,48 @@ add_executable(
 target_include_directories(storage_policy_tests PRIVATE "${_src}")
 set_target_properties(storage_policy_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME storage_policy_tests COMMAND storage_policy_tests)
+
+# v0.7.0 hardware storage codec (src/hw-storage-codec.*) over the real FFmpeg,
+# its failures injected so it needs no particular GPU. Windows only, and only
+# where the plugin's FFmpeg is already extracted in .deps (a local build of the
+# plugin): CI's unit-tests job downloads no dependencies and skips it.
+if(WIN32)
+  file(GLOB _ffmpeg_dirs "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/ffmpeg-windows-x64/*")
+  list(LENGTH _ffmpeg_dirs _ffmpeg_count)
+  if(_ffmpeg_count EQUAL 1)
+    list(GET _ffmpeg_dirs 0 _ffmpeg)
+    add_executable(
+      hw_storage_codec_tests
+      hw_storage_codec_tests.cpp
+      check.hpp
+      "${_src}/hw-storage-codec.cpp"
+      "${_src}/hw-storage-codec.hpp"
+      "${_src}/annexb.cpp"
+      "${_src}/annexb.hpp"
+      "${_src}/storage-codec-select.cpp"
+      "${_src}/storage-codec-select.hpp"
+      "${_src}/hardware-info.cpp"
+      "${_src}/hardware-info.hpp"
+      "${_src}/buffer-fit.cpp"
+      "${_src}/buffer-fit.hpp"
+    )
+    target_include_directories(hw_storage_codec_tests PRIVATE "${_src}" "${_ffmpeg}/include")
+    target_compile_definitions(hw_storage_codec_tests PRIVATE TRIGGLOW_HAVE_FFMPEG TRIGGLOW_HAVE_HW_STORAGE)
+    target_link_libraries(
+      hw_storage_codec_tests
+      PRIVATE "${_ffmpeg}/lib/avcodec.lib" "${_ffmpeg}/lib/avutil.lib" dxgi
+    )
+    set_target_properties(hw_storage_codec_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    add_custom_command(
+      TARGET hw_storage_codec_tests
+      POST_BUILD
+      COMMAND
+        "${CMAKE_COMMAND}" -E copy_if_different "${_ffmpeg}/bin/avcodec-63.dll" "${_ffmpeg}/bin/avutil-61.dll"
+        "${_ffmpeg}/bin/swresample-7.dll" "$<TARGET_FILE_DIR:hw_storage_codec_tests>"
+    )
+    add_test(NAME hw_storage_codec_tests COMMAND hw_storage_codec_tests)
+  endif()
+endif()
 
 add_executable(
   pipeline_gop_stress_tests
