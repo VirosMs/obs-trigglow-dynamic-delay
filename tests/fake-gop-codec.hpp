@@ -66,6 +66,9 @@ struct Counters {
 	std::atomic<uint64_t> wrongSize{0};        // A frame of another size than the encoder's config.
 	std::thread::id graphicsThread;            // Codec objects must never run here (threaded mode).
 	std::atomic<uint32_t> decodeExtraUs{0};    // Added to every decode: a slow decoder.
+	// Every hardware decoder fails from its next decode on and says it's
+	// broken (a lost device); software ones go on.
+	std::atomic<bool> breakHardwareDecoders{false};
 };
 
 struct EncoderOptions {
@@ -286,6 +289,7 @@ public:
 	storage::CodecId Codec() const override { return codec_; }
 	const char *Name() const override { return "fake-gop"; }
 	bool Hardware() const override { return hardware_; }
+	bool Broken() const override { return broken_; }
 	void Flush() override
 	{
 		ThreadGuard::Scope scope(guard_, counters_);
@@ -297,6 +301,10 @@ public:
 	{
 		ThreadGuard::Scope scope(guard_, counters_);
 		outSeq = in.seq;
+		if (hardware_ && counters_ && counters_->breakHardwareDecoders.load())
+			broken_ = true;
+		if (broken_)
+			return storage::DecodeStatus::Failed;
 		uint32_t magic = 0, width = 0, height = 0;
 		uint64_t seq = 0, stamp = 0, ref = 0;
 		if (!in.data || in.bytes < kHeaderBytes) {
@@ -367,6 +375,7 @@ private:
 	ThreadGuard guard_;
 	uint64_t lastStamp_ = 0;
 	bool haveRef_ = false;
+	bool broken_ = false;
 };
 
 } // namespace fakegop

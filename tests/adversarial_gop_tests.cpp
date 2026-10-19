@@ -177,6 +177,7 @@ public:
 	}
 	void Flush() override { inner_->Flush(); }
 	bool Hardware() const override { return true; }
+	bool Broken() const override { return inner_->Broken(); }
 
 private:
 	std::unique_ptr<storage::Decoder> inner_;
@@ -840,6 +841,36 @@ void TestTightArena()
 	h.Finish();
 }
 
+// T10: the hardware decoder fails mid-run (a lost device): counted once in
+// the codec status -- what makes the codec policy take the encoder off the
+// hardware too -- and the decoding goes on in software, nothing corrupt shown.
+void TestHardwareDecoderFailure()
+{
+	testcheck::g_currentTest = "T10 hardware decoder failure";
+	Harness h;
+	h.hw.gop = 30;
+	h.Build(true);
+	CHECK(h.WaitInter(2000000000ULL));
+	h.RunFor(h.delayNs + 300000000ULL);
+	CHECK_EQ(h.pipeline->GetCodecStatus().decoderFailures, 0u);
+	h.counters.breakHardwareDecoders = true;
+	h.RunFor(100000000ULL);
+	const uint64_t shownBefore = h.displayed;
+	h.RunFor(h.delayNs + 300000000ULL);
+	const CodecPipeline::CodecStatus st = h.pipeline->GetCodecStatus();
+	std::printf("  [T10] decoder failures %llu, software decode %d, shown after the failure %llu, lastError '%s'\n",
+		    static_cast<unsigned long long>(st.decoderFailures), st.softwareDecode ? 1 : 0,
+		    static_cast<unsigned long long>(h.displayed - shownBefore), st.lastError);
+	CHECK_EQ(st.decoderFailures, 1u); // Once: the decoders after it are software ones.
+	CHECK(st.softwareDecode);
+	CHECK(!st.hardwareDecode);
+	CHECK(h.displayed > shownBefore + 10); // Frames keep coming, decoded in software.
+	CHECK_EQ(st.hardErrors, 0u);           // The encoder itself is fine...
+	CHECK(st.interActive);                 // ...and it's the policy's call to evacuate it.
+	h.CheckCommon("T10");
+	h.Finish();
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -871,6 +902,7 @@ int main(int argc, char **argv)
 	run("T7", &TestStallVsPause);
 	run("T8", &TestEvacuateSoftwareDecode);
 	run("T9", &TestTightArena);
+	run("T10", &TestHardwareDecoderFailure);
 	done = true;
 	watchdog.join();
 	return testcheck::Finish("adversarial_gop_tests");

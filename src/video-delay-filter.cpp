@@ -1500,8 +1500,12 @@ bool VideoDelayFilter::EvaluateCodecPolicy(uint64_t nowNs)
 	s.captureIntervalNs = frameIntervalNs_ * captureDivisor_;
 	s.interActive = status.interActive;
 	s.setupFailed = status.setupFailures > lastCodecStatus_.setupFailures;
-	s.hardErrors = static_cast<uint32_t>((status.hardErrors - lastCodecStatus_.hardErrors) +
-					     (status.decoderFailures - lastCodecStatus_.decoderFailures));
+	// A hardware decoder that failed counts like the encoder failing: the
+	// decode is in software from then on, too slow for some sizes, so the
+	// frames that follow leave the hardware codec too.
+	const uint64_t encoderErrors = status.hardErrors - lastCodecStatus_.hardErrors;
+	const uint64_t decoderErrors = status.decoderFailures - lastCodecStatus_.decoderFailures;
+	s.hardErrors = static_cast<uint32_t>(std::min<uint64_t>(encoderErrors + decoderErrors, UINT32_MAX));
 	s.yielded = interControl_->yielded.load();
 	s.engineShared = share.Any();
 	const uint64_t encodeErrors = obsEncodeErrors_.load();
@@ -1572,7 +1576,10 @@ bool VideoDelayFilter::EvaluateCodecPolicy(uint64_t nowNs)
 		if (softwareDecode)
 			pipeline_->SetSoftwareDecode(true);
 #ifdef TRIGGLOW_HAVE_HW_STORAGE
-		if (d.reason == storagepolicy::Reason::HardError && hwProvider_ && status.encoder[0])
+		// Only an encoder that failed is never tried again this session; a
+		// decoder failing (a lost device) says nothing about the encoder.
+		if (d.reason == storagepolicy::Reason::HardError && encoderErrors > 0 && hwProvider_ &&
+		    status.encoder[0])
 			hwProvider_->Blacklist(status.encoder, status.lastError);
 #endif
 		char detail[160] = "";

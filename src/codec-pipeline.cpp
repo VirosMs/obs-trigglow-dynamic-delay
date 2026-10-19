@@ -1136,8 +1136,22 @@ CodecPipeline::DecodeOutcome CodecPipeline::DecodePinned(FrameRing &ring, const 
 		out = DecodedImage{};
 		cursor = ringselect::ChainCursor{}; // Whatever comes next needs a key.
 		decoder->Flush();
-		if (decoder->Broken() && decoder->Hardware())
-			ctx.hardwareFailed = true; // Software from the next frame on (SyncDecodersLocked()).
+		if (decoder->Broken() && decoder->Hardware() && !ctx.hardwareFailed) {
+			// Software from the next frame on (SyncDecodersLocked()), which can't
+			// keep up at every size (4K60 HEVC): counted, so the codec policy
+			// takes the encoder off the hardware too and the frames that follow
+			// are MJPEG, which decodes fast enough.
+			ctx.hardwareFailed = true;
+			{
+				std::lock_guard<std::mutex> lock(mutex_);
+				++status_.decoderFailures;
+				std::snprintf(status_.lastError, sizeof(status_.lastError), "decoder %s failed",
+					      decoder->Name());
+			}
+			Log(PipelineLogLevel::Warning,
+			    "buffer decoder %s failed -- what's left of its frames is decoded in software",
+			    decoder->Name());
+		}
 		return DecodeOutcome::Failed;
 	}
 	if (wantImage) {
