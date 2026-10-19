@@ -1559,6 +1559,7 @@ void CodecPipeline::DecodeLoop()
 	bool codecUsed = false;
 	uint64_t cursorNs = 0;
 	uint64_t cursorEpoch = 0;
+	bool waitingForKey = false; // StartFromKey() chose to skip to the next key; a key decoded ends it.
 	std::vector<std::shared_ptr<void>> fallback; // Stays empty: workers only run with a reaper.
 	std::unique_lock<std::mutex> lock(mutex_);
 	uint64_t handledRelease = releaseSerial_;
@@ -1577,6 +1578,7 @@ void CodecPipeline::DecodeLoop()
 		if (epoch_ != cursorEpoch) {
 			cursorEpoch = epoch_;
 			cursorNs = 0;
+			waitingForKey = false;
 			ctx.flushPending = true;
 		}
 		SyncDecodersLocked(ctx, options_.clockNs(), fallback);
@@ -1632,20 +1634,33 @@ void CodecPipeline::DecodeLoop()
 		DecodedImage image;
 		DecodeOutcome outcome = DecodeOutcome::Failed;
 		bool skipAhead = false; // Waiting for the next key: go on at once, no sleep.
-		if (found && (starting || late) &&
+		if (found &&
 		    !ringselect::Decodable(view.key, view.chain, view.seq,
 					   ctx.cursors[std::min(CodecIndex(view.codec), storage::kCodecCount - 1)])) {
-			// It (re)starts on a P-frame it has no reference for: from its
-			// key, or the next one (invariant I5).
+			// It (re)starts on a P-frame it has no reference for -- it just
+			// started, it jumped, or its decoder lost them (a switch to the
+			// software decoder, a failure): from the key, or the next one
+			// (invariant I5). When it started or jumped, for the frame due;
+			// otherwise for the frame it landed on, ahead of the target.
 			const storage::CodecId codec = view.codec;
 			const uint64_t landedNs = view.captureNs;
 			ring->Unpin(view);
 			codecUsed = true;
-			if (StartFromKey(*ring, ctx, codec, targetNs, intervalNs, epoch, view, image, cursorNs)) {
+			const uint64_t planNs = starting || late ? targetNs : landedNs;
+			if (waitingForKey && !starting && !late) {
+				// Already skipping to the next key: no new plan per P-frame.
+				found = false;
+				skipAhead = true;
+				cursorNs = std::max(cursorNs, landedNs);
+				std::lock_guard<std::mutex> statsLock(statsMutex_);
+				++window_.noKeySkips;
+			} else if (StartFromKey(*ring, ctx, codec, planNs, intervalNs, epoch, view, image, cursorNs)) {
 				outcome = DecodeOutcome::Decoded;
+				waitingForKey = false;
 			} else {
 				found = false;
 				skipAhead = true;
+				waitingForKey = true;
 				cursorNs = std::max(cursorNs, landedNs);
 			}
 			if (late) {
@@ -1695,6 +1710,8 @@ void CodecPipeline::DecodeLoop()
 			continue;
 		}
 		cursorNs = view.captureNs;
+		if (outcome == DecodeOutcome::Decoded && view.key)
+			waitingForKey = false;
 		if (outcome == DecodeOutcome::Decoded && decodeWait_ != DecodeWait::None &&
 		    ((decodeWait_ == DecodeWait::CatchUp && view.captureNs >= decodeWaitUntilNs_) || view.key)) {
 			decodeWait_ = DecodeWait::None; // A fresh frame again.
