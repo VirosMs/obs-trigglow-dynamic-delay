@@ -75,9 +75,9 @@
 - **"Esta versión del plugin ya no puede iniciar sesión. Actualiza el plugin."**: instala la última
   versión (ver "El plugin dice que lo actualice" más abajo).
 - **"Tu sesión ha terminado. Vuelve a iniciar sesión para usar el delay."**: el inicio de sesión del
-  plugin se revocó o caducó, por ejemplo porque desconectaste el plugin en trigglow.com, cambiaste la
-  contraseña o cerraste allí todas tus sesiones, o porque llevabas mucho tiempo sin abrir OBS. Vuelve a
-  iniciar sesión desde el dock.
+  plugin se revocó o caducó, por ejemplo porque desconectaste el plugin en trigglow.com, cambiaste o
+  restableciste allí la contraseña, o porque llevabas mucho tiempo sin abrir OBS. Vuelve a iniciar
+  sesión desde el dock.
 - **"Tu cuenta de Trigglow no está activa."**: la cuenta está suspendida o no está activa, y `Activar
   delay` queda bloqueado. Pulsa **Abrir trigglow.com** para ver el motivo, o escribe a soporte desde
   la web.

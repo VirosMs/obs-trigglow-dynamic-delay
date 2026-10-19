@@ -70,8 +70,8 @@
 - **"This plugin version can't sign in any more. Update the plugin."**: install the latest version
   (see "The plugin says to update" below).
 - **"Your session ended. Sign in again to use the delay."**: the plugin's sign-in was revoked or
-  expired, for example because you disconnected the plugin on trigglow.com, changed your password or
-  closed all your sessions there, or OBS wasn't opened for a long time. Sign in again from the dock.
+  expired, for example because you disconnected the plugin on trigglow.com, changed or reset your
+  password there, or OBS wasn't opened for a long time. Sign in again from the dock.
 - **"Your Trigglow account isn't active."**: the account is suspended or not active, and `Enable
   delay` stays blocked. Press **Open trigglow.com** to see why, or write to support from the web.
 
