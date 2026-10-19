@@ -102,6 +102,45 @@ bool WriteAtomic(const fs::path &path, const std::string &data)
 	return true;
 }
 
+// Writes zeros over every byte of `path`, in place, and flushes them to the
+// disk (FlushFileBuffers on Windows: an ofstream flush only reaches the
+// system's cache).
+void OverwriteWithZeros(const fs::path &path)
+{
+	std::error_code ec;
+	const std::uintmax_t size = fs::file_size(path, ec);
+	if (ec || size == 0)
+		return;
+	const std::string zeros(64 * 1024, '\0');
+#ifdef _WIN32
+	HANDLE file =
+		CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (file == INVALID_HANDLE_VALUE)
+		return;
+	std::uintmax_t left = size;
+	while (left > 0) {
+		const DWORD chunk = static_cast<DWORD>(left < zeros.size() ? left : zeros.size());
+		DWORD written = 0;
+		if (!WriteFile(file, zeros.data(), chunk, &written, nullptr) || written == 0)
+			break;
+		left -= written;
+	}
+	FlushFileBuffers(file);
+	CloseHandle(file);
+#else
+	std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+	if (!file)
+		return;
+	std::uintmax_t left = size;
+	while (left > 0 && file) {
+		const size_t chunk = static_cast<size_t>(left < zeros.size() ? left : zeros.size());
+		file.write(zeros.data(), static_cast<std::streamsize>(chunk));
+		left -= chunk;
+	}
+	file.flush();
+#endif
+}
+
 std::string Encode(const PluginToken &t)
 {
 	json::Value v = json::Value::Object();
@@ -379,17 +418,11 @@ void TokenStore::DeleteLegacy()
 	if (legacyFile_.empty())
 		return;
 	std::error_code ec;
-	const auto size = fs::file_size(legacyFile_, ec);
-	if (!ec && size > 0 && size <= kMaxFileBytes) {
-		// Zeros over the old plain text before the file goes, so the token
-		// doesn't linger in the freed disk blocks.
-		std::fstream file(legacyFile_, std::ios::binary | std::ios::in | std::ios::out);
-		if (file) {
-			const std::string zeros(static_cast<size_t>(size), '\0');
-			file.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
-			file.flush();
-		}
-	}
+	if (!fs::exists(legacyFile_, ec))
+		return;
+	// Zeros over the whole old plain text, flushed to the disk, before the
+	// file goes, so the token doesn't linger in the freed disk blocks.
+	OverwriteWithZeros(legacyFile_);
 	fs::remove(legacyFile_, ec);
 }
 

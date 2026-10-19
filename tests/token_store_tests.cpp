@@ -195,6 +195,23 @@ void TestLegacy()
 	CHECK(store.ReadLegacy().token.empty());
 	WriteFile(legacy, "not json");
 	CHECK(store.ReadLegacy().token.empty());
+
+	// Every byte is overwritten before the file goes, whatever its size (a
+	// hard link keeps the data reachable after the delete, to look at it).
+	std::string big(200 * 1024, 'x');
+	big.replace(0, 26, "{\"token\": \"LegacyBig_7\"}");
+	WriteFile(legacy, big);
+	const auto link = dir.path() / "legacy-link.json";
+	std::error_code ec;
+	std::filesystem::create_hard_link(legacy, link, ec);
+	store.DeleteLegacy();
+	CHECK(!std::filesystem::exists(legacy));
+	if (!ec) {
+		const std::string left = ReadFile(link);
+		CHECK(left.size() == big.size());
+		CHECK(left.find_first_not_of('\0') == std::string::npos);
+	}
+	store.DeleteLegacy(); // None left: nothing happens.
 }
 
 void TestSignOutWins()

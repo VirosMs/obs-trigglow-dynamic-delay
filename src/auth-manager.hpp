@@ -150,6 +150,7 @@ private:
 
 	void CheckSession();
 	void MigrateLegacy();
+	void DeleteLeftoverLegacy();
 	void ApplySessionCheck(const auth::MeResult &result);
 	void EndSession(LoginError reason);
 	void SchedulePoll(int seconds);

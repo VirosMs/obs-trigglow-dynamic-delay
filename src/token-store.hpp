@@ -127,7 +127,8 @@ public:
 	// The token and display name from the legacy file (empty token if none or
 	// unreadable).
 	PluginToken ReadLegacy() const;
-	// Overwrites the legacy file with zeros, then deletes it.
+	// Overwrites the whole legacy file with zeros, flushes them to the disk,
+	// then deletes it. Nothing happens when there is none.
 	void DeleteLegacy();
 
 	// Held while a token renewal runs, so two threads never renew at once.

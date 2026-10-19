@@ -108,11 +108,13 @@ void AuthManager::Init()
 		session_ = Session::Plugin;
 		if (const std::optional<PluginToken> stored = store_->Current())
 			displayName_ = stored->displayName;
+		DeleteLeftoverLegacy();
 		CheckSession();
 		break;
 	case TokenStore::LoadResult::Discarded:
 		// Another Windows user's file, a restored profile, a damaged file.
 		TRIGGLOW_LOG_INFO(kComponent, "the stored sign-in can't be read on this Windows account; signed out");
+		DeleteLeftoverLegacy();
 		break;
 	case TokenStore::LoadResult::Missing:
 		if (store_->HasLegacy()) {
@@ -142,6 +144,16 @@ void AuthManager::Shutdown()
 	if (renewer_)
 		renewer_->Shutdown();
 	onStatusChanged_ = nullptr;
+}
+
+void AuthManager::DeleteLeftoverLegacy()
+{
+	// v0.5.x's plain-text sign-in next to an encrypted one (or an unreadable
+	// one): never needed again, so it doesn't stay on disk.
+	if (!store_ || !store_->HasLegacy())
+		return;
+	store_->DeleteLegacy();
+	TRIGGLOW_LOG_INFO(kComponent, "deleted the plain-text sign-in file of v0.5.x");
 }
 
 std::string AuthManager::PendingUrl() const
