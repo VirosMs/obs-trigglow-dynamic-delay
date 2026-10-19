@@ -40,7 +40,7 @@ enum class PipelineLoad : uint8_t {
 };
 
 struct PipelineHealth {
-	uint32_t version = 1;     // Bumped if fields change meaning.
+	uint32_t version = 2;     // Bumped if fields change meaning (2: v0.7.0, the storage codec).
 	bool running = false;     // The delay buffer exists (Filling or Active).
 	bool codecWorkers = true; // false: the hidden codec_workers=false kill switch (codec on the graphics thread).
 	// Degradation rung: 0 = full quality. Rungs only ever lower the resolution
@@ -64,6 +64,15 @@ struct PipelineHealth {
 	double droppedPerMinute = 0.0;
 	double repeatedPerMinute = 0.0;
 	uint64_t changes = 0; // ++ on every rung or thread change: a cheap "something changed" check.
+
+	// v2 (v0.7.0): the storage codec, for support diagnostics only -- the dock
+	// shows none of it.
+	uint8_t codec = 1;     // What's stored now (storage::CodecId): 0 raw, 1 MJPEG, 2 H.264, 3 HEVC.
+	char encoder[16] = ""; // "hevc_nvenc", "mjpeg"...
+	bool hwDecode = false; // Its frames decode on the GPU.
+	uint8_t codecPolicyState =
+		0; // storagepolicy::State: 0 Mjpeg, 1 Probing, 2 Hw, 3 HwGuarded, 4 Yielded, 5 Evacuated.
+	uint64_t codecChanges = 0; // ++ on every storage codec policy decision.
 
 	bool Degraded() const { return level > 0; }
 };

@@ -304,6 +304,8 @@ private:
 	void ApplyEncoderCeiling(bool force);
 	// Copies the current state into health_ (under healthMutex_).
 	void PublishHealth(bool running);
+	// v0.7.0: the "storage codec check" line (from LogPerfWindow()).
+	void LogCodecWindow(const char *reason, CodecPipeline::WindowStats &w); // Summarizes w's series in place.
 
 	// Telemetry. BeginRenderSample() closes the window early after a pause in
 	// rendering; FinishRenderSample() records one Render() call and logs the
@@ -509,6 +511,7 @@ private:
 	std::atomic<uint64_t> reportedMixSkipped_{0}; // report_encoder_lag, summed (UI thread).
 	uint64_t lastMixSkipped_ = 0;
 	uint64_t codecChanges_ = 0;
+	uint64_t perfMixSkippedStart_ = 0; // reportedMixSkipped_ when the telemetry window began.
 	// May hold an NVENC session (or be about to): what yield_hw_encoder acts on. Written on G.
 	std::atomic<bool> mayUseNvenc_{false};
 	// The encoders' ceiling (set_encoder_ceiling, UI thread), 0 x 0 = none,

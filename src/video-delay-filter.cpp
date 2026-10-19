@@ -739,6 +739,7 @@ void VideoDelayFilter::FinishRenderSample(uint64_t renderStartNs)
 		perf_.obsTotalFramesStart = perf_.obsTotalFramesLast;
 		perf_.obsLaggedFramesStart = perf_.obsLaggedFramesLast;
 		perf_.obsSkippedFramesStart = perf_.obsSkippedFramesLast;
+		perfMixSkippedStart_ = reportedMixSkipped_.load();
 	}
 	// The policy judges only what the plugin adds to the graphics thread:
 	// everything but rendering the scene itself into the capture texture,
@@ -837,16 +838,23 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 	const size_t rung = policy_.Valid() ? policy_.RungIndex() : 0;
 	const size_t rungs = policy_.Valid() ? policy_.Ladder().size() : 1;
 	constexpr double kMiB = 1024.0 * 1024.0;
+	// v0.7.0: what stores the frames now.
+	char codecName[32] = "mjpeg";
+	if (lastCodecStatus_.interActive)
+		std::snprintf(codecName, sizeof(codecName), "%s", lastCodecStatus_.encoder);
+#ifndef TRIGGLOW_HAVE_FFMPEG
+	std::snprintf(codecName, sizeof(codecName), "raw");
+#endif
 	TRIGGLOW_LOG_INFO(
 		kComponent,
-		"pipeline check (%s): mode=%s rung=%zu/%zu capture=%ux%u@%.2ffps enc=%ux%u L=%u S=%zu | "
+		"pipeline check (%s): mode=%s codec=%s rung=%zu/%zu capture=%ux%u@%.2ffps enc=%ux%u L=%u S=%zu | "
 		"enc0 p50/p95/max=%.2f/%.2f/%.2fms busy=%.0f%% enc1=%.2f/%.2f/%.2f busy=%.0f%% "
 		"dec=%.2f/%.2f/%.2f busy=%.0f%% | drops reserve=%llu backpressure=%llu arena=%llu capture=%llu "
 		"rawFallback=%llu encFail=%llu decFail=%llu staleEnc=%llu decJumps=%llu staleDec=%llu | queue enc "
 		"max=%u avg=%.2f dec ahead avg=%.2f min=%u | ratio=%.1fx arena=%.0fMB committed (live %.0fMB, peak "
 		"%.0fMB, %u blocks of %.0fMB, limit %.0fMB) ring=%zu slots (ready %zu, dropped %zu, in flight %zu, "
 		"pinned %zu)",
-		reason, threaded ? "workers" : "sync", rung, rungs - 1, captureWidth_, captureHeight_,
+		reason, threaded ? "workers" : "sync", codecName, rung, rungs - 1, captureWidth_, captureHeight_,
 		fps / std::max<uint32_t>(1, captureDivisor_), pipeline_ ? pipeline_->ActiveEncodeContexts() : 0,
 		pipeline_ ? pipeline_->SlicesPerContext() : 0, pipeline_ ? pipeline_->LookaheadFrames() : 0,
 		kStagingSlotCount, e0P50, e0P95, e0Max, busy(w.encode[0].frameNs), e1P50, e1P95, e1Max,
@@ -869,11 +877,72 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 		ring_ ? ring_->SlotCount() : 0, counts.ready, counts.dropped, counts.reserved + counts.encoding,
 		counts.pinned);
 
+	LogCodecWindow(reason, w);
+
 	const uint64_t drops = perf_.reserveFailures + perf_.backpressureDrops + perf_.captureFailures + w.arenaDrops;
 	lastDropsPerMinute_ = static_cast<double>(drops) * 60.0 / seconds;
 	lastHoldsPerMinute_ = static_cast<double>(perf_.holds) * 60.0 / seconds;
 	PublishHealth(ring_ != nullptr);
 	perf_.Reset();
+}
+
+void VideoDelayFilter::LogCodecWindow(const char *reason, CodecPipeline::WindowStats &w)
+{
+	const uint64_t mainSkipped = perf_.obsSkippedFramesLast >= perf_.obsSkippedFramesStart
+					     ? perf_.obsSkippedFramesLast - perf_.obsSkippedFramesStart
+					     : 0;
+	const uint64_t mixNow = reportedMixSkipped_.load();
+	const uint64_t mixSkipped = mixNow >= perfMixSkippedStart_ ? mixNow - perfMixSkippedStart_ : 0;
+	const CodecPipeline::CodecStatus &status = lastCodecStatus_;
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	const int mjpegQuality = kMjpegQuality;
+#else
+	const int mjpegQuality = 0;
+#endif
+	const char *policy = storagepolicy::StateName(codecPolicy_.GetState());
+	if (!status.interActive && codecPolicy_.GetState() == storagepolicy::State::Mjpeg &&
+	    w.interLatencyNs.count == 0 && w.catchUps == 0 && w.noKeyWaits == 0) {
+		// MJPEG the whole cycle: nothing more to say than the codec.
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "storage codec check (%s): codec=mjpeg(q%d,huff=default) dec=mjpeg policy=%s | obs "
+				  "encode-lag skipped main+%llu mixes+%llu",
+				  reason, mjpegQuality, policy, static_cast<unsigned long long>(mainSkipped),
+				  static_cast<unsigned long long>(mixSkipped));
+		return;
+	}
+	char codec[96];
+	int qp = 0;
+	uint32_t gop = 0;
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	if (hwProvider_) {
+		qp = hwProvider_->QpFor(status.codec);
+		gop = hwProvider_->KeyframeInterval();
+	}
+#endif
+	if (status.interActive)
+		std::snprintf(codec, sizeof(codec), "%s(qp%d,gop%u)", status.encoder, qp, gop);
+	else
+		std::snprintf(codec, sizeof(codec), "mjpeg(q%d,huff=default)%s", mjpegQuality,
+			      codecPolicy_.GetState() == storagepolicy::State::Probing ? " bridging" : "");
+	double latP50 = 0, latP95 = 0, latMax = 0, sendP50 = 0, sendP95 = 0, sendMax = 0;
+	w.interLatencyNs.Summarize(latP50, latP95, latMax);
+	w.interSendNs.Summarize(sendP50, sendP95, sendMax);
+	TRIGGLOW_LOG_INFO(
+		kComponent,
+		"storage codec check (%s): codec=%s dec=%s | hwenc lat p50/p95/max=%.1f/%.1f/%.1fms inflight "
+		"max=%u send p95=%.2fms | keys=%llu forcedIdr=%llu chainBreaks=%llu orphanP=%llu catchUps=%llu "
+		"(frames %llu, max %.0fms) noKeyWaits=%llu noKeySkips=%llu | bridge frames=%llu codecChanges=%llu "
+		"hardErrors=%llu | policy=%s guard=%s | obs encode-lag skipped main+%llu mixes+%llu",
+		reason, codec, status.softwareDecode ? "sw" : (status.hardwareDecode ? "d3d11va" : "mjpeg"), latP50,
+		latP95, latMax, w.inFlightMax, sendP95, static_cast<unsigned long long>(w.interKeys),
+		static_cast<unsigned long long>(w.forcedKeys), static_cast<unsigned long long>(w.chainBreaks),
+		static_cast<unsigned long long>(w.orphanDrops), static_cast<unsigned long long>(w.catchUps),
+		static_cast<unsigned long long>(w.catchUpFrames), static_cast<double>(w.catchUpMaxNs) / 1e6,
+		static_cast<unsigned long long>(w.noKeyWaits), static_cast<unsigned long long>(w.noKeySkips),
+		static_cast<unsigned long long>(w.bridgeFrames), static_cast<unsigned long long>(w.codecChanges),
+		static_cast<unsigned long long>(w.interHardErrors), policy,
+		codecPolicy_.BlockUp(perf_.lastSampleNs) ? "on" : "off", static_cast<unsigned long long>(mainSkipped),
+		static_cast<unsigned long long>(mixSkipped));
 }
 
 void VideoDelayFilter::ReleaseGpuObjects()
@@ -1560,6 +1629,22 @@ void VideoDelayFilter::PublishHealth(bool running)
 		health.repeatedPerMinute = lastHoldsPerMinute_;
 	}
 	health.changes = healthChanges_;
+	// v2: the storage codec (support diagnostics; the dock shows none of it).
+	if (lastCodecStatus_.interActive) {
+		health.codec = static_cast<uint8_t>(lastCodecStatus_.codec);
+		std::snprintf(health.encoder, sizeof(health.encoder), "%s", lastCodecStatus_.encoder);
+	} else {
+#ifdef TRIGGLOW_HAVE_FFMPEG
+		health.codec = static_cast<uint8_t>(storage::CodecId::Mjpeg);
+		std::snprintf(health.encoder, sizeof(health.encoder), "mjpeg");
+#else
+		health.codec = static_cast<uint8_t>(storage::CodecId::Raw);
+		std::snprintf(health.encoder, sizeof(health.encoder), "raw");
+#endif
+	}
+	health.hwDecode = lastCodecStatus_.hardwareDecode && !lastCodecStatus_.softwareDecode;
+	health.codecPolicyState = static_cast<uint8_t>(codecPolicy_.GetState());
+	health.codecChanges = codecChanges_;
 	std::lock_guard<std::mutex> lock(healthMutex_);
 	health_ = health;
 }
