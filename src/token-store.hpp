@@ -18,6 +18,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -78,10 +79,36 @@ public:
 	std::string CurrentToken() const; // Empty when signed out.
 	bool HasToken() const;
 
+	// Counts sign-outs: every Clear() adds one. Whatever will save a token it
+	// is about to get from the server (a renewal, the exchange of a v0.5.x
+	// sign-in, a sign-in wait) reads it first and saves with SaveIfEpoch(), so
+	// a sign-out in between always wins: the token it brings back is never
+	// stored, and the sign-out can't come undone at the next start of OBS.
+	uint64_t Epoch() const;
+	// Current() and Epoch() as they were at the same moment.
+	std::optional<PluginToken> Snapshot(uint64_t &epoch) const;
+
 	// Replaces the record in memory and on disk (written to a temporary file,
 	// then moved over the old one). Returns false if it couldn't be written
 	// (the in-memory copy is replaced anyway, so this session keeps working).
+	// Only for a token nothing can have signed out of meanwhile; the plugin's
+	// own flows use SaveIfEpoch().
 	bool Save(const PluginToken &token);
+
+	enum class SaveResult {
+		Saved,
+		MemoryOnly,         // Kept for this session, but the file couldn't be written.
+		SignedOutMeanwhile, // Clear() ran after `epoch` was read: nothing changed.
+	};
+	// Save(), only if no Clear() ran since `epoch` was read (Epoch(),
+	// Snapshot()). Checked and written under one lock, so a sign-out can't
+	// slip in between.
+	SaveResult SaveIfEpoch(uint64_t epoch, const PluginToken &token);
+
+	// Replaces the dates and the display name, only while the stored token is
+	// still `updated.token` (not signed out, not renewed meanwhile). false:
+	// nothing changed.
+	bool UpdateDetails(const PluginToken &updated);
 	// Keeps the token, updates the stored display name.
 	void SetDisplayName(const std::string &displayName);
 
@@ -91,6 +118,9 @@ public:
 
 	// Forgets the sign-in: memory and file. The legacy file is left alone.
 	void Clear();
+	// Clear(), only while `token` is still the stored one: a call that failed
+	// with an old token never signs out a newer sign-in. true: cleared.
+	bool ClearIfToken(const std::string &token);
 
 	// --- Plain-text sign-in of v0.5.x and earlier -------------------------------
 	bool HasLegacy() const;
@@ -107,6 +137,7 @@ public:
 
 private:
 	bool WriteLocked(const PluginToken &token);
+	void ClearLocked();
 	std::optional<PluginToken> ReadFileLocked(bool &unreadable) const;
 
 	mutable std::mutex mutex_;
@@ -115,6 +146,7 @@ private:
 	std::filesystem::path legacyFile_;
 	std::unique_ptr<SecretProtector> protector_;
 	std::optional<PluginToken> current_;
+	uint64_t epoch_ = 0;
 };
 
 } // namespace trigglow

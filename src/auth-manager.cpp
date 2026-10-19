@@ -89,6 +89,14 @@ void AuthManager::Init()
 	const std::filesystem::path authFile = ModuleConfigPath(kAuthFile);
 	configDir_ = authFile.parent_path();
 	store_ = std::make_shared<TokenStore>(authFile, ModuleConfigPath(kLegacyFile), MakePlatformProtector());
+	// Renewals for the support calls. What a renewal did reaches this object
+	// even when the dialog that needed it has closed (ApplyAuthEvents()).
+	QPointer<AuthManager> self(this);
+	renewer_ = std::make_shared<auth::BackgroundRenewer>(uitasks::Registry(), client_, store_,
+							     [self](const auth::AuthEvents &events) {
+								     if (self)
+									     self->ApplyAuthEvents(events);
+							     });
 
 	if (!http::Available()) {
 		TRIGGLOW_LOG_INFO(kComponent, "sign-in isn't available on this platform yet");
@@ -128,8 +136,11 @@ void AuthManager::Shutdown()
 	// Aborts the calls in flight; none of their results is delivered any
 	// more (obs_module_unload() already did this for every job, through
 	// uitasks::Shutdown()). Clear the callback too, so nothing can call back
-	// into a dock that may already be destroyed.
+	// into a dock that may already be destroyed. The renewals go now too:
+	// this is the only thing besides the registry's shutdown that stops them.
 	tasks_.CancelAndWait(tasks::kOwnerLimit);
+	if (renewer_)
+		renewer_->Shutdown();
 	onStatusChanged_ = nullptr;
 }
 
@@ -229,6 +240,8 @@ void AuthManager::MigrateLegacy()
 				// signed-in tickets wait for the migration.
 				TRIGGLOW_LOG_INFO(kComponent, "legacy login migration postponed to the next start");
 				break;
+			case auth::ExchangeStatus::SignedOut:
+				return; // Signed out meanwhile (handled above): nothing was kept.
 			}
 			NotifyChanged();
 		});
@@ -354,16 +367,31 @@ void AuthManager::PollOnce()
 	const api::Client client = client_;
 	std::shared_ptr<TokenStore> store = store_;
 	const auth::LinkRequest link = *link_;
-	RunAsync<auth::PollResult>(
-		[client, store, link](const tasks::CancelToken &cancel) {
-			auth::PollResult r = auth::PollLink(client.WithCancel(&cancel), link);
+	// A sign-out from now on wins over this poll's token (TokenStore::Epoch()).
+	const uint64_t epoch = store_->Epoch();
+	struct Outcome {
+		auth::PollResult poll;
+		bool signedOutMeanwhile = false;
+	};
+	RunAsync<Outcome>(
+		[client, store, link, epoch](const tasks::CancelToken &cancel) {
+			Outcome o;
+			const api::Client cancellable = client.WithCancel(&cancel);
+			o.poll = auth::PollLink(cancellable, link);
 			// The token is handed out once: keep it before anything else.
-			if (r.status == auth::PollStatus::Approved)
-				store->Save(r.token);
-			return r;
+			if (o.poll.status == auth::PollStatus::Approved &&
+			    store->SaveIfEpoch(epoch, o.poll.token) == TokenStore::SaveResult::SignedOutMeanwhile) {
+				o.signedOutMeanwhile = true;
+				auth::Logout(cancellable, o.poll.token.token); // Nobody's token: revoke it.
+				Wipe(o.poll.token.token);
+			}
+			return o;
 		},
-		[this, attempt](const auth::PollResult &r) {
+		[this, attempt](const Outcome &o) {
 			pollInFlight_ = false;
+			const auth::PollResult &r = o.poll;
+			if (r.status == auth::PollStatus::Approved && o.signedOutMeanwhile)
+				return; // Signed out while the browser was confirming: nothing was kept.
 			if (r.status == auth::PollStatus::Approved) {
 				// Even if Cancel was pressed meanwhile: the user did confirm
 				// in the browser, and the token is already stored.

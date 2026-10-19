@@ -197,6 +197,60 @@ void TestLegacy()
 	CHECK(store.ReadLegacy().token.empty());
 }
 
+void TestSignOutWins()
+{
+	testcheck::g_currentTest = "sign-out wins";
+	ScratchDir dir("store-epoch");
+	const auto file = dir.path() / "trigglow-auth.dat";
+	TokenStore store(file, {}, std::make_unique<FakeProtector>());
+	CHECK(store.Save(Sample("tgp_first")));
+	uint64_t epoch = 0;
+	CHECK(store.Snapshot(epoch).has_value());
+	CHECK(epoch == store.Epoch());
+	// Nothing in between: saved.
+	CHECK(store.SaveIfEpoch(epoch, Sample("tgp_second")) == TokenStore::SaveResult::Saved);
+	CHECK_STR(store.CurrentToken(), "tgp_second");
+
+	// A sign-out in between: refused, and nothing comes back at the next start.
+	store.Clear();
+	CHECK(store.Epoch() != epoch);
+	CHECK(store.SaveIfEpoch(epoch, Sample("tgp_third")) == TokenStore::SaveResult::SignedOutMeanwhile);
+	CHECK(!store.HasToken());
+	CHECK(!std::filesystem::exists(file));
+	{
+		TokenStore next(file, {}, std::make_unique<FakeProtector>());
+		CHECK(next.Load() == TokenStore::LoadResult::Missing);
+	}
+	// A sign-in after it saves with its own epoch; the old one still can't.
+	CHECK(store.SaveIfEpoch(store.Epoch(), Sample("tgp_fourth")) == TokenStore::SaveResult::Saved);
+	CHECK(store.SaveIfEpoch(epoch, Sample("tgp_stale")) == TokenStore::SaveResult::SignedOutMeanwhile);
+	CHECK_STR(store.CurrentToken(), "tgp_fourth");
+
+	// New dates and name only onto the same token.
+	PluginToken details = Sample("tgp_fourth");
+	details.displayName = "Renamed";
+	CHECK(store.UpdateDetails(details));
+	CHECK_STR(store.Current()->displayName, "Renamed");
+	CHECK(!store.UpdateDetails(Sample("tgp_other")));
+	CHECK_STR(store.CurrentToken(), "tgp_fourth");
+
+	// A failed call clears only the token it used.
+	CHECK(!store.ClearIfToken("tgp_other"));
+	CHECK(store.HasToken());
+	const uint64_t before = store.Epoch();
+	CHECK(store.ClearIfToken("tgp_fourth"));
+	CHECK(store.Epoch() != before);
+	CHECK(!store.HasToken());
+	CHECK(!std::filesystem::exists(file));
+	CHECK(!store.UpdateDetails(Sample("tgp_fourth"))); // Signed out: never written back.
+	CHECK(!std::filesystem::exists(file));
+
+	// No file to write to: kept for this session only.
+	TokenStore memoryOnly({}, {}, std::make_unique<FakeProtector>());
+	CHECK(memoryOnly.SaveIfEpoch(memoryOnly.Epoch(), Sample()) == TokenStore::SaveResult::MemoryOnly);
+	CHECK(memoryOnly.HasToken());
+}
+
 void TestPlatformProtector()
 {
 	testcheck::g_currentTest = "platform protector";
@@ -243,6 +297,7 @@ int main()
 	TestReload();
 	TestNoSecureStorage();
 	TestLegacy();
+	TestSignOutWins();
 	TestPlatformProtector();
 	return testcheck::Finish("token_store_tests");
 }

@@ -18,13 +18,21 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Tests for src/auth-client.*: linking OBS to an account, the plugin
 // token's start check, renewal, sign-out and the one-time migration of a
-// v0.5.x sign-in, plus the 401/403 rules of every authenticated call.
+// v0.5.x sign-in, plus the 401/403 rules of every authenticated call, a
+// sign-out that lands while one of them waits, and the renewals the support
+// calls hand to AuthManager's renewer.
 
 #include "auth-client.hpp"
 #include "fake-transport.hpp"
 
+#include <chrono>
+#include <condition_variable>
 #include <fstream>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace trigglow;
 using testsupport::FakeTransport;
@@ -473,6 +481,239 @@ void TestLogout()
 	CHECK(f.transport.Count() == before);
 }
 
+// "Sign out" (TokenStore::Clear() on the UI thread) while a call that will
+// save a token is waiting for the server: the sign-out wins, nothing comes
+// back on disk for the next start of OBS, and the token the server handed
+// out anyway is revoked.
+void TestSignOutWins()
+{
+	testcheck::g_currentTest = "sign-out wins";
+	const auto authFile = [](Fixture &f) {
+		return f.dir.path() / "trigglow-auth.dat";
+	};
+	const auto revoked = [](Fixture &f, const std::string &token) {
+		for (const http::Request &req : f.transport.Requests()) {
+			if (req.path == "/auth/plugin/logout" && HeaderValue(req, "Authorization") == "Bearer " + token)
+				return true;
+		}
+		return false;
+	};
+	{
+		// During a renewal.
+		Fixture f;
+		f.SignIn("tgp_old");
+		f.transport.handler = [&](const http::Request &req) {
+			if (req.path == "/auth/plugin/token/renew") {
+				f.store.Clear();
+				return Json(200, R"({"token":"tgp_new","expiresAt":"","renewAfter":""})");
+			}
+			return Json(204, "");
+		};
+		auth::AuthEvents events;
+		CHECK(auth::Renew(f.client, f.store, events) == auth::RenewStatus::SessionEnded);
+		CHECK(!events.tokenRenewed);
+		CHECK(!f.store.HasToken());
+		CHECK(!std::filesystem::exists(authFile(f)));
+		CHECK(revoked(f, "tgp_new"));
+	}
+	{
+		// During the exchange of a v0.5.x sign-in (Logout() also wipes the
+		// legacy file).
+		Fixture f;
+		WriteLegacy(f, "OldSession_abc");
+		f.transport.handler = [&](const http::Request &req) {
+			if (req.path == "/auth/plugin/token/exchange") {
+				f.store.Clear();
+				f.store.DeleteLegacy();
+				return Json(200, R"({"token":"tgp_migrated"})");
+			}
+			return Json(204, "");
+		};
+		CHECK(auth::ExchangeLegacy(f.client, f.store) == auth::ExchangeStatus::SignedOut);
+		CHECK(!f.store.HasToken() && !f.store.HasLegacy());
+		CHECK(!std::filesystem::exists(authFile(f)));
+		CHECK(revoked(f, "tgp_migrated"));
+	}
+	{
+		// The same with "already migrated": the old token itself is revoked.
+		Fixture f;
+		WriteLegacy(f, "AlreadyPlugin_xyz");
+		f.transport.handler = [&](const http::Request &req) {
+			if (req.path == "/auth/plugin/token/exchange") {
+				f.store.Clear();
+				return Json(409, R"({"error":"already_migrated"})");
+			}
+			return Json(204, "");
+		};
+		CHECK(auth::ExchangeLegacy(f.client, f.store) == auth::ExchangeStatus::SignedOut);
+		CHECK(!f.store.HasToken() && !f.store.HasLegacy());
+		CHECK(!std::filesystem::exists(authFile(f)));
+		CHECK(revoked(f, "AlreadyPlugin_xyz"));
+	}
+	{
+		// During the start check: its new dates aren't written back.
+		Fixture f;
+		f.SignIn("tgp_a");
+		f.transport.handler = [&](const http::Request &) {
+			f.store.Clear();
+			return Json(200, R"({"displayName":"S","session":{"expiresAt":"2999-03-01T00:00:00Z"}})");
+		};
+		auth::CheckSession(f.client, f.store, 1000);
+		CHECK(!f.store.HasToken());
+		CHECK(!std::filesystem::exists(authFile(f)));
+	}
+	{
+		// A 401 for an old token doesn't end a newer sign-in.
+		Fixture f;
+		f.SignIn("tgp_old");
+		f.transport.handler = [&](const http::Request &) {
+			f.store.Save(PluginToken{"tgp_newer", "", "2999-01-01T00:00:00Z", "Name"});
+			return Json(401, R"({"error":"unauthorized"})");
+		};
+		auth::AuthEvents events;
+		CHECK(CallMe(f, events).Is(401));
+		CHECK(!events.sessionEnded);
+		CHECK_STR(f.store.CurrentToken(), "tgp_newer");
+	}
+}
+
+// A renewal the server keeps waiting until Release().
+class HeldRenewal {
+public:
+	testsupport::Reply Hold(testsupport::Reply reply)
+	{
+		std::unique_lock<std::mutex> lock(mutex_);
+		arrived_ = true;
+		changed_.notify_all();
+		changed_.wait(lock, [this] { return released_; });
+		return reply;
+	}
+	bool WaitArrived()
+	{
+		std::unique_lock<std::mutex> lock(mutex_);
+		return changed_.wait_for(lock, std::chrono::seconds(10), [this] { return arrived_; });
+	}
+	void Release()
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		released_ = true;
+		changed_.notify_all();
+	}
+
+private:
+	std::mutex mutex_;
+	std::condition_variable changed_;
+	bool arrived_ = false;
+	bool released_ = false;
+};
+
+template<typename Pred> bool WaitFor(Pred pred)
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (!pred()) {
+		if (std::chrono::steady_clock::now() > deadline)
+			return false;
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	return true;
+}
+
+// The renewal of a support call runs on AuthManager's renewer: never under the
+// call's own cancellation, and saved even when the dialog that needed it closed.
+void TestBackgroundRenewer()
+{
+	testcheck::g_currentTest = "background renewer";
+	// The test plays the UI thread: it calls Drain() itself.
+	tasks::Registry registry([] {});
+	{
+		// A due token: renewed on the renewer's job, with its own cancel token.
+		ScratchDir dir("renewer");
+		FakeTransport transport;
+		const api::Client client(transport.Fn(), "api.trigglow.com", "0.6.0");
+		auto store = std::make_shared<TokenStore>(dir.path() / "trigglow-auth.dat", std::filesystem::path(),
+							  std::make_unique<FakeProtector>());
+		store->Save(PluginToken{"tgp_due", "", "1970-01-01T00:00:10Z", "Name"});
+		std::vector<auth::AuthEvents> delivered;
+		auth::BackgroundRenewer renewer(&registry, client, store,
+						[&delivered](const auth::AuthEvents &e) { delivered.push_back(e); });
+		transport.handler = [&](const http::Request &req) {
+			if (req.path == "/auth/plugin/token/renew")
+				return Json(200, R"({"token":"tgp_fresh","renewAfter":"2999-01-01T00:00:00Z"})");
+			return Json(200, "{}");
+		};
+		tasks::CancelToken caller;
+		const api::Client callerClient = client.WithCancel(&caller);
+		auth::AuthEvents events;
+		const api::Result r = auth::CallAuthorized(
+			callerClient, *store,
+			[&callerClient](const std::string &tok) { return callerClient.Get("/auth/plugin/me", tok); },
+			events, 1000, true, &renewer);
+		CHECK(r.Ok());
+		CHECK(events.tokenRenewed);
+		CHECK_STR(store->CurrentToken(), "tgp_fresh");
+		const std::vector<http::Request> requests = transport.Requests();
+		CHECK(requests.size() == 2);
+		if (requests.size() == 2) {
+			CHECK_STR(requests[0].path, "/auth/plugin/token/renew");
+			CHECK(requests[0].cancel != nullptr && requests[0].cancel != &caller);
+			CHECK(requests[1].cancel == &caller);
+		}
+		registry.Drain();
+		CHECK(delivered.empty()); // The caller took the events itself.
+	}
+	{
+		// The caller's job is cancelled (its dialog closed) while the server is
+		// still renewing: the caller returns at once, the renewal carries on,
+		// its token is saved, and AuthManager hears of it.
+		ScratchDir dir("renewer-cancel");
+		FakeTransport transport;
+		const api::Client client(transport.Fn(), "api.trigglow.com", "0.6.0");
+		auto store = std::make_shared<TokenStore>(dir.path() / "trigglow-auth.dat", std::filesystem::path(),
+							  std::make_unique<FakeProtector>());
+		store->Save(PluginToken{"tgp_due", "", "1970-01-01T00:00:10Z", "Name"});
+		std::vector<auth::AuthEvents> delivered;
+		auth::BackgroundRenewer renewer(&registry, client, store,
+						[&delivered](const auth::AuthEvents &e) { delivered.push_back(e); });
+		HeldRenewal held;
+		transport.handler = [&](const http::Request &req) {
+			if (req.path == "/auth/plugin/token/renew")
+				return held.Hold(
+					Json(200, R"({"token":"tgp_kept","renewAfter":"2999-01-01T00:00:00Z"})"));
+			return Json(200, "{}");
+		};
+		tasks::CancelToken caller;
+		auth::AuthEvents events;
+		auth::RenewStatus status = auth::RenewStatus::NotDue;
+		std::thread call([&] { status = renewer.RenewToken("tgp_due", events, &caller); });
+		CHECK(held.WaitArrived());
+		caller.Cancel();
+		call.join(); // Returns while the renewal is still held.
+		CHECK(status == auth::RenewStatus::Failed);
+		CHECK(!events.tokenRenewed);
+		CHECK_STR(store->CurrentToken(), "tgp_due");
+		held.Release();
+		CHECK(WaitFor([&] { return store->CurrentToken() == "tgp_kept"; }));
+		CHECK(WaitFor([&] { return registry.Running() == 0; }));
+		{
+			TokenStore onDisk(dir.path() / "trigglow-auth.dat", {}, std::make_unique<FakeProtector>());
+			CHECK(onDisk.Load() == TokenStore::LoadResult::Loaded);
+			CHECK_STR(onDisk.CurrentToken(), "tgp_kept");
+		}
+		registry.Drain();
+		CHECK(delivered.size() == 1 && delivered[0].tokenRenewed);
+		// A caller already cancelled doesn't start one.
+		const size_t before = transport.Count();
+		CHECK(renewer.RenewToken("tgp_kept", events, &caller) == auth::RenewStatus::Failed);
+		CHECK(transport.Count() == before);
+		// Shut down: no renewal any more.
+		renewer.Shutdown();
+		auth::AuthEvents after;
+		CHECK(renewer.RenewToken("tgp_kept", after, nullptr) == auth::RenewStatus::Failed);
+		CHECK(transport.Count() == before);
+	}
+	registry.Shutdown(std::chrono::milliseconds(2000));
+}
+
 void TestIsoDates()
 {
 	testcheck::g_currentTest = "iso dates";
@@ -498,6 +739,8 @@ int main()
 	TestCheckSession();
 	TestExchange();
 	TestLogout();
+	TestSignOutWins();
+	TestBackgroundRenewer();
 	TestIsoDates();
 	return testcheck::Finish("auth_client_tests");
 }

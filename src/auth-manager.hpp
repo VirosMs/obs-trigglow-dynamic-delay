@@ -131,6 +131,10 @@ public:
 	// with this class.
 	const api::Client &ApiClient() const { return client_; }
 	std::shared_ptr<TokenStore> Store() const { return store_; }
+	// Who renews the token for those calls (auth::Renewer): this class, on a
+	// job that only OBS closing cancels, so closing a dialog mid-renewal never
+	// loses the new token. Null before Init().
+	std::shared_ptr<const auth::Renewer> TokenRenewer() const { return renewer_; }
 	// The module's config folder (empty before Init()).
 	const std::filesystem::path &ConfigDir() const { return configDir_; }
 	// What a support call did to the sign-in (session ended, account not
@@ -162,6 +166,7 @@ private:
 
 	api::Client client_;
 	std::shared_ptr<TokenStore> store_;
+	std::shared_ptr<auth::BackgroundRenewer> renewer_;
 	std::filesystem::path configDir_;
 
 	Session session_ = Session::None;

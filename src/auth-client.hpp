@@ -20,12 +20,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <ctime>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "api-client.hpp"
+#include "background-tasks.hpp"
 #include "token-store.hpp"
 
 // The account calls of the plugin, without Qt: linking OBS to a Trigglow
@@ -120,34 +122,87 @@ struct AuthEvents {
 
 using BearerCall = std::function<api::Result(const std::string &token)>;
 
-// Runs `call` with the stored token, following the rules for every Bearer call:
-//   - renews first when the token's renewAfter has passed;
-//   - 401 token_rotated: re-reads the store; a different token is retried once,
-//     the same one is renewed (the server's grace period) and retried once;
-//   - any other 401: the sign-in is over (store cleared, events.sessionEnded);
-//   - 403 suspended / account_inactive: events.accountInactive;
-//   - 403 insufficient_scope: events.scopeError (the sign-in stays).
-// Without a stored token, returns an HttpError 401 "signed_out" without any
-// network call. renewFirst = false skips the up-front renewal (the start check
-// renews after GET /auth/plugin/me instead).
-api::Result CallAuthorized(const api::Client &client, TokenStore &store, const BearerCall &call, AuthEvents &events,
-			   std::time_t now = std::time(nullptr), bool renewFirst = true);
-
 enum class RenewStatus : unsigned char {
 	Renewed,      // New token saved.
 	NotDue,       // RenewIfDue(): nothing to do.
-	SessionEnded, // 401 (other than token_rotated): store cleared.
+	SessionEnded, // 401 (other than token_rotated), or signed out meanwhile: no token any more.
 	Failed,       // Network, 5xx or an unexpected answer: keep the current token.
 };
 
 // POST /auth/plugin/token/renew with the current token. The new token is saved
 // before it is used. Serialized with the store's renew mutex: with
 // expectedToken set, a caller that finds the stored token already different
-// (another thread renewed meanwhile) returns Renewed without a request.
+// (another thread renewed meanwhile) returns Renewed without a request. If the
+// user signed out while the server was renewing (TokenStore::Epoch()), the new
+// token is nobody's: it isn't saved, it is revoked (POST /auth/plugin/logout)
+// and the result is SessionEnded.
 RenewStatus Renew(const api::Client &client, TokenStore &store, AuthEvents &events,
 		  std::string_view expectedToken = {});
+
+// Who runs a renewal that RenewIfDue() or CallAuthorized() decide on. A
+// renewal rotates the token on the server: aborted after the server rotated
+// it, the new token would be lost, and the next call with the old one would
+// look like a stolen token to the server, which then ends the sign-in. So the
+// plugin never renews under the cancellation of a dialog's job: the support
+// calls get AuthManager's renewer (BackgroundRenewer, below). Without one
+// (tests, AuthManager's own jobs, which only OBS closing cancels anyway),
+// Renew() runs right there with the caller's client.
+class Renewer {
+public:
+	virtual ~Renewer() = default;
+	// Renew(..., expectedToken), on the renewer's own job and client. Waits for
+	// it unless `waiterCancel` (the caller's job) is cancelled first: then it
+	// returns Failed and the renewal carries on, saving whatever it gets.
+	virtual RenewStatus RenewToken(std::string_view expectedToken, AuthEvents &events,
+				       const tasks::CancelToken *waiterCancel) const = 0;
+};
+
+// The plugin's renewer (AuthManager owns it): each renewal is a job of its own
+// group, which nothing but Shutdown() (obs_module_unload(), through
+// AuthManager::Shutdown()) and the registry's shutdown cancels, and its
+// result is saved whenever the server answers. When the caller stopped waiting
+// (its dialog closed), what the renewal did goes to `onEvents` instead, on
+// the UI thread (TaskContext::Post), so AuthManager still hears of it.
+class BackgroundRenewer final : public Renewer {
+public:
+	using EventsSink = std::function<void(const AuthEvents &)>;
+	// registry: the plugin's (null: every renewal fails). client: without a
+	// cancel token. store: the one the callers use.
+	BackgroundRenewer(tasks::Registry *registry, api::Client client, std::shared_ptr<TokenStore> store,
+			  EventsSink onEvents);
+
+	RenewStatus RenewToken(std::string_view expectedToken, AuthEvents &events,
+			       const tasks::CancelToken *waiterCancel) const override;
+
+	// Aborts the renewals in flight and refuses new ones; waits for them at
+	// most tasks::kOwnerLimit.
+	void Shutdown();
+
+private:
+	api::Client client_;
+	std::shared_ptr<TokenStore> store_;
+	EventsSink onEvents_;
+	mutable tasks::Group group_;
+};
+
+// renewer: see Renewer (null: Renew() with `client`).
 RenewStatus RenewIfDue(const api::Client &client, TokenStore &store, AuthEvents &events,
-		       std::time_t now = std::time(nullptr));
+		       std::time_t now = std::time(nullptr), const Renewer *renewer = nullptr);
+
+// Runs `call` with the stored token, following the rules for every Bearer call:
+//   - renews first when the token's renewAfter has passed;
+//   - 401 token_rotated: re-reads the store; a different token is retried once,
+//     the same one is renewed (the server's grace period) and retried once;
+//   - any other 401: the sign-in is over (store cleared, events.sessionEnded),
+//     unless the store already holds another token by then;
+//   - 403 suspended / account_inactive: events.accountInactive;
+//   - 403 insufficient_scope: events.scopeError (the sign-in stays).
+// Without a stored token, returns an HttpError 401 "signed_out" without any
+// network call. renewFirst = false skips the up-front renewal (the start check
+// renews after GET /auth/plugin/me instead). renewer: who renews (Renewer).
+api::Result CallAuthorized(const api::Client &client, TokenStore &store, const BearerCall &call, AuthEvents &events,
+			   std::time_t now = std::time(nullptr), bool renewFirst = true,
+			   const Renewer *renewer = nullptr);
 
 // --- Start of OBS ------------------------------------------------------------
 
@@ -188,9 +243,11 @@ enum class ExchangeStatus : unsigned char {
 	SessionEnded,    // 401: legacy file wiped, the user signs in again.
 	RetryLater,      // Network, 5xx, 404, 429: legacy file kept, try again next start.
 	NoLegacy,        // Nothing to migrate.
+	SignedOut,       // Signed out during the exchange: nothing saved, the token it got revoked.
 };
 
-// One-time migration of the plain-text sign-in of v0.5.x and earlier.
+// One-time migration of the plain-text sign-in of v0.5.x and earlier. A
+// sign-out while it runs wins (TokenStore::Epoch()).
 ExchangeStatus ExchangeLegacy(const api::Client &client, TokenStore &store);
 
 // POST /auth/plugin/logout with `token` (revokes it on the server). Short

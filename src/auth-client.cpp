@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
+#include <mutex>
 
 namespace trigglow::auth {
 
@@ -62,6 +64,21 @@ api::Result SignedOutResult()
 	r.status = 401;
 	r.error = "signed_out";
 	return r;
+}
+
+// A token the server just handed out that the plugin won't keep (the user
+// signed out meanwhile): revoked, so nothing is left valid on the server.
+void RevokeUnkept(const api::Client &client, const std::string &token)
+{
+	Logout(client, token);
+}
+
+RenewStatus RenewThrough(const api::Client &client, TokenStore &store, AuthEvents &events, std::string_view expected,
+			 const Renewer *renewer)
+{
+	if (renewer)
+		return renewer->RenewToken(expected, events, client.Cancel());
+	return Renew(client, store, events, expected);
 }
 
 // Days since 1970-01-01 of a proleptic Gregorian date.
@@ -180,7 +197,8 @@ PollResult PollLink(const api::Client &client, const LinkRequest &link)
 RenewStatus Renew(const api::Client &client, TokenStore &store, AuthEvents &events, std::string_view expected)
 {
 	std::lock_guard<std::mutex> lock(store.RenewMutex());
-	const std::optional<PluginToken> current = store.Current();
+	uint64_t epoch = 0;
+	const std::optional<PluginToken> current = store.Snapshot(epoch);
 	if (!current)
 		return RenewStatus::SessionEnded;
 	if (!expected.empty() && current->token != expected)
@@ -192,19 +210,89 @@ RenewStatus Renew(const api::Client &client, TokenStore &store, AuthEvents &even
 		if (!token)
 			return RenewStatus::Failed;
 		token->displayName = current->displayName;
-		store.Save(*token); // Saved before anything uses it.
+		// Saved before anything uses it, unless the user signed out while the
+		// server was answering: then nobody owns the new token any more.
+		if (store.SaveIfEpoch(epoch, *token) == TokenStore::SaveResult::SignedOutMeanwhile) {
+			RevokeUnkept(client, token->token);
+			return RenewStatus::SessionEnded;
+		}
 		events.tokenRenewed = true;
 		return RenewStatus::Renewed;
 	}
 	if (r.Is(401)) {
-		store.Clear();
-		events.sessionEnded = true;
+		if (store.ClearIfToken(current->token))
+			events.sessionEnded = true;
 		return RenewStatus::SessionEnded;
 	}
 	return RenewStatus::Failed;
 }
 
-RenewStatus RenewIfDue(const api::Client &client, TokenStore &store, AuthEvents &events, std::time_t now)
+BackgroundRenewer::BackgroundRenewer(tasks::Registry *registry, api::Client client, std::shared_ptr<TokenStore> store,
+				     EventsSink onEvents)
+	: client_(std::move(client)),
+	  store_(std::move(store)),
+	  onEvents_(std::move(onEvents)),
+	  group_(registry)
+{
+}
+
+RenewStatus BackgroundRenewer::RenewToken(std::string_view expectedToken, AuthEvents &events,
+					  const tasks::CancelToken *waiterCancel) const
+{
+	if (!store_ || (waiterCancel && waiterCancel->IsCancelled()))
+		return RenewStatus::Failed;
+	struct Shared {
+		std::mutex mutex;
+		std::condition_variable changed;
+		bool done = false;
+		bool waiterGone = false; // The caller's job was cancelled while waiting.
+		RenewStatus status = RenewStatus::Failed;
+		AuthEvents events;
+	};
+	auto shared = std::make_shared<Shared>();
+	const bool started = group_.Run([client = client_, store = store_, onEvents = onEvents_, shared,
+					 expected = std::string(expectedToken)](const tasks::TaskContext &ctx) {
+		AuthEvents renewed;
+		const RenewStatus status = Renew(client.WithCancel(&ctx.Token()), *store, renewed, expected);
+		bool waiterGone = false;
+		{
+			std::lock_guard<std::mutex> lock(shared->mutex);
+			shared->done = true;
+			shared->status = status;
+			shared->events = renewed;
+			waiterGone = shared->waiterGone;
+		}
+		shared->changed.notify_all();
+		// Nobody took the result: AuthManager still has to know.
+		if (waiterGone && onEvents && (renewed.tokenRenewed || renewed.sessionEnded))
+			ctx.Post([onEvents, renewed] { onEvents(renewed); });
+	});
+	if (!started)
+		return RenewStatus::Failed;
+
+	const tasks::CancelSubscription subscription(waiterCancel, [shared] {
+		{
+			std::lock_guard<std::mutex> lock(shared->mutex);
+			if (!shared->done)
+				shared->waiterGone = true;
+		}
+		shared->changed.notify_all();
+	});
+	std::unique_lock<std::mutex> lock(shared->mutex);
+	shared->changed.wait(lock, [&shared] { return shared->done || shared->waiterGone; });
+	if (!shared->done)
+		return RenewStatus::Failed; // The renewal carries on and saves its result.
+	events.Merge(shared->events);
+	return shared->status;
+}
+
+void BackgroundRenewer::Shutdown()
+{
+	group_.CancelAndWait(tasks::kOwnerLimit);
+}
+
+RenewStatus RenewIfDue(const api::Client &client, TokenStore &store, AuthEvents &events, std::time_t now,
+		       const Renewer *renewer)
 {
 	const std::optional<PluginToken> current = store.Current();
 	if (!current || current->renewAfter.empty())
@@ -212,18 +300,18 @@ RenewStatus RenewIfDue(const api::Client &client, TokenStore &store, AuthEvents 
 	const auto renewAfter = ParseIsoUtc(current->renewAfter);
 	if (!renewAfter || now < *renewAfter)
 		return RenewStatus::NotDue;
-	return Renew(client, store, events, current->token);
+	return RenewThrough(client, store, events, current->token, renewer);
 }
 
 api::Result CallAuthorized(const api::Client &client, TokenStore &store, const BearerCall &call, AuthEvents &events,
-			   std::time_t now, bool renewFirst)
+			   std::time_t now, bool renewFirst, const Renewer *renewer)
 {
 	if (!store.HasToken())
 		return SignedOutResult();
-	if (renewFirst && RenewIfDue(client, store, events, now) == RenewStatus::SessionEnded)
+	if (renewFirst && RenewIfDue(client, store, events, now, renewer) == RenewStatus::SessionEnded)
 		return SignedOutResult();
 
-	const std::string token = store.CurrentToken();
+	std::string token = store.CurrentToken();
 	if (token.empty())
 		return SignedOutResult();
 	api::Result r = call(token);
@@ -234,21 +322,25 @@ api::Result CallAuthorized(const api::Client &client, TokenStore &store, const B
 		// Either way, one retry only.
 		const std::string reread = store.Reload();
 		if (!reread.empty() && reread != token) {
-			r = call(reread);
+			token = reread;
 		} else {
 			// Not renewed: either the sign-in is over (events.sessionEnded is
 			// set) or the renewal couldn't run now (the sign-in stays and the
 			// caller sees the 401).
-			if (Renew(client, store, events, token) != RenewStatus::Renewed)
+			if (RenewThrough(client, store, events, token, renewer) != RenewStatus::Renewed)
 				return r;
-			r = call(store.CurrentToken());
+			token = store.CurrentToken();
+			if (token.empty())
+				return SignedOutResult();
 		}
+		r = call(token);
 		if (r.Is(401, "token_rotated"))
 			return r; // Never loop.
 	}
 	if (r.Is(401)) {
-		store.Clear();
-		events.sessionEnded = true;
+		// Only the token this call used: a newer sign-in stays.
+		if (store.ClearIfToken(token))
+			events.sessionEnded = true;
 	} else if (r.Is(403, "suspended") || r.Is(403, "account_inactive")) {
 		events.accountInactive = true;
 	} else if (r.Is(403, "insufficient_scope")) {
@@ -305,9 +397,10 @@ MeResult CheckSession(const api::Client &client, TokenStore &store, std::time_t 
 			}
 			if (!result.displayName.empty())
 				updated.displayName = result.displayName;
+			// Only onto the same token: not after a sign-out or a renewal meanwhile.
 			if (updated.expiresAt != current->expiresAt || updated.renewAfter != current->renewAfter ||
 			    updated.displayName != current->displayName)
-				store.Save(updated);
+				store.UpdateDetails(updated);
 		}
 		RenewIfDue(client, store, result.events, now);
 		if (result.events.sessionEnded)
@@ -327,6 +420,8 @@ MeResult CheckSession(const api::Client &client, TokenStore &store, std::time_t 
 
 ExchangeStatus ExchangeLegacy(const api::Client &client, TokenStore &store)
 {
+	// Read before anything else: a sign-out from here on wins.
+	const uint64_t epoch = store.Epoch();
 	if (!store.HasLegacy())
 		return ExchangeStatus::NoLegacy;
 	const PluginToken legacy = store.ReadLegacy();
@@ -342,12 +437,20 @@ ExchangeStatus ExchangeLegacy(const api::Client &client, TokenStore &store)
 		if (!token)
 			return ExchangeStatus::RetryLater;
 		token->displayName = legacy.displayName;
-		store.Save(*token);
+		if (store.SaveIfEpoch(epoch, *token) == TokenStore::SaveResult::SignedOutMeanwhile) {
+			RevokeUnkept(client, token->token);
+			store.DeleteLegacy();
+			return ExchangeStatus::SignedOut;
+		}
 		store.DeleteLegacy();
 		return ExchangeStatus::Migrated;
 	}
 	if (r.Is(409, "already_migrated")) {
-		store.Save(legacy);
+		if (store.SaveIfEpoch(epoch, legacy) == TokenStore::SaveResult::SignedOutMeanwhile) {
+			RevokeUnkept(client, legacy.token);
+			store.DeleteLegacy();
+			return ExchangeStatus::SignedOut;
+		}
 		store.DeleteLegacy();
 		return ExchangeStatus::AlreadyMigrated;
 	}

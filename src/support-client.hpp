@@ -102,6 +102,10 @@ struct CallInfo {
 struct Context {
 	const api::Client &client;
 	TokenStore &store;
+	// Who renews the token when a call needs it (auth::Renewer); the plugin
+	// passes AuthManager's, so a dialog closing mid-renewal can't lose the new
+	// token. Null: renewed right in the call, with `client`.
+	const auth::Renewer *renewer = nullptr;
 };
 
 // --- Trigi ------------------------------------------------------------------------

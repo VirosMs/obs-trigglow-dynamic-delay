@@ -156,6 +156,7 @@ function(trigglow_add_client_test name)
   add_executable(${name} ${ARGN} check.hpp test-support.hpp fake-transport.hpp)
   target_include_directories(${name} PRIVATE "${_src}")
   set_target_properties(${name} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+  target_link_libraries(${name} PRIVATE Threads::Threads)
   if(WIN32)
     target_link_libraries(${name} PRIVATE winhttp crypt32)
   endif()
@@ -168,6 +169,8 @@ set(
   "${_src}/json.hpp"
   "${_src}/cancel-token.cpp"
   "${_src}/cancel-token.hpp"
+  "${_src}/background-tasks.cpp"
+  "${_src}/background-tasks.hpp"
   "${_src}/win-http.cpp"
   "${_src}/win-http.hpp"
   "${_src}/api-client.cpp"

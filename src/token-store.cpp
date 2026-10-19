@@ -254,6 +254,19 @@ bool TokenStore::HasToken() const
 	return current_.has_value();
 }
 
+uint64_t TokenStore::Epoch() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return epoch_;
+}
+
+std::optional<PluginToken> TokenStore::Snapshot(uint64_t &epoch) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	epoch = epoch_;
+	return current_;
+}
+
 bool TokenStore::WriteLocked(const PluginToken &token)
 {
 	if (authFile_.empty() || !protector_->Available())
@@ -270,6 +283,25 @@ bool TokenStore::Save(const PluginToken &token)
 	std::lock_guard<std::mutex> lock(mutex_);
 	current_ = token;
 	return WriteLocked(token);
+}
+
+TokenStore::SaveResult TokenStore::SaveIfEpoch(uint64_t epoch, const PluginToken &token)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (epoch != epoch_)
+		return SaveResult::SignedOutMeanwhile;
+	current_ = token;
+	return WriteLocked(token) ? SaveResult::Saved : SaveResult::MemoryOnly;
+}
+
+bool TokenStore::UpdateDetails(const PluginToken &updated)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!current_ || current_->token != updated.token)
+		return false;
+	current_ = updated;
+	WriteLocked(updated);
+	return true;
 }
 
 void TokenStore::SetDisplayName(const std::string &displayName)
@@ -291,9 +323,9 @@ std::string TokenStore::Reload()
 	return current_ ? current_->token : std::string();
 }
 
-void TokenStore::Clear()
+void TokenStore::ClearLocked()
 {
-	std::lock_guard<std::mutex> lock(mutex_);
+	++epoch_;
 	current_.reset();
 	std::error_code ec;
 	if (!authFile_.empty()) {
@@ -302,6 +334,21 @@ void TokenStore::Clear()
 		tmp += ".tmp";
 		fs::remove(tmp, ec);
 	}
+}
+
+void TokenStore::Clear()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	ClearLocked();
+}
+
+bool TokenStore::ClearIfToken(const std::string &token)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!current_ || current_->token != token)
+		return false;
+	ClearLocked();
+	return true;
 }
 
 bool TokenStore::HasLegacy() const

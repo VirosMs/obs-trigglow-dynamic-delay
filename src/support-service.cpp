@@ -112,10 +112,12 @@ SupportService::~SupportService()
 	try {
 		const api::Client client = auth_.ApiClient();
 		std::shared_ptr<TokenStore> store = auth_.Store();
+		std::shared_ptr<const auth::Renewer> renewer = auth_.TokenRenewer();
 		const std::string sessionId = sessionId_;
-		const bool started = registry->Run([client, store, sessionId](const tasks::TaskContext &ctx) {
-			const support::CallInfo r = support::SendEvent({client.WithCancel(&ctx.Token()), *store},
-								       sessionId, support::Event::CloseAbandoned);
+		const bool started = registry->Run([client, store, renewer, sessionId](const tasks::TaskContext &ctx) {
+			const support::CallInfo r =
+				support::SendEvent({client.WithCancel(&ctx.Token()), *store, renewer.get()}, sessionId,
+						   support::Event::CloseAbandoned);
 			if (!r.Ok() && !ctx.Cancelled())
 				TRIGGLOW_LOG_INFO(kTrigi, "close event: HTTP %d", r.httpStatus);
 		});
@@ -319,16 +321,17 @@ SupportService::AskRefusal SupportService::Ask(const QString &question, std::fun
 	};
 	const api::Client client = auth_.ApiClient();
 	std::shared_ptr<TokenStore> store = auth_.Store();
+	std::shared_ptr<const auth::Renewer> renewer = auth_.TokenRenewer();
 	const std::string sessionId = sessionId_;
 	const std::string locale = Locale();
 	const int generation = generation_;
 
-	Enqueue([this, client, store, sessionId, locale, snapshot, text, chars, generation, done]() {
+	Enqueue([this, client, store, renewer, sessionId, locale, snapshot, text, chars, generation, done]() {
 		RunAsync<Outcome>(
-			[client, store, sessionId, locale, snapshot, text](const tasks::CancelToken &cancel) {
+			[client, store, renewer, sessionId, locale, snapshot, text](const tasks::CancelToken &cancel) {
 				Outcome o;
 				const api::Client cancellable = client.WithCancel(&cancel);
-				const support::Context ctx{cancellable, *store};
+				const support::Context ctx{cancellable, *store, renewer.get()};
 				std::string sid = sessionId;
 				if (sid.empty()) {
 					o.sessionTried = true;
@@ -407,12 +410,14 @@ bool SupportService::RequestSummary(std::function<void(const support::SummaryRes
 	busy_ = true;
 	const api::Client client = auth_.ApiClient();
 	std::shared_ptr<TokenStore> store = auth_.Store();
+	std::shared_ptr<const auth::Renewer> renewer = auth_.TokenRenewer();
 	const std::string sessionId = sessionId_;
 	const int generation = generation_;
-	Enqueue([this, client, store, sessionId, generation, done]() {
+	Enqueue([this, client, store, renewer, sessionId, generation, done]() {
 		RunAsync<support::SummaryResult>(
-			[client, store, sessionId](const tasks::CancelToken &cancel) {
-				return support::Summarize({client.WithCancel(&cancel), *store}, sessionId);
+			[client, store, renewer, sessionId](const tasks::CancelToken &cancel) {
+				return support::Summarize({client.WithCancel(&cancel), *store, renewer.get()},
+							  sessionId);
 			},
 			[this, generation, done](const support::SummaryResult &r) {
 				busy_ = false;
@@ -431,11 +436,13 @@ void SupportService::QueueEvent(support::Event event)
 		return;
 	const api::Client client = auth_.ApiClient();
 	std::shared_ptr<TokenStore> store = auth_.Store();
+	std::shared_ptr<const auth::Renewer> renewer = auth_.TokenRenewer();
 	const std::string sessionId = sessionId_;
-	Enqueue([this, client, store, sessionId, event]() {
+	Enqueue([this, client, store, renewer, sessionId, event]() {
 		RunAsync<support::CallInfo>(
-			[client, store, sessionId, event](const tasks::CancelToken &cancel) {
-				return support::SendEvent({client.WithCancel(&cancel), *store}, sessionId, event);
+			[client, store, renewer, sessionId, event](const tasks::CancelToken &cancel) {
+				return support::SendEvent({client.WithCancel(&cancel), *store, renewer.get()},
+							  sessionId, event);
 			},
 			[this](const support::CallInfo &r) {
 				// Errors are only worth their HTTP code in the log.
@@ -495,16 +502,17 @@ void SupportService::SubmitTicket(const QString &subject, const QString &message
 	};
 	const api::Client client = auth_.ApiClient();
 	std::shared_ptr<TokenStore> store = auth_.Store();
+	std::shared_ptr<const auth::Renewer> renewer = auth_.TokenRenewer();
 	const std::string s = Utf8(subject);
 	const std::string m = Utf8(message);
 	const std::string botSessionId = linkConversation ? sessionId_ : std::string();
 	std::shared_ptr<const std::string> prepared = preparedLog_;
 
 	RunAsync<Outcome>(
-		[client, store, s, m, botSessionId, attachLog, prepared](const tasks::CancelToken &cancel) {
+		[client, store, renewer, s, m, botSessionId, attachLog, prepared](const tasks::CancelToken &cancel) {
 			Outcome o;
 			const api::Client cancellable = client.WithCancel(&cancel);
-			const support::Context ctx{cancellable, *store};
+			const support::Context ctx{cancellable, *store, renewer.get()};
 			const support::TicketResult t = support::CreateTicket(ctx, s, m, botSessionId);
 			o.events = t.authEvents;
 			o.ticket.status = t.status;

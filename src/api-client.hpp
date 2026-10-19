@@ -189,6 +189,8 @@ public:
 		copy.cancel_ = cancel;
 		return copy;
 	}
+	// The token WithCancel() gave this copy (null: none).
+	const tasks::CancelToken *Cancel() const { return cancel_; }
 
 	// bearer: the plugin token, or empty for none. A token with characters
 	// outside [A-Za-z0-9_-] is never sent (the call fails as Network/Invalid).

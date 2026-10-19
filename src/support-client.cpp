@@ -51,7 +51,7 @@ std::string SessionPath(std::string_view sessionId, std::string_view tail)
 
 api::Result Authorized(const Context &ctx, auth::AuthEvents &events, const auth::BearerCall &call)
 {
-	return auth::CallAuthorized(ctx.client, ctx.store, call, events);
+	return auth::CallAuthorized(ctx.client, ctx.store, call, events, std::time(nullptr), true, ctx.renewer);
 }
 
 bool IsAttachmentError(std::string_view code)
