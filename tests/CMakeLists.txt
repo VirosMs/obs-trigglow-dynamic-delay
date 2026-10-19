@@ -1,7 +1,9 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
 # src/encoder-check.*, and since v0.6.0 src/ui-tokens.*, src/auto-names.*,
 # src/overlay-layout.*, src/frame-arena.*, src/frame-ring.*,
-# src/degradation-policy.*, a stress test of src/codec-pipeline.*, the
+# src/degradation-policy.*, a stress test of src/codec-pipeline.*, since
+# v0.7.0 the storage codec interface (src/storage-codec.hpp) with a fake
+# inter-frame codec (tests/fake-gop-codec.hpp), the
 # background jobs' lifecycle (src/cancel-token.*, src/background-tasks.*), and
 # the account, Trigi and ticket client: src/json.*, src/log-redact.*,
 # src/chat-text.*, src/support-diagnostics.*, src/api-client.*,
@@ -131,6 +133,13 @@ target_include_directories(pipeline_stress_tests PRIVATE "${_src}")
 target_link_libraries(pipeline_stress_tests PRIVATE Threads::Threads)
 set_target_properties(pipeline_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME pipeline_stress_tests COMMAND pipeline_stress_tests)
+
+# v0.7.0 storage codecs: the interface's pure parts (in-flight queue, chain
+# tracker, raw codec) with the fake inter-frame codec.
+add_executable(storage_codec_tests storage_codec_tests.cpp check.hpp fake-gop-codec.hpp "${_src}/storage-codec.hpp")
+target_include_directories(storage_codec_tests PRIVATE "${_src}")
+set_target_properties(storage_codec_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME storage_codec_tests COMMAND storage_codec_tests)
 
 # Lifecycle of the plugin's background jobs (src/cancel-token.*,
 # src/background-tasks.*): cancellation, results only for owners still alive,

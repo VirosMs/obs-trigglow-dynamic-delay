@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "frame-ring.hpp"
 #include "perf-stats.hpp"
+#include "storage-codec.hpp"
 
 #include <condition_variable>
 #include <cstddef>
@@ -72,33 +73,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // it can't be started, memory is freed inline, like v0.5.1).
 namespace trigglow {
 
-// One I420 frame (Y full size, U and V at half width and height).
-struct I420View {
-	const uint8_t *plane[3] = {nullptr, nullptr, nullptr};
-	uint32_t stride[3] = {0, 0, 0};
-	uint32_t width = 0;
-	uint32_t height = 0;
-};
-
-// A decoded frame: planes kept alive by `owner` (an AVFrame, or a plain buffer).
-struct DecodedImage {
-	const uint8_t *plane[3] = {nullptr, nullptr, nullptr};
-	uint32_t stride[3] = {0, 0, 0};
-	uint32_t width = 0;
-	uint32_t height = 0;
-	std::shared_ptr<void> owner;
-};
-
-// Tightly packed I420 size: w*h + 2*(w/2)*(h/2). Dimensions are always even here.
-size_t I420FrameBytes(uint32_t width, uint32_t height);
-// Copies `frame` into `dst` (I420FrameBytes() bytes), tightly packed.
-void PackI420(const I420View &frame, uint8_t *dst);
-// A view of a tightly packed I420 buffer.
-I420View PackedI420View(const uint8_t *data, uint32_t width, uint32_t height);
-
 // One codec instance per thread, opened, used and closed by that thread only
 // (design invariant B.1.5). Implementations: MJPEG over FFmpeg (mjpeg-codec.hpp),
-// and MakeRawCodec() below.
+// and MakeRawCodec() below. (Since v0.7.0 I420View, DecodedImage, the I420
+// helpers and PipelineLogLevel live in storage-codec.hpp, with the storage
+// codec interface that replaces this one.)
 class VideoCodec {
 public:
 	virtual ~VideoCodec() = default;
@@ -137,8 +116,6 @@ struct DecodedLease {
 	uint64_t captureNs = 0;
 	DecodedImage image;
 };
-
-enum class PipelineLogLevel { Info, Warning };
 
 class CodecPipeline {
 public:

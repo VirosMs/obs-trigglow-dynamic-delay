@@ -63,39 +63,6 @@ std::shared_ptr<void> TakeStorage(RawFrame &frame)
 }
 } // namespace
 
-size_t I420FrameBytes(uint32_t width, uint32_t height)
-{
-	const size_t luma = static_cast<size_t>(width) * height;
-	const size_t chroma = static_cast<size_t>(width / 2) * (height / 2);
-	return luma + 2 * chroma;
-}
-
-void PackI420(const I420View &frame, uint8_t *dst)
-{
-	const uint32_t widths[3] = {frame.width, frame.width / 2, frame.width / 2};
-	const uint32_t heights[3] = {frame.height, frame.height / 2, frame.height / 2};
-	for (int p = 0; p < 3; ++p) {
-		for (uint32_t row = 0; row < heights[p]; ++row) {
-			std::memcpy(dst, frame.plane[p] + static_cast<size_t>(row) * frame.stride[p], widths[p]);
-			dst += widths[p];
-		}
-	}
-}
-
-I420View PackedI420View(const uint8_t *data, uint32_t width, uint32_t height)
-{
-	I420View view;
-	view.width = width;
-	view.height = height;
-	view.plane[0] = data;
-	view.stride[0] = width;
-	view.plane[1] = data + static_cast<size_t>(width) * height;
-	view.stride[1] = width / 2;
-	view.plane[2] = view.plane[1] + static_cast<size_t>(width / 2) * (height / 2);
-	view.stride[2] = width / 2;
-	return view;
-}
-
 std::unique_ptr<VideoCodec> MakeRawCodec()
 {
 	return std::make_unique<RawCodec>();
