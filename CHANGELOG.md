@@ -5,10 +5,26 @@
 ## v0.6.0 — 2026-10-18 (Early Access)
 
 The delay no longer competes with OBS for its graphics thread, it adapts to what your computer can
-do without ever cutting, and the plugin takes the look of trigglow.com. A v0.5.1 performance hotfix
-was prepared but never published: everything in it ships here.
+do without ever cutting, and the plugin takes the look of trigglow.com. "Report a problem" now
+starts with Trigi, Trigglow's AI support assistant, sign-in moves to a safer flow with the plugin's
+own encrypted sign-in, and the plugin goes through a security and privacy pass. A v0.5.1
+performance hotfix was prepared but never published: everything in it ships here.
 
 **What changes for you:**
+- **Trigi, Trigglow's AI support assistant, in "Report a problem"** (Windows, signed in). Ask about
+  Dynamic Delay and get an answer right in the dialog; if it doesn't sort it out, **Create a ticket
+  with this conversation** hands it to the team with the context. The first time, a short notice
+  says what Trigi is and what happens with your data, and you can always write to the team instead.
+  **Your OBS log is never sent to the AI.** The OBS technical data is optional and you see exactly
+  what is sent before you tick it.
+- **Safer sign-in.** The dock shows a code, and the trigglow.com page must show the same one before
+  you confirm; **It wasn't me** on the page cancels the request. The plugin keeps its own sign-in,
+  encrypted for your Windows user, and **Sign out** also disconnects it on trigglow.com. Your v0.5.x
+  sign-in moves over by itself.
+- **Reports from OBS go to your account when you're signed in**: no name or email to type, and you
+  follow the ticket in your support panel on trigglow.com. The OBS log goes only if you leave its box
+  ticked, with your Windows user name, URLs, keys, emails and IPs hidden, and you can see what is
+  sent first.
 - **No more "Encoding overloaded" as soon as the delay is on with a canvas larger than the
   output.** Reported live with a 2560x1440 canvas and a 1920x1080 output at 60 fps. The delay
   buffer is now stored at OBS's output resolution at most (Settings → Video → Output (Scaled)
@@ -46,6 +62,13 @@ was prepared but never published: everything in it ships here.
   renaming the live scene no longer floods the log nor keeps Disable from working.
 
 **Before you update:**
+- **Updating is required to keep using the delay.** The sign-in of v0.5.x and earlier is retired
+  with this version: those versions can no longer sign in to Trigglow, and the sign-ins they already
+  have stop working after a transition period. The delay needs a signed-in account, so update. When
+  you install 0.6.0 over your current version, your sign-in moves to the new format by itself on the
+  first start; if the dock asks you to sign in, do it once.
+- **Sign-in, Trigi and sending reports from OBS work only on Windows in this version** (see "Known
+  limitations").
 - **The objects the plugin manages are renamed from "(no tocar)" to "(auto)"**, automatically.
   **Point any Stream Deck, obs-websocket or other remote-control action that uses the old names at
   the new ones** (list below).
@@ -208,11 +231,8 @@ was prepared but never published: everything in it ships here.
   raises the buffer above the output resolution: with a 720p output the buffer is 720p even with a
   1080p minimum.
 - **The `compression check` log line is replaced by `perf check` and `pipeline check`** (below).
-- **Less personal data in the OBS log.** The sign-in link is no longer written to the log (it
-  carries the one-time sign-in code), and the "settings saved" and "copied OBS log" lines name the
-  file without the full path, which included your Windows user name.
-- **The update notice only opens this repository's release pages**: any other link in GitHub's
-  answer is replaced by the latest-release page.
+- **Sign-in, reports and the update check: see "Changed / Sign-in", "Changed / Report a problem"
+  and "Security and privacy"** below.
 
 **Changed / Dock:**
 - **Brand look on top of your OBS theme.** Cards, fields and backgrounds still follow the active OBS
@@ -311,6 +331,125 @@ was prepared but never published: everything in it ships here.
   inert). Remove the set you don't use; back on 0.6.0, the "(auto)" set is used and the leftover
   "(no tocar)" one isn't renamed while its new name is taken.
 
+**Added / Trigi, the AI support assistant (Windows, signed in):**
+- **"Report a problem" opens on Trigi** when it's available: on Windows, signed in, with a plugin
+  version Trigi supports. Otherwise the dialog opens straight on the ticket form, as before; signed
+  out, it offers **Sign in to ask Trigi** next to the form.
+- **First use: "Before you start with Trigi".** The notice says that Trigi is an AI and can make
+  mistakes; that your messages and, if you turn it on, the OBS technical data are processed by
+  Trigglow and an AI provider listed in the [Privacy Policy](https://www.trigglow.com/legal/privacy);
+  that conversations are kept for up to 12 months; not to type passwords, stream keys, overlay URLs
+  or payment details; that the OBS log is never sent to the AI; and that you can always write to the
+  team. **Got it** or **I'd rather write to the team** (the ticket form). Nothing is sent before you
+  accept it and send your first question: opening the dialog makes no call to Trigi. If a later
+  version changes the notice, it's shown again.
+- **Optional OBS technical data.** **Include OBS technical data** is unticked until you tick it (the
+  choice is remembered), and **See what is sent** shows the exact data. Only numbers and states, sent
+  once when a conversation starts: OBS and Windows versions, architecture, renderer, GPU vendor,
+  total RAM, encoder family, the delay's state, seconds and minimum quality, canvas and output size,
+  fps, OBS's lagged and skipped frames, the buffer's health and the plugin's recent problem codes.
+  Never scene, source, filter, encoder or output names, paths, URLs, stream details, your user name
+  or email, the GPU's name, hardware IDs or IPs (`src/support-diagnostics.*`,
+  `src/diagnostics-collector.*`, which never waits on OBS's graphics thread).
+- **The conversation.** Enter sends, Ctrl+Enter or Shift+Enter adds a line, with a character
+  counter and the fixed line "Trigi is an AI and can make mistakes. Don't share sensitive data."
+  "Trigi is thinking…" shows a still spinner when Windows asks for less motion, and "This is taking
+  longer than usual…" after 15 s. **Was this helpful?** under each answer: Yes closes the
+  conversation as solved, No offers the ticket. **Clear conversation** only clears the view. What
+  you see in OBS is kept in memory only and is gone when you close the dialog.
+- **From the conversation to a ticket.** **Create a ticket with this conversation** asks Trigi to
+  sum it up (or uses your own words if it can't) and opens the form filled in, for you to check and
+  edit, with the conversation linked so the team has the context, the version footer and the log
+  box. When the answer is about something outside Dynamic Delay, the button is **Open support on
+  trigglow.com** instead.
+- **Every state says what to do next**: no connection, Trigi took too long, trigglow.com isn't
+  answering, too many questions in a row (Send stays off with a countdown), session ended (what you
+  typed is kept), conversation closed (a new one starts with your next question), "Trigi can't
+  answer right now" (with **Create a ticket**), Trigi turned off (the form opens quietly, with your
+  text) and "Update the plugin to use Trigi" (with **Get the update**). A question that didn't go
+  through is marked "Not sent" and can be tried again by hand; nothing is retried automatically.
+- **Safe rendering.** Answers are shown as plain text with bold, `code`, bullets and numbered steps
+  only, built from escaped text (`src/chat-text.*`, `src/trigi-widgets.*`); links, images and HTML in
+  an answer stay plain, non-clickable text, and the view never loads anything. The only links are
+  the plugin's own fixed buttons.
+- **Accessibility**: logical tab order, a name for every control, one screen reader announcement
+  per answer and per state change (the countdown isn't read out every second), AA contrast in dark,
+  light and high contrast, and button rows that stack in narrow dialogs.
+- **In the OBS log**, one line per Trigi event (conversation started, question sent with its length
+  and whether technical data went with it, answer, unavailable, rate limited, HTTP code); never the
+  text of your questions or of the answers, IDs or the technical data.
+- English and Spanish strings. Pages and states in `src/trigi-page.*` and `src/trigi-states.*`
+  (tested without Qt), client in `src/support-client.*` and `src/support-service.*`.
+
+**Changed / Sign-in:**
+- **Sign in** opens trigglow.com in your browser and the dock shows a code: "The page must show the
+  code KD7F-29QM." The page shows the app, its version and system, when the request was made, the
+  same code and, if the request seems to come from a different network than yours, a warning;
+  **Confirm** or **It wasn't me**. **Copy link** and **Cancel** stay in the dock. The secret the
+  plugin uses to wait for your confirmation never leaves it and never goes in a URL, and neither the
+  link, the codes nor the secret are written to the OBS log.
+- **The plugin's own sign-in.** Once you confirm, the plugin gets its own token, which only works
+  for what the plugin does (checking your account, renewing itself, signing out, Trigi and your own
+  Dynamic Delay tickets), not for the rest of your account. It's renewed automatically when
+  trigglow.com says so. On Windows it's stored encrypted with Windows' data protection, for your
+  Windows user only, apart from the plugin's settings; your email isn't stored. If it can't be
+  decrypted (another Windows user, a restored profile), it's dropped and you sign in again.
+- **Sign out revokes it on trigglow.com** as well as deleting it from your computer (the local copy
+  goes even without a connection). You can also disconnect the plugin from the web: Settings →
+  Active sessions → Connected apps.
+- **v0.5.x sign-ins move over by themselves** on the first start of 0.6.0: the old sign-in is
+  exchanged once for the new one, and the old plain-text file is overwritten and deleted. If
+  trigglow.com can't be reached, it's tried again on the next start and the delay keeps working
+  meanwhile.
+- **One check per OBS start** (plus a renewal when it's due). Without a connection you stay signed
+  in and the delay works; if your account is suspended or not active, **Enable delay** is blocked
+  with "Your Trigglow account isn't active." and **Open trigglow.com**.
+- New messages in the dock: sign-in cancelled from the web, too many attempts, "This plugin version
+  can't sign in any more. Update the plugin." and the account not being active. `src/auth-client.*`,
+  `src/token-store.*` and `src/api-client.*`; `docs/ACCOUNT_GATE.md` describes the flow.
+
+**Changed / Report a problem:**
+- **Signed-in tickets.** Signed in, the ticket comes from your account (no name or email to type),
+  with an optional subject and a footer with the plugin, OBS and Windows versions that you can see
+  and edit. "Ticket sent" offers **View ticket on trigglow.com**; replies arrive by email and in your
+  support panel.
+- **The OBS log, redacted and with your consent.** **Attach OBS's log** (ticked when the log is
+  found) with **See what is sent**, which shows the log already redacted (its first and last 200
+  lines; the whole log goes). The redaction (`src/log-redact.*`, line by line, tested) hides the user
+  name in Windows, macOS and Linux paths, stream URLs, web URLs (only the host stays), overlay links,
+  emails, keys, tokens and passwords, IPv4 and IPv6 addresses and long token-like strings, and keeps
+  timestamps, versions and hotkeys. It may still include scene and source names, and the dialog says
+  so. Above 4.5 MB after redaction, the start and the end are kept.
+- **No more copies in `%TEMP%`.** The log is read and redacted in memory, and the copies earlier
+  versions left in `%TEMP%\Trigglow` are deleted when the plugin loads.
+- If the ticket is created but the log can't be attached, the dialog says so and offers **Save log
+  (no personal data)…** so you can add it from the web.
+- **Signed out**, the guest form stays (name, email, message). If trigglow.com asks guests for a
+  human check (captcha), which OBS can't show, the dialog says "To send the report from OBS, sign
+  in. You can also use the web form." with **Sign in**, **Open web support** and **Save log (no
+  personal data)…**, and never retries on its own. The guest ticket's access key travels in a header,
+  not in the URL, and is never logged.
+- On macOS and Linux the form is shown disabled with a link to the web form (no HTTP client there
+  yet).
+
+**Security and privacy:**
+- **One hardened network path.** Every call goes through WinHTTP (`src/win-http.*`): HTTPS with TLS
+  1.2 or newer, to api.trigglow.com only, which is the only host the sign-in token is ever sent to.
+  Redirects are never followed (a redirect is an error, so the token can't be bounced to another
+  host), no cookies or Windows auto-logon, timeouts on every step plus an overall deadline, a cap on
+  the response size, and a User-Agent with the real plugin version and system. Nothing that creates
+  something (a conversation, a question, a ticket, an attachment) is retried automatically.
+- **The plugin only opens its own fixed pages**: the sign-in, support, privacy and plugin pages on
+  www.trigglow.com and this repository on GitHub, checked by prefix. Anything else, for example a
+  link inside an answer, isn't opened.
+- **Less personal data in the OBS log.** The sign-in link, codes and secret, tokens, ticket and
+  conversation IDs, and the text of questions and answers are never written to it, and lines that
+  mention a file name it without the full path, which included your Windows user name.
+- **The update notice only opens this repository's release pages**: any other link in GitHub's
+  answer is replaced by the latest-release page. The update check uses the same hardened client.
+- **No build machine paths in the DLL**: the Windows DLL records only its PDB's file name, and the
+  binary holds no path-like or host-like strings it doesn't need.
+
 **Added (support and diagnostics):**
 - **`perf check` line in the OBS log**, every 10 s while the delay is on (Filling and Active), plus
   a last one when the delay is disabled, set to 0 s, or OBS closes. It reports the buffer resolution
@@ -380,10 +519,14 @@ was prepared but never published: everything in it ships here.
   at least 10 frames shown behind a slow decoder), which shared runners and ThreadSanitizer can't
   always meet. Its correctness checks stay strict everywhere.
 - Version 0.6.0 in `buildspec.json` and the Windows installer script.
+- **Windows links `winhttp`, `crypt32` (the encrypted sign-in) and `dxgi` (the GPU vendor ID of the
+  optional technical data).** `TRIGGLOW_ALLOW_API_HOST_OVERRIDE` (off by default) is for local test
+  builds only: the configure step fails if it's on in CI, so no release can point anywhere but
+  api.trigglow.com.
 - **The Windows DLL records only its PDB's file name** (`/PDBALTPATH`), not the build machine's
   absolute path (`cmake/windows/helpers.cmake`).
 
-**Tests** (9 suites, no OBS needed; `ctest`):
+**Tests** (18 suites, no OBS needed; `ctest`):
 - `buffer_fit_tests` (sizing: canvas = output, 1440p → 1080p, 4K → 1080p, output above canvas,
   mismatched aspect ratios, a floor above the output, RAM reduction, rounding, widths multiple of
   8, odd dimensions, degenerate input, 59.94 fps, the whole-second effective delay, budget/output
@@ -394,6 +537,15 @@ was prepared but never published: everything in it ships here.
   oscillation) and `pipeline_stress_tests` (ring + arena + codec pipeline under random detaches,
   resizes, rung and rate changes: the delay never shrinks, frames are never torn or shown out of
   order, and no ring is ever freed on the simulated graphics thread).
+- New for the account, Trigi and tickets, all with a scripted network stand-in that never touches
+  the network: `json_tests` (strict, bounded JSON), `log_redact_tests` (every redaction rule, paths
+  of the three systems, a 2 MB hostile line and a 5 MB log), `chat_text_tests` (script and image
+  tags, markdown links, code fences, 10,000 characters, joined emojis, bidi overrides),
+  `support_diagnostics_tests` (only the documented keys, types and values, within 1 KB),
+  `api_client_tests`, `token_store_tests` (the encrypted round trip on Windows), `auth_client_tests`
+  (sign-in, renewal, sign-out, the v0.5.x exchange and every 401/403 rule), `support_client_tests`
+  (every answer shape and error, request bodies and headers) and `trigi_states_tests` (the state,
+  button and countdown each answer or error leads to).
 
 **Known limitations:**
 - **Switching Program to the live scene by hand while the delay is Active** (instead of the
@@ -413,6 +565,14 @@ was prepared but never published: everything in it ships here.
   scales it down again, which can look slightly softer than the live picture. If you don't need the
   larger canvas, setting canvas = output avoids it.
 - macOS still has no FFmpeg build: the buffer is stored uncompressed (raw I420) there.
+- **macOS and Linux have no HTTP client in the plugin yet**, so there is no sign-in there (and
+  without it, Enable delay doesn't work), no Trigi and no reports from OBS; the report dialog links
+  to the web form. Planned for v0.6.1.
+- The redacted log can still contain scene and source names: they can't be told apart reliably,
+  and the preview says so. Check it with **See what is sent** before you send it.
+- The conversation with Trigi in OBS isn't kept once you close the dialog. On trigglow.com it's
+  kept for up to 12 months and you can delete it before (Settings → Privacy & data →
+  Conversations with Trigi); what was copied into a ticket stays in that ticket.
 
 ## v0.5.0 — 2026-10-04 (Early Access)
 

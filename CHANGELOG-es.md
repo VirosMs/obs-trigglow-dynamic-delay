@@ -5,10 +5,27 @@
 ## v0.6.0 — 2026-10-18 (Early Access)
 
 El delay deja de competir con OBS por su hilo gráfico, se adapta a lo que da tu equipo sin cortarse
-nunca, y el plugin adopta el aspecto de trigglow.com. Se preparó un hotfix de rendimiento v0.5.1
-que nunca se publicó: todo lo que llevaba sale aquí.
+nunca, y el plugin adopta el aspecto de trigglow.com. "Reportar un problema" empieza ahora por
+Trigi, el asistente de soporte con IA de Trigglow, el inicio de sesión pasa a un flujo más seguro
+con un inicio de sesión propio del plugin y cifrado, y el plugin pasa una revisión de seguridad y
+privacidad. Se preparó un hotfix de rendimiento v0.5.1 que nunca se publicó: todo lo que llevaba
+sale aquí.
 
 **Qué cambia para ti:**
+- **Trigi, el asistente de soporte con IA de Trigglow, en "Reportar un problema"** (Windows, con
+  sesión iniciada). Pregunta por Dynamic Delay y recibe la respuesta en el propio diálogo; si no lo
+  resuelve, **Crear ticket con esta conversación** se lo pasa al equipo con el contexto. La primera
+  vez, un aviso breve explica qué es Trigi y qué pasa con tus datos, y siempre puedes escribir al
+  equipo en su lugar. **El log de OBS nunca se envía a la IA.** Los datos técnicos de OBS son
+  opcionales y ves exactamente qué se envía antes de marcarlos.
+- **Inicio de sesión más seguro.** El dock muestra un código, y la página de trigglow.com debe
+  mostrar el mismo antes de que confirmes; **No he sido yo** en la página cancela la solicitud. El
+  plugin guarda su propio inicio de sesión, cifrado para tu usuario de Windows, y **Cerrar sesión**
+  también lo desconecta en trigglow.com. Tu inicio de sesión de la v0.5.x se pasa solo.
+- **Los reportes desde OBS van a tu cuenta si tienes la sesión iniciada**: sin nombre ni email que
+  escribir, y sigues el ticket en tu panel de soporte de trigglow.com. El log de OBS solo va si dejas
+  marcada su casilla, con tu usuario de Windows, URLs, claves, emails e IPs ocultos, y puedes ver
+  antes qué se envía.
 - **Se acabó el "Encoding overloaded" (sobrecarga al codificar) al activar el delay con un lienzo
   mayor que la salida.** Reportado en directo con un lienzo 2560x1440 y una salida 1920x1080 a
   60 fps. El buffer del delay se guarda ahora como mucho a la resolución de salida de OBS (Ajustes →
@@ -52,6 +69,14 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   delay.
 
 **Antes de actualizar:**
+- **Actualizar es obligatorio para seguir usando el delay.** El inicio de sesión de la v0.5.x y
+  anteriores se retira con esta versión: esas versiones ya no pueden iniciar sesión en Trigglow, y
+  las sesiones que ya tienen dejan de funcionar tras un periodo de transición. El delay necesita una
+  cuenta con la sesión iniciada, así que actualiza. Al instalar la 0.6.0 encima de tu versión, tu
+  inicio de sesión pasa solo al formato nuevo en el primer arranque; si el dock te pide iniciar
+  sesión, hazlo una vez.
+- **El inicio de sesión, Trigi y el envío de reportes desde OBS solo funcionan en Windows en esta
+  versión** (ver "Limitaciones conocidas").
 - **Los objetos que gestiona el plugin pasan de "(no tocar)" a "(auto)"**, de forma automática.
   **Apunta a los nombres nuevos cualquier acción de Stream Deck, obs-websocket u otro control remoto
   que use los antiguos** (lista abajo).
@@ -232,11 +257,8 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   eleva el buffer por encima de la resolución de salida: con una salida de 720p el buffer es 720p
   aunque el mínimo sea 1080p.
 - **La línea de log `compression check` se sustituye por `perf check` y `pipeline check`** (abajo).
-- **Menos datos personales en el log de OBS.** El enlace de inicio de sesión ya no se escribe en el
-  log (lleva el código de inicio de sesión de un solo uso), y las líneas "settings saved" y "copied
-  OBS log" nombran el fichero sin la ruta completa, que incluía tu nombre de usuario de Windows.
-- **El aviso de actualización solo abre las páginas de releases de este repositorio**: cualquier
-  otro enlace en la respuesta de GitHub se sustituye por la página de la última release.
+- **Inicio de sesión, reportes y comprobación de actualizaciones: ver "Cambiado / Inicio de
+  sesión", "Cambiado / Reportar un problema" y "Seguridad y privacidad"** más abajo.
 
 **Cambiado / Dock:**
 - **Aspecto de marca sobre tu tema de OBS.** Tarjetas, campos y fondos siguen el tema activo de OBS
@@ -341,6 +363,137 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   quedan inertes). Borra el juego que no uses; de vuelta en la 0.6.0 se usa el juego "(auto)" y el
   "(no tocar)" sobrante no se renombra mientras su nombre nuevo esté ocupado.
 
+**Añadido / Trigi, el asistente de soporte con IA (Windows, con sesión iniciada):**
+- **"Reportar un problema" se abre en Trigi** cuando está disponible: en Windows, con la sesión
+  iniciada y con una versión del plugin que Trigi admita. Si no, el diálogo abre directamente el
+  formulario de ticket, como antes; sin sesión, ofrece **Inicia sesión para preguntar a Trigi** junto
+  al formulario.
+- **Primer uso: "Antes de empezar con Trigi".** El aviso dice que Trigi es una IA y puede
+  equivocarse; que Trigglow y un proveedor de IA indicado en la
+  [Política de Privacidad](https://www.trigglow.com/legal/privacy) procesan tus mensajes y, si lo
+  activas, los datos técnicos de OBS; que las conversaciones se guardan hasta 12 meses; que no
+  escribas contraseñas, claves de stream, URLs de overlay ni datos de pago; que el log de OBS nunca se
+  envía a la IA; y que siempre puedes escribir al equipo. **Entendido** o **Prefiero escribir al
+  equipo** (el formulario de ticket). No se envía nada hasta que lo aceptas y mandas tu primera
+  pregunta: abrir el diálogo no hace ninguna llamada a Trigi. Si una versión futura cambia el aviso,
+  vuelve a mostrarse.
+- **Datos técnicos de OBS opcionales.** **Incluir datos técnicos de OBS** está desmarcada hasta que la
+  marques (se recuerda tu elección), y **Ver qué se envía** muestra los datos exactos. Solo cifras y
+  estados, que se envían una vez al empezar una conversación: versiones de OBS y de Windows,
+  arquitectura, renderizador, fabricante de la GPU, RAM total, familia del codificador, el estado,
+  los segundos y la calidad mínima del delay, tamaño del lienzo y de la salida, fps, los frames
+  retrasados y saltados de OBS, la salud del buffer y los códigos de problemas recientes del plugin.
+  Nunca nombres de escenas, fuentes, filtros, codificadores ni salidas, rutas, URLs, datos de tu
+  emisión, tu nombre de usuario o tu email, el nombre de la GPU, IDs de hardware ni IPs
+  (`src/support-diagnostics.*`, `src/diagnostics-collector.*`, que nunca espera al hilo gráfico de
+  OBS).
+- **La conversación.** Enter envía, Ctrl+Enter o Mayús+Enter añade una línea, con un contador de
+  caracteres y la línea fija "Trigi es una IA y puede equivocarse. No compartas datos sensibles."
+  "Trigi está pensando…" muestra un spinner quieto si Windows pide menos movimiento, y "Está tardando
+  más de lo normal…" a los 15 s. **¿Te ha servido?** bajo cada respuesta: Sí cierra la conversación
+  como resuelta, No ofrece el ticket. **Borrar conversación** solo limpia la vista. Lo que ves en OBS
+  solo está en memoria y desaparece al cerrar el diálogo.
+- **De la conversación al ticket.** **Crear ticket con esta conversación** pide a Trigi un resumen
+  (o usa tus propias palabras si no puede) y abre el formulario ya relleno, para que lo revises y lo
+  edites, con la conversación enlazada para que el equipo tenga el contexto, el pie con las versiones
+  y la casilla del log. Si la respuesta trata de algo que no es Dynamic Delay, el botón es **Abrir
+  soporte en trigglow.com**.
+- **Cada estado dice qué hacer a continuación**: sin conexión, Trigi ha tardado demasiado,
+  trigglow.com no responde, demasiadas preguntas seguidas (Enviar queda desactivado con una cuenta
+  atrás), sesión terminada (se conserva lo que escribiste), conversación cerrada (se empieza una nueva
+  con tu siguiente pregunta), "Trigi no puede responder ahora" (con **Crear ticket**), Trigi apagado
+  (se abre el formulario sin más, con tu texto) y "Actualiza el plugin para usar Trigi" (con
+  **Descargar la actualización**). Una pregunta que no llegó se marca como "No enviado" y se puede
+  reintentar a mano; nada se reintenta solo.
+- **Render seguro.** Las respuestas se muestran como texto plano con negrita, `código`, viñetas y
+  pasos numerados, nada más, construidos a partir de texto escapado (`src/chat-text.*`,
+  `src/trigi-widgets.*`); los enlaces, imágenes y HTML de una respuesta se quedan como texto plano no
+  clicable, y la vista nunca carga nada. Los únicos enlaces son los botones fijos del propio plugin.
+- **Accesibilidad**: orden de tabulación lógico, un nombre para cada control, un anuncio del lector
+  de pantalla por respuesta y por cambio de estado (la cuenta atrás no se lee cada segundo),
+  contraste AA en oscuro, claro y alto contraste, y filas de botones que se apilan en diálogos
+  estrechos.
+- **En el log de OBS**, una línea por evento de Trigi (conversación iniciada, pregunta enviada con su
+  longitud y si llevaba datos técnicos, respuesta, no disponible, límite alcanzado, código HTTP);
+  nunca el texto de tus preguntas ni de las respuestas, IDs ni los datos técnicos.
+- Textos en inglés y español. Páginas y estados en `src/trigi-page.*` y `src/trigi-states.*`
+  (probados sin Qt), cliente en `src/support-client.*` y `src/support-service.*`.
+
+**Cambiado / Inicio de sesión:**
+- **Iniciar sesión** abre trigglow.com en tu navegador y el dock muestra un código: "La página debe
+  mostrar el código KD7F-29QM." La página muestra la app, su versión y su sistema, cuándo se hizo la
+  solicitud, el mismo código y, si la solicitud parece venir de una red distinta a la tuya, un aviso;
+  **Confirmar** o **No he sido yo**. **Copiar enlace** y **Cancelar** siguen en el dock. El secreto
+  con el que el plugin espera tu confirmación nunca sale de él ni va en una URL, y ni el enlace, ni
+  los códigos, ni el secreto se escriben en el log de OBS.
+- **Un inicio de sesión propio del plugin.** Cuando confirmas, el plugin recibe su propio token, que
+  solo sirve para lo que hace el plugin (comprobar tu cuenta, renovarse, cerrar sesión, Trigi y tus
+  propios tickets de Dynamic Delay), no para el resto de tu cuenta. Se renueva solo cuando
+  trigglow.com lo indica. En Windows se guarda cifrado con la protección de datos de Windows, solo
+  para tu usuario de Windows y aparte de los ajustes del plugin; tu email no se guarda. Si no se puede
+  descifrar (otro usuario de Windows, un perfil restaurado), se descarta y vuelves a iniciar sesión.
+- **Cerrar sesión lo revoca en trigglow.com** además de borrarlo de tu equipo (la copia local se
+  borra aunque no haya conexión). También puedes desconectar el plugin desde la web: Ajustes →
+  Sesiones activas → Apps conectadas.
+- **Los inicios de sesión de la v0.5.x se pasan solos** en el primer arranque de la 0.6.0: el inicio
+  de sesión antiguo se cambia una vez por el nuevo, y el fichero antiguo en texto plano se sobrescribe
+  y se borra. Si no se puede conectar con trigglow.com, se vuelve a intentar en el siguiente arranque
+  y mientras tanto el delay sigue funcionando.
+- **Una comprobación en cada arranque de OBS** (más una renovación cuando toca). Sin conexión sigues
+  con la sesión iniciada y el delay funciona; si tu cuenta está suspendida o no está activa, **Activar
+  delay** queda bloqueado con "Tu cuenta de Trigglow no está activa." y **Abrir trigglow.com**.
+- Mensajes nuevos en el dock: inicio de sesión cancelado desde la web, demasiados intentos, "Esta
+  versión del plugin ya no puede iniciar sesión. Actualiza el plugin." y la cuenta no activa.
+  `src/auth-client.*`, `src/token-store.*` y `src/api-client.*`; `docs/ACCOUNT_GATE.md` describe el
+  flujo.
+
+**Cambiado / Reportar un problema:**
+- **Tickets con tu cuenta.** Con la sesión iniciada, el ticket sale de tu cuenta (sin nombre ni
+  email que escribir), con un asunto opcional y un pie con las versiones del plugin, de OBS y de
+  Windows que ves y puedes editar. "Ticket enviado" ofrece **Ver ticket en trigglow.com**; las
+  respuestas llegan por email y a tu panel de soporte.
+- **El log de OBS, redactado y con tu consentimiento.** **Adjuntar el registro (log) de OBS** (marcada
+  si se encuentra el log) con **Ver qué se envía**, que muestra el log ya redactado (sus primeras y
+  últimas 200 líneas; se envía completo). La redacción (`src/log-redact.*`, línea a línea, con tests)
+  oculta el nombre de usuario en rutas de Windows, macOS y Linux, las URLs de stream, las URLs web
+  (solo se conserva el host), los enlaces de overlay, emails, claves, tokens y contraseñas, las
+  direcciones IPv4 e IPv6 y las cadenas largas con forma de token, y conserva las marcas de tiempo,
+  las versiones y los atajos. Puede seguir incluyendo nombres de escenas y fuentes, y el diálogo lo
+  avisa. Si después de redactar pasa de 4,5 MB, se conservan el principio y el final.
+- **Se acabaron las copias en `%TEMP%`.** El log se lee y se redacta en memoria, y las copias que
+  dejaron versiones anteriores en `%TEMP%\Trigglow` se borran al cargar el plugin.
+- Si el ticket se crea pero no se puede adjuntar el log, el diálogo lo dice y ofrece **Guardar log
+  (sin datos personales)…** para que lo añadas desde la web.
+- **Sin sesión**, se mantiene el formulario de invitado (nombre, email, mensaje). Si trigglow.com
+  pide a los invitados una comprobación humana (captcha), que OBS no puede mostrar, el diálogo dice
+  "Para enviar el reporte desde OBS, inicia sesión. También puedes usar el formulario web." con
+  **Iniciar sesión**, **Abrir soporte web** y **Guardar log (sin datos personales)…**, y nunca
+  reintenta solo. La clave de acceso del ticket de invitado va en una cabecera, no en la URL, y nunca
+  se escribe en el log.
+- En macOS y Linux el formulario aparece desactivado con un enlace al formulario web (allí todavía no
+  hay cliente HTTP).
+
+**Seguridad y privacidad:**
+- **Un único camino de red endurecido.** Todas las llamadas pasan por WinHTTP (`src/win-http.*`):
+  HTTPS con TLS 1.2 o superior, solo a api.trigglow.com, que es el único host al que se envía el
+  token de inicio de sesión. Las redirecciones nunca se siguen (una redirección es un error, así que
+  el token no puede rebotar a otro host), sin cookies ni inicio de sesión automático de Windows, con
+  timeouts en cada paso y un límite total, un tope al tamaño de la respuesta y un User-Agent con la
+  versión real del plugin y el sistema. Nada que cree algo (una conversación, una pregunta, un
+  ticket, un adjunto) se reintenta solo.
+- **El plugin solo abre sus propias páginas fijas**: las de inicio de sesión, soporte, privacidad y
+  la del plugin en www.trigglow.com y este repositorio en GitHub, comprobadas por prefijo. Cualquier
+  otra cosa, por ejemplo un enlace dentro de una respuesta, no se abre.
+- **Menos datos personales en el log de OBS.** El enlace, los códigos y el secreto del inicio de
+  sesión, los tokens, los IDs de tickets y de conversaciones, y el texto de las preguntas y las
+  respuestas nunca se escriben en él, y las líneas que mencionan un fichero lo nombran sin la ruta
+  completa, que incluía tu nombre de usuario de Windows.
+- **El aviso de actualización solo abre las páginas de releases de este repositorio**: cualquier
+  otro enlace en la respuesta de GitHub se sustituye por la página de la última release. La
+  comprobación de actualizaciones usa el mismo cliente endurecido.
+- **Sin rutas de la máquina de compilación en la DLL**: la DLL de Windows solo registra el nombre de
+  su PDB, y el binario no lleva cadenas con forma de ruta o de host que no necesite.
+
 **Añadido (soporte y diagnóstico):**
 - **Línea `perf check` en el log de OBS**, cada 10 s con el delay en marcha (Filling y Active), y
   una última al desactivar el delay, ponerlo a 0 s o cerrar OBS. Indica la resolución del buffer y
@@ -418,10 +571,14 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   lento), que los runners compartidos y ThreadSanitizer no siempre cumplen. Sus comprobaciones de
   corrección siguen siendo estrictas en todas partes.
 - Versión 0.6.0 en `buildspec.json` y en el script del instalador de Windows.
+- **Windows enlaza `winhttp`, `crypt32` (el inicio de sesión cifrado) y `dxgi` (el ID del fabricante
+  de la GPU de los datos técnicos opcionales).** `TRIGGLOW_ALLOW_API_HOST_OVERRIDE` (desactivada por
+  defecto) es solo para builds de prueba en local: la configuración falla si está activada en CI,
+  así que ninguna release puede apuntar a otro sitio que no sea api.trigglow.com.
 - **La DLL de Windows solo registra el nombre de su PDB** (`/PDBALTPATH`), no la ruta absoluta de
   la máquina de compilación (`cmake/windows/helpers.cmake`).
 
-**Tests** (9 suites, sin OBS; `ctest`):
+**Tests** (18 suites, sin OBS; `ctest`):
 - `buffer_fit_tests` (dimensionado: lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que
   el lienzo, relaciones de aspecto distintas, un suelo por encima de la salida, reducción por RAM,
   redondeo, anchos múltiplos de 8, dimensiones impares, entradas degeneradas, 59,94 fps, el delay
@@ -434,6 +591,16 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   desconexiones, redimensionados y cambios de peldaño y de fps al azar: el delay nunca encoge, los
   frames nunca salen rotos ni desordenados y ningún ring se libera nunca en el hilo gráfico
   simulado).
+- Nuevas para la cuenta, Trigi y los tickets, todas con un sustituto de red guionizado que nunca
+  sale a la red: `json_tests` (JSON estricto y acotado), `log_redact_tests` (cada regla de redacción,
+  rutas de los tres sistemas, una línea hostil de 2 MB y un log de 5 MB), `chat_text_tests`
+  (etiquetas script e img, enlaces markdown, vallas de código, 10.000 caracteres, emojis unidos,
+  caracteres de dirección bidi), `support_diagnostics_tests` (solo las claves, tipos y valores
+  documentados, en menos de 1 KB), `api_client_tests`, `token_store_tests` (el cifrado de ida y
+  vuelta en Windows), `auth_client_tests` (inicio de sesión, renovación, cierre de sesión, el cambio
+  desde la v0.5.x y cada regla de 401/403), `support_client_tests` (cada forma de respuesta y cada
+  error, cuerpos y cabeceras de las peticiones) y `trigi_states_tests` (el estado, el botón y la
+  cuenta atrás a los que lleva cada respuesta o error).
 
 **Limitaciones conocidas:**
 - **Cambiar a mano el Programa a la escena en directo con el delay Activo** (en vez de la escena
@@ -453,6 +620,14 @@ que nunca se publicó: todo lo que llevaba sale aquí.
   lo reduce otra vez, lo que puede verse algo más blando que la imagen en directo. Si no necesitas el
   lienzo grande, poner lienzo = salida lo evita.
 - macOS sigue sin build de FFmpeg: allí el buffer se guarda sin comprimir (I420 en crudo).
+- **macOS y Linux todavía no tienen cliente HTTP en el plugin**, así que allí no hay inicio de
+  sesión (y sin él no funciona Activar delay), ni Trigi, ni reportes desde OBS; el diálogo de
+  reporte enlaza al formulario web. Previsto para la v0.6.1.
+- El log redactado puede seguir conteniendo nombres de escenas y fuentes: no se pueden distinguir
+  de forma fiable, y la vista previa lo avisa. Revísalo con **Ver qué se envía** antes de enviarlo.
+- La conversación con Trigi en OBS no se conserva al cerrar el diálogo. En trigglow.com se guarda
+  hasta 12 meses y puedes borrarla antes (Ajustes → Privacidad y datos → Conversaciones con Trigi);
+  lo que se copió a un ticket se queda en ese ticket.
 
 ## v0.5.0 — 2026-10-04 (Early Access)
 
