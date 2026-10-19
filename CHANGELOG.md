@@ -34,6 +34,10 @@ performance hotfix was prepared but never published: everything in it ships here
   time) but on the plugin's own threads. At 1440p60 the plugin's work on that thread drops from
   ~14/17 ms to ~1.2–1.7/1.6–2.1 ms per frame (p50/p95, offline microbenchmark on an
   8-core/16-thread CPU).
+- **Minimum quality 1440p (2K) and 2160p (4K)** in the dock, after 480p, 720p and 1080p. With a
+  1440p output and a 1440p minimum the buffer stays at 1440p when RAM is short (the delay gets
+  shorter instead, as with 1080p) and when your computer can't keep up (only the capture frame
+  rate halves). It never goes above your OBS output: with a 1080p output it buffers at 1080p.
 - **If your computer can't keep up, the delay still never cuts.** The plugin first adds compression
   threads, then buffers at a lower resolution (never below your minimum quality), and only then
   captures at half the frame rate; it goes back up by itself once there's room. Meanwhile the dock
@@ -539,8 +543,8 @@ performance hotfix was prepared but never published: everything in it ships here
 **Tests** (18 suites, no OBS needed; `ctest`):
 - `buffer_fit_tests` (sizing: canvas = output, 1440p → 1080p, 4K → 1080p, output above canvas,
   mismatched aspect ratios, a floor above the output, RAM reduction, rounding, widths multiple of
-  8, odd dimensions, degenerate input, 59.94 fps, the whole-second effective delay, budget/output
-  sweeps), `encoder_check_tests` (the encoder WARN's decision), `ui_tokens_tests` (contrast on OBS
+  8, odd dimensions, degenerate input, 59.94 fps, the whole-second effective delay, the 1440p and
+  2160p floors, budget/output sweeps), `encoder_check_tests` (the encoder WARN's decision), `ui_tokens_tests` (contrast on OBS
   31's palettes), `auto_names_tests` (names and their migration), `overlay_layout_tests` (overlay
   placement), `frame_arena_tests`, `frame_ring_tests` (slot state machine, generations, age-based
   selection), `degradation_policy_tests` (ladder, every trigger, cooldown, 30 s hysteresis, no

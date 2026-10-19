@@ -218,7 +218,8 @@ step at a time, and the notice disappears once the buffer is back at full qualit
 - Lower the output resolution or frame rate in `Settings → Video` if the notice shows up all the
   time at your current settings.
 - A higher minimum quality keeps the buffer sharper, but leaves the plugin fewer steps before it
-  has to halve the capture rate.
+  has to halve the capture rate. With the minimum at your output resolution (for example 1440p
+  (2K) with a 1440p output) there are no resolution steps left: only the capture rate can halve.
 - If you think the notice is wrong, send a report with **Report a problem** with the delay on for
   at least 30 seconds: every rung change is a WARN line in the log, with its cause and the numbers
   behind it.
@@ -260,7 +261,7 @@ seconds, plus a last pair when you disable the delay, set it to 0 s or close OBS
 | `rawFallback`, `encFail`, `decFail` | Frames stored uncompressed because compression failed, and compression/decompression failures. Should be 0. |
 | `staleEnc`, `decJumps`, `staleDec` | Compressions thrown away because the slot was reused, times the decompressor jumped ahead to catch up, and frames decompressed ahead that were too old to show after a pause in rendering. |
 | `queue enc`, `dec ahead` | Compression queue depth (max, average) and frames ready ahead of what's on screen (average, minimum). |
-| `ratio`, `arena`, `ring` | Compression ratio, buffer memory (committed, live, peak, blocks and their size, limit) and slot states. `committed` is close to what Task Manager shows for the buffer. |
+| `ratio`, `arena`, `ring` | Compression ratio, buffer memory (committed, live, peak, blocks and their size, limit) and slot states. `committed` is close to what Task Manager shows for the buffer: at 1440p60 with 30 s, roughly 600–900 MB with gameplay (`ratio=` around 11–15x). |
 
 Other lines worth knowing: `settings loaded` (when OBS starts) and `enabled` (each time you press
 Enable) end in `output_cap=on|off` and `codec_workers=on|off`; `delay pipeline: …` (each time the
@@ -341,7 +342,7 @@ again.
   goes back to full quality by itself when the load drops.
 - Otherwise it's buffer sizing, not a bug: `EnsureRingSized()` computes a RAM budget from your
   machine's total system RAM (50% of it, clamped between 1GB and 24GB) and never lets the buffered
-  video drop below the **minimum quality** you selected (480p/720p/1080p) — instead, if your
+  video drop below the **minimum quality** you selected (480p to 2160p (4K)) — instead, if your
   requested seconds × that quality don't fit the budget, it shortens the **actual buffered
   duration**. And the buffer is never stored above OBS's output resolution, so with a 720p output
   it's 720p even with a 1080p minimum — OBS doesn't send anything above its output anyway.

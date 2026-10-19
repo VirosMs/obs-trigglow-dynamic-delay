@@ -35,6 +35,10 @@ sale aquí.
   hilos propios del plugin. A 1440p60 el trabajo del plugin en ese hilo baja de ~14/17 ms a
   ~1,2–1,7/1,6–2,1 ms por frame (p50/p95, microbenchmark fuera de OBS en una CPU de 8 núcleos/16
   hilos).
+- **Calidad mínima 1440p (2K) y 2160p (4K)** en el dock, tras 480p, 720p y 1080p. Con una salida
+  1440p y un mínimo de 1440p el buffer se queda en 1440p cuando falta RAM (el delay se acorta,
+  igual que con 1080p) y cuando tu equipo no da más (solo se captura a la mitad de fps). Nunca
+  supera la salida de OBS: con una salida 1080p el buffer es 1080p.
 - **Si tu equipo no da más, el delay sigue sin cortarse.** El plugin primero añade hilos de
   compresión, después guarda el buffer a menos resolución (nunca por debajo de tu calidad mínima) y
   solo entonces captura a la mitad de fps; vuelve a subir solo en cuanto hay margen. Mientras
@@ -594,7 +598,7 @@ sale aquí.
 - `buffer_fit_tests` (dimensionado: lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que
   el lienzo, relaciones de aspecto distintas, un suelo por encima de la salida, reducción por RAM,
   redondeo, anchos múltiplos de 8, dimensiones impares, entradas degeneradas, 59,94 fps, el delay
-  efectivo en segundos enteros, barridos de presupuesto/salida), `encoder_check_tests` (la decisión
+  efectivo en segundos enteros, los suelos 1440p y 2160p, barridos de presupuesto/salida), `encoder_check_tests` (la decisión
   del aviso de encoders), `ui_tokens_tests` (contraste en las paletas de OBS 31),
   `auto_names_tests` (los nombres y su migración), `overlay_layout_tests` (colocación del overlay),
   `frame_arena_tests`, `frame_ring_tests` (máquina de estados de los slots, generaciones, selección

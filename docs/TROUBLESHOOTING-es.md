@@ -238,7 +238,9 @@ desaparece en cuanto el buffer vuelve a la calidad completa.
 - Baja la resolución o los fps de salida en `Ajustes → Vídeo` si el aviso aparece todo el rato con
   tus ajustes actuales.
 - Una calidad mínima más alta mantiene el buffer más nítido, pero deja al plugin menos pasos antes
-  de tener que capturar a la mitad de fps.
+  de tener que capturar a la mitad de fps. Con el mínimo igual a tu resolución de salida (por
+  ejemplo 1440p (2K) con una salida 1440p) no quedan pasos de resolución: solo puede bajar a la
+  mitad de fps.
 - Si crees que el aviso no tiene sentido, envía un reporte con **Reportar un problema** con el delay
   activo al menos 30 segundos: cada cambio de peldaño es una línea WARN en el log, con su causa y las
   cifras que lo provocaron.
@@ -280,7 +282,7 @@ ilustrativos — los tuyos serán distintos; cada una es una sola línea en el l
 | `rawFallback`, `encFail`, `decFail` | Frames guardados sin comprimir porque falló la compresión, y fallos de compresión/descompresión. Deberían ser 0. |
 | `staleEnc`, `decJumps`, `staleDec` | Compresiones descartadas porque el slot se reutilizó, veces que el descompresor saltó hacia delante para ponerse al día, y frames descomprimidos por adelantado que eran demasiado antiguos para mostrarlos tras una pausa del render. |
 | `queue enc`, `dec ahead` | Profundidad de la cola de compresión (máxima, media) y frames listos por delante de lo que hay en pantalla (media, mínimo). |
-| `ratio`, `arena`, `ring` | Ratio de compresión, memoria del buffer (comprometida, viva, pico, bloques y su tamaño, límite) y estados de los slots. `committed` se acerca a lo que el Administrador de tareas atribuye al buffer. |
+| `ratio`, `arena`, `ring` | Ratio de compresión, memoria del buffer (comprometida, viva, pico, bloques y su tamaño, límite) y estados de los slots. `committed` se acerca a lo que el Administrador de tareas atribuye al buffer: a 1440p60 con 30 s, unos 600–900 MB con gameplay (`ratio=` de unas 11–15x). |
 
 Otras líneas que conviene conocer: `settings loaded` (al arrancar OBS) y `enabled` (cada vez que
 pulsas Activar) terminan en `output_cap=on|off` y `codec_workers=on|off`; `delay pipeline: …` (cada
@@ -363,7 +365,7 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
   arriba). Vuelve solo a la calidad completa cuando baja la carga.
 - Si no, es el dimensionado del buffer, no un bug: `EnsureRingSized()` calcula un presupuesto de RAM
   a partir de la RAM total de tu máquina (el 50%, acotado entre 1GB y 24GB) y nunca deja que el vídeo
-  almacenado baje de la **calidad mínima** que elegiste (480p/720p/1080p) — en su lugar, si los
+  almacenado baje de la **calidad mínima** que elegiste (de 480p a 2160p (4K)) — en su lugar, si los
   segundos pedidos × esa calidad no caben en el presupuesto, acorta la **duración realmente
   almacenada**. Y el buffer nunca se guarda por encima de la resolución de salida de OBS, así que con
   una salida de 720p es 720p aunque el mínimo sea 1080p — OBS no emite nada por encima de su salida

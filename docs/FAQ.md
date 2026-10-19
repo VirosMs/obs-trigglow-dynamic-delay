@@ -21,7 +21,7 @@ the same delay in whole seconds in that case too (before, they could end up to ~
 dock and the live overlay show that same figure. See `docs/SPEC.md` §3.2/§3.3.
 
 **How do the "Delay (seconds)" and "Minimum quality" settings interact?**
-Independently, by design — you pick both freely. The minimum quality (480p/720p/1080p) is how far
+Independently, by design — you pick both freely. The minimum quality (480p to 2160p (4K)) is how far
 the plugin may lower the buffer's resolution to save RAM: it never goes below it, and shortens the
 actual buffered duration instead if your requested seconds don't fit the RAM budget detected on
 your machine at that quality. Since v0.6.0 it never raises the buffer above OBS's output resolution,
@@ -53,7 +53,7 @@ will tell you before you enable it, and the plugin buffers as many seconds as ac
 Yes, since v0.3.0 — on Windows and Linux, each buffered frame is MJPEG-compressed in RAM and
 decompressed back on playback, with an automatic, safe fallback to uncompressed storage if the codec
 isn't available for any reason. The compression is visually close to lossless, and the quality floor
-you pick (480p/720p/1080p) works exactly as before: this only changes how the buffered frames are
+you pick (480p to 2160p (4K)) works exactly as before: this only changes how the buffered frames are
 stored in memory. Real gameplay compresses about 11–15x (measured live since v0.4.0), though it
 depends on what's on screen. Since v0.6.0 the compression runs on the plugin's own threads, not on
 OBS's graphics thread, and memory follows what the frames really weigh: about 0.6–0.8 GB for 30 s at
@@ -79,6 +79,15 @@ performance is the *output* resolution and frame rate, not the canvas:
   8-core/16-thread CPU) the plugin's work on OBS's graphics thread is ~1.2–1.7/1.6–2.1 ms p50/p95 per
   frame, and compression and decompression keep under one CPU core busy in total on their own
   threads.
+- **Minimum quality 1440p (2K) or 2160p (4K):** in the dock since v0.6.0. With a 1440p output and
+  a 1440p minimum the buffer never drops below 1440p, neither to save RAM nor when your computer
+  can't keep up (then only the capture frame rate halves): if the seconds don't fit in RAM, the
+  delay gets shorter instead, as with 1080p. Above your output it changes nothing: with a 1080p
+  output the buffer stays 1080p. To see the RAM the buffer really takes, look for
+  `arena=…MB committed` in the `pipeline check` lines of the OBS log (every 10 s while the delay
+  runs): at 1440p60 with 30 s expect roughly 600–900 MB with gameplay (`ratio=` around 11–15x). The
+  plugin plans for up to ~1.9 GB there (5x), and the dock warns before you enable it if that doesn't
+  fit.
 - **If your computer can't keep up** at your settings, the plugin lowers the buffer's resolution
   (never below your minimum quality) and, as a last step, its capture frame rate, instead of
   letting OBS fall behind or cutting the delay. The dock tells you with an amber notice (next
