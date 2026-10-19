@@ -16,7 +16,9 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#include <filesystem>
 #include <memory>
+#include <vector>
 
 #include <QDateTime>
 #include <QDir>
@@ -333,6 +335,17 @@ bool obs_module_load(void)
 	// Log copies that versions before 0.6.0 left in %TEMP% (0.6.0 keeps the
 	// redacted log in memory only).
 	trigglow::DeleteLeftoverSupportLogCopies();
+	// Marks this OBS's log, so "Report a problem" attaches it and never
+	// another OBS's (a portable one keeps its logs next to its own config).
+	{
+		std::vector<std::filesystem::path> logFolders;
+		logFolders.push_back(trigglow::ObsLogFolderFrom(g_state->authManager->ConfigDir()));
+		if (char *profile = obs_frontend_get_current_profile_path()) {
+			logFolders.push_back(trigglow::ObsLogFolderFrom(std::filesystem::u8path(profile)));
+			bfree(profile);
+		}
+		trigglow::MarkCurrentObsLog(std::move(logFolders));
+	}
 
 	g_state->bufferController = std::make_unique<trigglow::BufferModeController>(g_state->bridge);
 	// Free account gate (see docs/ACCOUNT_GATE.md): both the dock's Enable

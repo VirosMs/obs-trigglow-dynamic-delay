@@ -18,7 +18,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <filesystem>
 #include <string>
+#include <vector>
 
 // OBS's own current session log, prepared for a support ticket. The plugin
 // has no telemetry of its own -- when a stream lagged live and the user has no
@@ -33,10 +35,26 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // sent as a ticket attachment, never to Trigi.
 namespace trigglow {
 
-// True where the current log can be located (Windows today: OBS's log folder
-// is a fixed, well-known path there, %APPDATA%\obs-studio\logs\). Elsewhere
+// True where the current log can be located (Windows today). Elsewhere
 // callers point the user at OBS's own "Help > Log Files" menu instead.
 bool CanLocateObsLog();
+
+// Called once from obs_module_load(). Neither libobs nor the frontend API says
+// which file is this OBS's current log, and "the newest file in the logs
+// folder" can belong to another OBS (a portable one next to the installed
+// one, or a second instance). So this writes one line with a random marker
+// to this OBS's log, and remembers where this OBS keeps its logs
+// (`logFolders`, most likely first; %APPDATA%\obs-studio\logs is added last).
+// ReadCurrentObsLogRedacted() then only ever reads the file that holds this
+// run's marker.
+void MarkCurrentObsLog(std::vector<std::filesystem::path> logFolders);
+
+// "<root>\obs-studio\logs" of the OBS whose plugin config folder
+// (obs_module_get_config_path(), "<root>\obs-studio\plugin_config\<plugin>") or
+// profile folder (obs_frontend_get_current_profile_path(),
+// "<root>\obs-studio\basic\profiles\<name>") is `inside`; empty when it isn't
+// one of those. Pure path work, for MarkCurrentObsLog().
+std::filesystem::path ObsLogFolderFrom(const std::filesystem::path &inside);
 
 struct RedactedObsLog {
 	bool found = false;  // OBS's current log was located and read.
@@ -44,8 +62,10 @@ struct RedactedObsLog {
 	bool capped = false; // The middle of a very long log was left out.
 };
 
-// BLOCKING: reads (up to a few MB of the start and end of a huge log) and
-// redacts. Run it off the UI thread.
+// BLOCKING: finds this run's log (MarkCurrentObsLog()), reads it (up to a few
+// MB of the start and end of a huge log) and redacts it. found = false when no
+// log holds this run's marker: never another OBS's log instead. Run it off the
+// UI thread.
 RedactedObsLog ReadCurrentObsLogRedacted();
 
 // Deletes the %TEMP%\Trigglow\trigglow-obs-log-*.txt copies that versions

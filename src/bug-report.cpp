@@ -20,10 +20,15 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "log-redact.hpp"
 #include "logging.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <random>
 #include <system_error>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -33,7 +38,16 @@ namespace trigglow {
 
 namespace {
 
+namespace fs = std::filesystem;
+
 #ifdef _WIN32
+
+// Set once by MarkCurrentObsLog() (UI thread, at load), read by the
+// background job that prepares a ticket's log.
+std::mutex g_markerMutex;
+std::string g_marker;
+std::vector<fs::path> g_logFolders;
+
 // Only referenced by the Windows implementation below -- the non-Windows
 // stubs don't log at all, so declaring this unconditionally would be an
 // unused-variable warning-as-error there.
@@ -56,60 +70,144 @@ bool ReadRange(std::ifstream &file, std::uintmax_t offset, std::uintmax_t length
 	return !out.empty();
 }
 
-bool AppDataDir(std::filesystem::path &out)
+// How many of the newest logs are searched for the marker, and how far into
+// each: it is written while the plugin loads, near the start of the log.
+constexpr size_t kMaxCandidates = 16;
+constexpr std::uintmax_t kMarkerSearchBytes = 8ull * 1024 * 1024;
+
+bool AppDataDir(fs::path &out)
 {
 	wchar_t appData[MAX_PATH] = {};
 	const DWORD len = GetEnvironmentVariableW(L"APPDATA", appData, MAX_PATH);
 	if (len == 0 || len >= MAX_PATH)
 		return false;
-	out = std::filesystem::path(appData);
+	out = fs::path(appData);
 	return true;
 }
 
-// OBS names each session's log by timestamp, not a fixed "current.log"
-// filename -- the most-recently-modified .txt file in its log folder IS the
-// current session's log.
-bool FindCurrentLog(std::filesystem::path &out)
+// Whether the first kMarkerSearchBytes of `path` hold `marker`, read in
+// chunks (a chunk keeps the end of the one before, so a marker split between
+// two is still found).
+bool FileHolds(const fs::path &path, const std::string &marker)
 {
-	std::filesystem::path appData;
-	if (!AppDataDir(appData)) {
-		TRIGGLOW_LOG_WARN(kComponent, "could not resolve %%APPDATA%% to find OBS's log folder");
+	std::ifstream file(path, std::ios::binary);
+	if (!file)
+		return false;
+	const size_t chunkBytes = 1024 * 1024;
+	std::string window;
+	std::string chunk(chunkBytes, '\0');
+	std::uintmax_t read = 0;
+	while (read < kMarkerSearchBytes && file) {
+		file.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+		const size_t got = static_cast<size_t>(file.gcount());
+		if (got == 0)
+			break;
+		read += got;
+		window.append(chunk, 0, got);
+		if (window.find(marker) != std::string::npos)
+			return true;
+		if (window.size() > marker.size())
+			window.erase(0, window.size() - marker.size());
+	}
+	return false;
+}
+
+// This run's log: among the .txt files of this OBS's log folders, newest
+// first, the one that holds this run's marker. Never "just the newest".
+bool FindCurrentLog(fs::path &out)
+{
+	std::string marker;
+	std::vector<fs::path> folders;
+	{
+		std::lock_guard<std::mutex> lock(g_markerMutex);
+		marker = g_marker;
+		folders = g_logFolders;
+	}
+	if (marker.empty()) {
+		TRIGGLOW_LOG_WARN(kComponent, "this OBS's log wasn't marked at load; not attaching any log");
 		return false;
 	}
-	const std::filesystem::path logsDir = appData / L"obs-studio" / L"logs";
-	std::error_code ec;
-	if (!std::filesystem::exists(logsDir, ec) || ec) {
-		TRIGGLOW_LOG_WARN(kComponent, "OBS log folder not found at the expected path");
-		return false;
-	}
-	std::filesystem::file_time_type newestTime{};
-	bool any = false;
-	for (const auto &entry : std::filesystem::directory_iterator(logsDir, ec)) {
-		std::error_code entryEc;
-		if (!entry.is_regular_file(entryEc) || entryEc || entry.path().extension() != L".txt")
-			continue;
-		const auto modified = entry.last_write_time(entryEc);
-		if (entryEc)
-			continue;
-		if (!any || modified > newestTime) {
-			newestTime = modified;
-			out = entry.path();
-			any = true;
+	std::vector<std::pair<fs::file_time_type, fs::path>> candidates;
+	for (const fs::path &folder : folders) {
+		std::error_code ec;
+		for (const auto &entry : fs::directory_iterator(folder, ec)) {
+			std::error_code entryEc;
+			if (!entry.is_regular_file(entryEc) || entryEc || entry.path().extension() != L".txt")
+				continue;
+			const auto modified = entry.last_write_time(entryEc);
+			if (!entryEc)
+				candidates.emplace_back(modified, entry.path());
 		}
 	}
-	if (!any)
-		TRIGGLOW_LOG_WARN(kComponent, "OBS log folder exists but has no .txt log files in it");
-	return any;
+	std::sort(candidates.begin(), candidates.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+	if (candidates.size() > kMaxCandidates)
+		candidates.resize(kMaxCandidates);
+	for (const auto &candidate : candidates) {
+		if (FileHolds(candidate.second, marker)) {
+			out = candidate.second;
+			return true;
+		}
+	}
+	// File names and folders stay out of the log: they hold the user name.
+	TRIGGLOW_LOG_WARN(kComponent,
+			  "none of the %zu newest OBS logs is this OBS's current one; not attaching any log",
+			  candidates.size());
+	return false;
 }
 #endif
 
 } // namespace
+
+fs::path ObsLogFolderFrom(const fs::path &inside)
+{
+	// Walk up to "plugin_config" or "basic"; their parent is OBS's own
+	// "obs-studio" folder, whose "logs" holds the logs.
+	fs::path p = inside;
+	for (int depth = 0; depth < 4 && p.has_relative_path(); ++depth) {
+		const fs::path name = p.filename();
+		if (name == "plugin_config" || name == "basic")
+			return p.parent_path() / "logs";
+		if (name.empty()) {
+			p = p.parent_path(); // A trailing separator.
+			continue;
+		}
+		p = p.parent_path();
+	}
+	return fs::path();
+}
 
 #ifdef _WIN32
 
 bool CanLocateObsLog()
 {
 	return true;
+}
+
+void MarkCurrentObsLog(std::vector<fs::path> logFolders)
+{
+	std::random_device random;
+	char marker[48];
+	std::snprintf(marker, sizeof(marker), "trigglow-log-%08x%08x", static_cast<unsigned>(random()),
+		      static_cast<unsigned>(random()));
+	fs::path appData;
+	if (AppDataDir(appData))
+		logFolders.push_back(appData / L"obs-studio" / L"logs");
+	// Each folder once, in order.
+	std::vector<fs::path> unique;
+	for (fs::path &folder : logFolders) {
+		if (folder.empty())
+			continue;
+		folder = folder.lexically_normal();
+		if (std::find(unique.begin(), unique.end(), folder) == unique.end())
+			unique.push_back(folder);
+	}
+	{
+		std::lock_guard<std::mutex> lock(g_markerMutex);
+		g_marker = marker;
+		g_logFolders = std::move(unique);
+	}
+	TRIGGLOW_LOG_INFO(kComponent, "log marker %s (\"Report a problem\" attaches only the log that holds it)",
+			  marker);
 }
 
 RedactedObsLog ReadCurrentObsLogRedacted()
@@ -170,6 +268,11 @@ void DeleteLeftoverSupportLogCopies()
 bool CanLocateObsLog()
 {
 	return false;
+}
+
+void MarkCurrentObsLog(std::vector<fs::path> logFolders)
+{
+	(void)logFolders; // Nothing reads the log here yet.
 }
 
 RedactedObsLog ReadCurrentObsLogRedacted()
