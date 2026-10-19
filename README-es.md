@@ -62,6 +62,17 @@ pasan de "(no tocar)" a "(auto)": actualiza cualquier acción de Stream Deck u o
 los nombres antiguos. (Se preparó un hotfix v0.5.1 que nunca se publicó; forma parte de la v0.6.0.)
 Ver `CHANGELOG-es.md` y `docs/TROUBLESHOOTING-es.md`.
 
+La v0.6.0 también trae a **Trigi**, el asistente de soporte con IA de Trigglow, a "Reportar un
+problema" (Windows, con sesión iniciada): pregunta por Dynamic Delay en el diálogo y convierte la
+conversación en un ticket si no lo resuelve. El log de OBS nunca se envía a la IA, y los datos
+técnicos de OBS son opcionales, con vista previa. **El inicio de sesión es nuevo y más seguro** (un
+código que comparar en trigglow.com, un inicio de sesión propio del plugin cifrado para tu usuario
+de Windows, que Cerrar sesión revoca), los reportes van a tu cuenta con el log de OBS redactado y
+solo si quieres, y las conexiones de red del plugin se endurecen. **El inicio de sesión de la
+v0.5.x y anteriores se retira con esta versión: actualiza para seguir usando el delay.** En la
+v0.6.0 el inicio de sesión, Trigi y los reportes desde OBS solo funcionan en Windows; macOS y Linux
+los tendrán en la v0.6.1. Ver `docs/FAQ-es.md`.
+
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
 se probó y se descartó) y `docs/BUILD_VALIDATION.md` (qué se verificó realmente y qué no, en esta
@@ -89,6 +100,29 @@ sobrecargar OBS o cortar el delay; mientras tanto el dock muestra un aviso ámba
 pides no caben a tu calidad mínima, se guardan menos segundos (el dock te lo dice antes de
 activarlo). La compresión necesita FFmpeg, que va incluido en Windows y Linux; en macOS el buffer se
 guarda sin comprimir.
+
+**Una cuenta gratuita de trigglow.com, en Windows.** `Activar delay` necesita que inicies sesión
+una vez desde el dock (en tu navegador; el plugin sigue siendo 100% gratis). En la v0.6.0 el inicio
+de sesión solo funciona en Windows: macOS y Linux todavía no tienen el cliente HTTP del plugin
+(previsto para la v0.6.1). Ver `docs/ACCOUNT_GATE.md`.
+
+## Uso de la red y privacidad
+
+- **En cada arranque de OBS**: una comprobación de tu inicio de sesión con `api.trigglow.com` (más
+  una renovación cuando toca) y una comprobación de la última release de este repositorio en
+  `api.github.com`. Nada más se ejecuta en segundo plano.
+- **Solo cuando lo usas**: iniciar y cerrar sesión, preguntar a Trigi y enviar un reporte, todo a
+  `api.trigglow.com`. El plugin solo abre sus propias páginas fijas de www.trigglow.com y este
+  repositorio en GitHub, en tu navegador.
+- **Cómo**: solo HTTPS, sin seguir redirecciones, el inicio de sesión solo se envía a
+  `api.trigglow.com`, se guarda cifrado para tu usuario de Windows y nunca se escribe en el log de
+  OBS, igual que los códigos de inicio de sesión, los IDs y lo que escribes a Trigi.
+- **Trigi** recibe lo que escribes y, solo si lo marcas, un pequeño conjunto de cifras y estados
+  técnicos de OBS (nunca nombres, rutas, URLs ni claves), que ves antes de enviarlo. **El log de
+  OBS nunca se envía a la IA**; solo se adjunta a un ticket si dejas marcada su casilla, con tu
+  usuario de Windows, URLs, claves, emails e IPs ocultos. Las conversaciones se guardan hasta 12
+  meses y puedes borrarlas antes en trigglow.com. Detalles en `docs/FAQ-es.md` y en la
+  [Política de Privacidad](https://www.trigglow.com/legal/privacy).
 
 ## Requisitos de compilación
 
@@ -244,15 +278,41 @@ src/
   auto-names.{hpp,cpp}             → nombres de la escena, filtros y overlay que gestiona el plugin
                                      y su migración desde los nombres "(no tocar)" de v0.5.x, con
                                      tests
-  report-bug-dialog.{hpp,cpp}      → diálogo "Reportar un problema" — crea un ticket de soporte en
-                                     trigglow.com con el log actual de OBS adjuntado automáticamente
-  bug-report.{hpp,cpp}             → localiza/copia el archivo de log actual de OBS (solo Windows
-                                     por ahora)
+  report-bug-dialog.{hpp,cpp}      → diálogo "Reportar un problema": primero Trigi si está
+                                     disponible, después el formulario de ticket (con cuenta o
+                                     de invitado), con el log de OBS redactado solo si el usuario
+                                     lo deja marcado
+  trigi-page.{hpp,cpp}             → la página de Trigi en ese diálogo: aviso, datos técnicos,
+                                     conversación, estados y el paso a un ticket
+  trigi-widgets.{hpp,cpp}          → la vista de la conversación (nunca carga nada) y sus burbujas
+  trigi-states.{hpp,cpp}           → decisiones puras de estado, botón y cuenta atrás, con tests
+  chat-text.{hpp,cpp}              → saneado puro y mini parser de marcado de las respuestas de
+                                     Trigi (texto escapado, negrita, código y listas), con tests
+  support-client.{hpp,cpp}         → llamadas de Trigi y de tickets, respuestas y errores, con tests
+  support-service.{hpp,cpp}        → la parte Qt del soporte: hilos en segundo plano, una petición
+                                     de Trigi a la vez, elecciones locales, líneas de log
+  support-diagnostics.{hpp,cpp}    → los datos técnicos opcionales de OBS (solo números, booleanos
+                                     y valores fijos, en menos de 1 KB), con tests
+  diagnostics-collector.{hpp,cpp}  → rellena esa instantánea desde OBS y el plugin
+  bug-report.{hpp,cpp}             → localiza el log actual de OBS (solo Windows por ahora), lo
+                                     lee y lo redacta en memoria, y borra las copias antiguas de
+                                     %TEMP%
+  log-redact.{hpp,cpp}             → redacción pura, línea a línea, del log de OBS, con tests
   update-checker.{hpp,cpp}         → compara la última release de GitHub de este repositorio contra
                                      la versión en ejecución
-  auth-manager.{hpp,cpp}           → la puerta de login de cuenta gratuita (ver `docs/ACCOUNT_GATE.md`)
-  win-http.{hpp,cpp}               → cliente WinHTTP nativo (GET/POST JSON/POST multipart) usado por
-                                     auth-manager, report-bug-dialog y update-checker
+  auth-manager.{hpp,cpp}           → la puerta de login de cuenta gratuita (ver `docs/ACCOUNT_GATE.md`),
+                                     en hilos en segundo plano
+  auth-client.{hpp,cpp}            → protocolo de inicio de sesión: vinculación v2, renovación,
+                                     cierre de sesión, el cambio único desde la v0.5.x y las
+                                     reglas de 401/403, con tests
+  token-store.{hpp,cpp}            → el inicio de sesión del plugin, cifrado con la API de
+                                     protección de datos de Windows, con tests
+  api-client.{hpp,cpp}             → peticiones solo a api.trigglow.com, errores, Retry-After y
+                                     las páginas fijas que puede abrir el plugin, con tests
+  json.{hpp,cpp}                   → lector/escritor JSON estricto y acotado, con tests
+  win-http.{hpp,cpp}               → el único camino WinHTTP endurecido (sin redirecciones, TLS
+                                     1.2+, timeouts, tope de tamaño) para toda llamada de red;
+                                     macOS/Linux responden "no disponible" hasta tener cliente HTTP
   i18n.hpp                         → helper Str() (obs_module_text()) — todo el texto visible de
                                      este plugin pasa por aquí; ver data/locale/*.ini
   hotkeys.{hpp,cpp}                → registro de las 3 hotkeys nativas de OBS, conectadas a
@@ -275,6 +335,10 @@ tests/
                                      módulos
   pipeline_stress_tests.cpp        → test de estrés de concurrencia de ring + arena + pipeline de
                                      códec
+  json_tests.cpp · log_redact_tests.cpp · chat_text_tests.cpp · support_diagnostics_tests.cpp ·
+  api_client_tests.cpp · token_store_tests.cpp · auth_client_tests.cpp ·
+  support_client_tests.cpp · trigi_states_tests.cpp → cliente de cuenta, Trigi y tickets, con un
+                                     sustituto de red guionizado (fake-transport.hpp)
 tools/fonts/                       → cómo se generan los subconjuntos de las fuentes empaquetadas
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)

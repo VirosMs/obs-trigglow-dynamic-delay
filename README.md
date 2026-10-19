@@ -57,6 +57,16 @@ manages are renamed from "(no tocar)" to "(auto)": update any Stream Deck or obs
 that uses the old names. (A v0.5.1 hotfix was prepared but never published; it's part of v0.6.0.)
 See `CHANGELOG.md` and `docs/TROUBLESHOOTING.md`.
 
+v0.6.0 also brings **Trigi**, Trigglow's AI support assistant, to "Report a problem" (Windows,
+signed in): ask about Dynamic Delay in the dialog and turn the conversation into a ticket if it
+doesn't sort it out. Your OBS log is never sent to the AI, and the OBS technical data is optional,
+with a preview. **Sign-in is new and safer** (a code to compare on trigglow.com, the plugin's own
+sign-in encrypted for your Windows user, revoked by Sign out), reports go to your account with the
+OBS log redacted and only if you agree, and the plugin's network calls are hardened. **The sign-in
+of v0.5.x and earlier is retired with this version: update to keep using the delay.** In v0.6.0
+sign-in, Trigi and reports from OBS work only on Windows; macOS and Linux get them in v0.6.1. See
+`docs/FAQ.md`.
+
 Before anything else, read `docs/SPEC.md` (full technical specification of how buffer mode
 actually works, and why the obvious "just change OBS's own stream delay live" approach was tried
 and rejected) and `docs/BUILD_VALIDATION.md` (what was actually verified, and what wasn't, in this
@@ -82,6 +92,29 @@ and Linux, where RAM isn't detected yet, a fixed 2 GB). Gameplay compresses abou
 1440p60 take roughly 0.6–0.8 GB (offline simulation). If the seconds you ask for don't fit at your
 minimum quality, fewer seconds are buffered (the dock tells you before you enable it). Compression
 needs FFmpeg, bundled on Windows and Linux; on macOS the buffer is stored uncompressed.
+
+**A free trigglow.com account, on Windows.** `Enable delay` needs you to sign in once from the
+dock (in your browser; the plugin stays 100% free). In v0.6.0 sign-in works only on Windows: macOS
+and Linux don't have the plugin's HTTP client yet (planned for v0.6.1). See
+`docs/ACCOUNT_GATE.md`.
+
+## Network use and privacy
+
+- **On every OBS start**: one check of your sign-in with `api.trigglow.com` (plus a renewal when
+  it's due) and one check of this repository's latest release on `api.github.com`. Nothing else
+  runs in the background.
+- **Only when you use them**: signing in and out, asking Trigi and sending a report, all to
+  `api.trigglow.com`. The plugin opens only its own fixed pages on www.trigglow.com and this
+  repository on GitHub, in your browser.
+- **How**: HTTPS only, redirects never followed, the sign-in sent only to `api.trigglow.com`,
+  stored encrypted for your Windows user, and never written to the OBS log, like the sign-in
+  codes, IDs and what you write to Trigi.
+- **Trigi** receives what you type and, only if you tick it, a small set of OBS technical numbers
+  and states (never names, paths, URLs or keys), shown before you send it. **Your OBS log is never
+  sent to the AI**; it's attached to a ticket only if you leave its box ticked, with your Windows
+  user name, URLs, keys, emails and IPs hidden. Conversations are kept for up to 12 months and
+  can be deleted earlier on trigglow.com. Details in `docs/FAQ.md` and the
+  [Privacy Policy](https://www.trigglow.com/legal/privacy).
 
 ## Build requirements
 
@@ -228,14 +261,38 @@ src/
   overlay-layout.{hpp,cpp}         → pure placement of that overlay on the canvas, unit-tested
   auto-names.{hpp,cpp}             → names of the scene/filters/overlay the plugin manages, and
                                      their migration from the v0.5.x "(no tocar)" names, unit-tested
-  report-bug-dialog.{hpp,cpp}      → "Report a problem" dialog — creates a trigglow.com support
-                                     ticket with the current OBS log attached automatically
-  bug-report.{hpp,cpp}             → locates/copies OBS's current log file (Windows only for now)
+  report-bug-dialog.{hpp,cpp}      → "Report a problem" dialog: Trigi first when available, then
+                                     the ticket form (signed-in or guest), with the redacted OBS
+                                     log only if the user leaves it ticked
+  trigi-page.{hpp,cpp}             → Trigi's page in that dialog: notice, technical data,
+                                     conversation, states and the hand-off to a ticket
+  trigi-widgets.{hpp,cpp}          → the conversation view (never loads anything) and its bubbles
+  trigi-states.{hpp,cpp}           → pure state, button and countdown decisions, unit-tested
+  chat-text.{hpp,cpp}              → pure sanitizer and tiny markup parser for Trigi's answers
+                                     (escaped text, bold, code, lists only), unit-tested
+  support-client.{hpp,cpp}         → Trigi and ticket calls, answers and errors, unit-tested
+  support-service.{hpp,cpp}        → the Qt side of support: background threads, one Trigi
+                                     request at a time, local choices, log lines
+  support-diagnostics.{hpp,cpp}    → the optional OBS technical data (numbers, booleans and
+                                     fixed values only, within 1 KB), unit-tested
+  diagnostics-collector.{hpp,cpp}  → fills that snapshot from OBS and the plugin
+  bug-report.{hpp,cpp}             → finds OBS's current log (Windows only for now), reads and
+                                     redacts it in memory, and deletes old copies in %TEMP%
+  log-redact.{hpp,cpp}             → pure, line-by-line redaction of the OBS log, unit-tested
   update-checker.{hpp,cpp}         → checks this repo's latest GitHub release against the running
                                      version
-  auth-manager.{hpp,cpp}           → the free-account login gate (see `docs/ACCOUNT_GATE.md`)
-  win-http.{hpp,cpp}               → native WinHTTP client (GET/POST JSON/POST multipart) used by
-                                     auth-manager, report-bug-dialog, and update-checker
+  auth-manager.{hpp,cpp}           → the free-account login gate (see `docs/ACCOUNT_GATE.md`),
+                                     on background threads
+  auth-client.{hpp,cpp}            → sign-in protocol: device link v2, renewal, sign-out, the
+                                     one-time v0.5.x exchange, 401/403 rules, unit-tested
+  token-store.{hpp,cpp}            → the plugin's sign-in, encrypted with the Windows data
+                                     protection API, unit-tested
+  api-client.{hpp,cpp}             → requests to api.trigglow.com only, errors, Retry-After and
+                                     the fixed pages the plugin may open, unit-tested
+  json.{hpp,cpp}                   → strict, bounded JSON reader/writer, unit-tested
+  win-http.{hpp,cpp}               → the one hardened WinHTTP path (no redirects, TLS 1.2+,
+                                     timeouts, size cap) for every network call; macOS/Linux
+                                     report "unavailable" until they get an HTTP client
   i18n.hpp                         → Str() helper (obs_module_text()) — every user-facing string
                                      in this plugin goes through it; see data/locale/*.ini
   hotkeys.{hpp,cpp}                → registration of the 3 native OBS hotkeys, wired to
@@ -256,6 +313,10 @@ tests/
   frame_arena_tests.cpp · frame_ring_tests.cpp · degradation_policy_tests.cpp → same, for those
                                      modules
   pipeline_stress_tests.cpp        → concurrency stress test of ring + arena + codec pipeline
+  json_tests.cpp · log_redact_tests.cpp · chat_text_tests.cpp · support_diagnostics_tests.cpp ·
+  api_client_tests.cpp · token_store_tests.cpp · auth_client_tests.cpp ·
+  support_client_tests.cpp · trigi_states_tests.cpp → account, Trigi and ticket client, with
+                                     a scripted network stand-in (fake-transport.hpp)
 tools/fonts/                       → how the bundled font subsets are generated
 docs/
   SPEC.md                  → full technical specification (start here)

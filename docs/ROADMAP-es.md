@@ -93,10 +93,10 @@
   producción) — lo bastante pequeño como para no esperar a las features no relacionadas de abajo.
 
 ## v0.6.0 (entregado — 2026-10-18)
-Rendimiento, adaptación y el aspecto de Trigglow. Se preparó un hotfix de rendimiento v0.5.1 que
-nunca se publicó; todo lo que llevaba sale aquí. Lo primero que se reportó en directo: sobrecarga al
-codificar ("Encoding overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida
-1920x1080 a 60 fps.
+Rendimiento, adaptación y el aspecto de Trigglow, además de Trigi, un inicio de sesión más seguro
+y una revisión de seguridad. Se preparó un hotfix de rendimiento v0.5.1 que nunca se publicó; todo
+lo que llevaba sale aquí. Lo primero que se reportó en directo: sobrecarga al codificar ("Encoding
+overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida 1920x1080 a 60 fps.
 - **Buffer limitado a la resolución de salida de OBS.** El ring se dimensionaba a partir del lienzo,
   así que un lienzo 1440p emitido a 1080p se codificaba/decodificaba en MJPEG a 1440p en el hilo
   gráfico de OBS (14,3/17,4 ms p50/p95 por frame). La calidad mínima pasa a ser un suelo de RAM que
@@ -131,10 +131,31 @@ codificar ("Encoding overloaded") en cuanto se activaba el delay con un lienzo 2
   sistemas, que conserva la posición y el tamaño que le des.
 - **Nombres "(auto)"** para la escena, los filtros y el overlay que gestiona el plugin, migrados
   automáticamente.
-- **Build/CI**: FFmpeg fijado a un build de fin de mes de BtbN, 9 suites de tests unitarios en CI en
+- **Trigi, el asistente de soporte con IA de Trigglow, en "Reportar un problema"** (Windows, con
+  sesión iniciada): aviso de IA y privacidad en el primer uso, datos técnicos de OBS opcionales
+  (solo cifras y estados, con vista previa), el log de OBS nunca va a la IA, cada estado de error con
+  su siguiente paso, render seguro de las respuestas y la conversación convertida en ticket con un
+  resumen.
+- **Inicio de sesión v2**: un código que comparar en la página de trigglow.com con "No he sido yo",
+  un inicio de sesión propio del plugin y con alcance limitado, cifrado con la API de protección de
+  datos de Windows, renovado solo y revocado con Cerrar sesión (o desde las apps conectadas de
+  trigglow.com), y un paso automático y único desde la v0.5.x. El inicio de sesión de la v0.5.x y
+  anteriores se retira con esta versión.
+- **Tickets con la cuenta**, con asunto opcional y un pie con las versiones; el log de OBS redactado
+  en memoria, con vista previa y adjuntado solo con consentimiento; las copias antiguas de `%TEMP%`
+  se borran; los invitados pasan al formulario web cuando trigglow.com pide una comprobación humana.
+- **Endurecimiento**: un único camino WinHTTP (sin redirecciones, TLS 1.2+, timeouts, tope de
+  tamaño, el token solo para api.trigglow.com), solo páginas fijas, sin códigos, URLs ni rutas con
+  el usuario en el log de OBS, el aviso de actualización limitado a las releases de este repo, sin
+  rutas de compilación en la DLL.
+- **Build/CI**: FFmpeg fijado a un build de fin de mes de BtbN, 18 suites de tests unitarios en CI en
   todas las plataformas, `Qt6::Svg`.
 
 ## Siguiente (v0.6.x)
+- **v0.6.1: un cliente HTTP en macOS y Linux**, para que el inicio de sesión (y con él Activar
+  delay), Trigi y los reportes desde OBS funcionen también allí, con el inicio de sesión guardado en
+  el llavero o el almacén de secretos del sistema. Hasta entonces, las funciones de cuenta del plugin
+  son solo para Windows.
 - **Deduplicar las capturas por la hora de frame de OBS** (`obs_get_video_frame_time()`) en vez de
   por una celda de reloj por intervalo de frame: exactamente una captura por frame de OBS, sin
   depender de la fase de la celda, para que el jitter del render no meta dos renders en una celda y se

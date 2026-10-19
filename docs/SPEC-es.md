@@ -3,7 +3,7 @@
 # Especificación técnica — Trigglow Dynamic Delay para OBS
 
 Estado: **MVP / v0.6.0 — Early Access**
-Última actualización: 2026-10-18 (v0.6.0: §3.1–§3.7, §4–§4.7, §8; reescrita desde cero el
+Última actualización: 2026-10-19 (v0.6.0: §3.1–§3.8, §4–§4.7, §8; reescrita desde cero el
 2026-08-26 — ver §0). Se preparó un hotfix v0.5.1 que nunca se publicó; todo lo que llevaba salió en
 la v0.6.0, así que este documento fecha esos cambios en la v0.6.0.
 Nombre interno del plugin: `obs-trigglow-dynamic-delay`
@@ -541,6 +541,130 @@ actualizarlas, y volver a la v0.5.0 o anterior después del cambio de nombre cre
 "(no tocar)" junto al "(auto)" (la versión antigua desactiva los filtros "(auto)" al cargar, así que
 se quedan inertes).
 
+### 3.8. Cliente de cuenta, Trigi y soporte (v0.6.0)
+
+Esta sección cubre solo la parte del plugin. Cómo responde trigglow.com (sus límites, el propio
+asistente, cuánto tiempo guarda los datos) vive fuera de este repositorio; el plugin solo reacciona a
+las respuestas y códigos de error documentados, y nunca muestra el texto de error del servidor.
+
+**Un único camino de red.** `win-http.*` es el único código que abre conexiones: WinHTTP en Windows;
+en macOS y Linux `Available()` es falso y toda llamada devuelve "no disponible" al instante (allí no
+hay inicio de sesión, Trigi ni reportes hasta la v0.6.1). Cada petición es HTTPS con TLS 1.2 o
+superior, nunca sigue una redirección (un 3xx es un error, así que un token Bearer no puede rebotar a
+otro host), no envía cookies ni el inicio de sesión automático de Windows, tiene timeouts por paso y
+un límite total (una ventana de recepción más larga para las respuestas y los resúmenes de Trigi),
+pone un tope al tamaño de la respuesta, rechaza valores de cabecera que pudieran inyectar líneas y no
+escribe nada en el log por sí mismo. `api-client.*` va encima: peticiones solo a `api.trigglow.com`,
+un `User-Agent` `TrigglowDynamicDelay/<X.Y.Z> (OBS plugin; <windows|macos|linux>)` con la versión
+real, cabeceras JSON, el cuerpo `{ "error": "<código>" }` traducido a estados del plugin,
+`Retry-After` y la lista fija de páginas que el plugin puede abrir (inicio de sesión, soporte,
+privacidad y la página del plugin en www.trigglow.com, este repositorio en GitHub), comprobadas por
+prefijo. Las peticiones que crean algo (una conversación, una pregunta, un resumen, un ticket, un
+adjunto) nunca se reintentan solas. Un build de prueba local solo puede apuntar a otro host con la
+opción de CMake `TRIGGLOW_ALLOW_API_HOST_OVERRIDE`, que CI rechaza.
+
+**Inicio de sesión (vinculación v2; `auth-client.*`, `auth-manager.*`, `token-store.*`).**
+1. El inicio devuelve un código de enlace (va en la URL de la página), un código corto de usuario que
+   se muestra en el dock, un secreto de sondeo que se queda en memoria, la página que hay que abrir,
+   una caducidad y un intervalo de sondeo. Cada valor se comprueba (formato, el prefijo de la página,
+   caducidad e intervalo acotados) antes de abrir nada; si alguno no encaja, el inicio de sesión
+   falla de forma limpia y no se prueba ningún flujo anterior.
+2. La página se abre en el navegador del sistema y el dock muestra el código de usuario. El plugin
+   sondea con el secreto en el cuerpo de la petición al intervalo indicado hasta la caducidad:
+   pendiente, aprobado (el token se entrega una sola vez), denegado ("No he sido yo"), caducado; "más
+   despacio" alarga el intervalo y los errores de red siguen sondeando hasta la caducidad. Cancelar
+   olvida el enlace y el secreto en local.
+3. El token es opaco (el plugin nunca lo interpreta) y solo sirve para las llamadas propias del
+   plugin. En Windows se guarda con `CryptProtectData` para el usuario actual, sin interfaz, aparte de
+   los ajustes del plugin, escrito en un fichero temporal y movido a su sitio. Se guarda el nombre
+   visible; el email, no. Si no se puede descifrar, se borra y el plugin queda sin sesión.
+4. En cada carga: una comprobación de la cuenta, y una renovación antes de cualquier otra llamada con
+   sesión cuando toca (el token nuevo se guarda antes de usarlo). `401 token_rotated` vuelve a leer el
+   token guardado o renueva, y reintenta una vez; cualquier otro 401 termina la sesión (se borra el
+   almacenamiento; Trigi conserva el texto que se estaba escribiendo); `403 suspended` o
+   `account_inactive` conserva el token pero bloquea Enable; los errores de red, los 5xx o un servidor
+   antiguo mantienen la sesión, y Enable funciona sin conexión. La caducidad local nunca bloquea
+   Enable: decide el servidor cuando responde.
+5. Cerrar sesión envía la revocación en segundo plano con un timeout corto y borra el almacenamiento
+   local sea cual sea el resultado.
+6. Migración desde la v0.5.x: cuando solo existe el inicio de sesión antiguo en texto plano, se cambia
+   una vez por un token del plugin; si sale bien, el fichero antiguo se sobrescribe con ceros y se
+   borra; un 401 lo borra y termina la sesión; los errores de red, los 5xx, un servidor antiguo o un
+   límite lo conservan para el siguiente arranque (Enable sigue funcionando mientras tanto, pero Trigi
+   y los tickets con sesión no usan el inicio de sesión antiguo).
+
+Ni el dock ni el log muestran nunca el enlace, los códigos, el secreto ni el token.
+
+**Trigi (`support-client.*`, `support-service.*`, `trigi-page.*`, `trigi-states.*`).**
+- Solo se muestra en Windows, con sesión, cuando la comprobación de la cuenta dice que Trigi está
+  disponible y la versión del plugin es al menos la mínima que indica (comparación numérica
+  `X.Y.Z`). Si no, el diálogo se abre en el formulario de ticket; sin sesión ofrece "Inicia sesión
+  para preguntar a Trigi".
+- El aviso del primer uso (versión 1) hay que aceptarlo antes de la primera pregunta. La versión
+  aceptada se guarda en local, y una versión mayor vuelve a mostrar el aviso.
+- La conversación se crea de forma perezosa, con la primera pregunta; abrir el diálogo no hace
+  ninguna llamada a Trigi. Su cuerpo de creación lleva exactamente el idioma, el cliente
+  (`obs_dynamic_delay`, versión, SO), la versión del aviso y, solo si la casilla está marcada, los
+  datos técnicos. El ID de la conversación solo vive en memoria.
+- Como mucho hay una petición de Trigi en vuelo; un contador de generación descarta las respuestas de
+  una conversación anterior o de un diálogo cerrado. Las llamadas van en hilos en segundo plano y
+  vuelven al hilo de UI a través de un puntero vigilado; nada se ejecuta en el hilo gráfico de OBS.
+- Tres formas de respuesta: una respuesta (texto más una acción opcional), un rechazo o "no
+  disponible". Una acción hacia un ticket de Dynamic Delay o hacia una persona se convierte en "Crear
+  ticket con esta conversación"; un ticket de cualquier otra categoría, en "Abrir soporte en
+  trigglow.com". Los eventos de valoración, "resuelta", "abandonada" (se envía en segundo plano al
+  cerrar un diálogo con preguntas y sin ticket) y paso a una persona no esperan respuesta.
+- Los errores se traducen en estados de la página (`trigi-states.*`, probado sin Qt): sin conexión y
+  "ha tardado demasiado" con reintento manual, error del servidor, límite (Enviar desactivado durante
+  la cuenta atrás de `Retry-After`), sesión terminada, conversación cerrada (una nueva con la
+  siguiente pregunta), Trigi apagado (se abre el formulario con el texto), versión demasiado antigua
+  (el formulario más "Descargar la actualización"), cuenta no activa. Una pregunta que no llegó se
+  marca como "No enviado".
+- **Datos técnicos v1** (`support-diagnostics.*`, `diagnostics-collector.*`): opcionales,
+  desmarcados por defecto y recordados en local, con vista previa del JSON exacto. Solo números,
+  booleanos y valores fijos (versiones, arquitectura, renderizador, fabricante de la GPU a partir del
+  ID numérico del adaptador, RAM total, familia del codificador, estado y ajustes del delay,
+  lienzo/salida, fps, contadores de retraso de OBS, salud del pipeline, hasta 5 códigos de problemas
+  recientes), cada número acotado a su rango y con 2 decimales como mucho, 1 KB como máximo. El tipo
+  no tiene ningún campo que pueda guardar un nombre, una ruta, una URL, una clave, un usuario, el
+  nombre de la GPU, un ID de hardware ni una IP. La instantánea se toma en el hilo de UI sin esperar al
+  hilo gráfico y se envía una vez, al crear la conversación. Un campo o código nuevo implica la
+  versión 2, que solo se envía si el servidor dice que la acepta.
+- **Render** (`chat-text.*`, sin Qt, con tests): quita los caracteres de control salvo el salto de
+  línea, los de dirección bidi, los emojis y pictogramas y el UTF-8 inválido; recorta a 4.000
+  caracteres; parte el texto en líneas (párrafo, viñeta `- `, paso `N. `) y segmentos (texto,
+  `**negrita**`, `` `código` ``); los encabezados y las vallas de código se quedan como texto. La
+  página construye el texto enriquecido solo con segmentos escapados, `<b>` y `<span class="code">`
+  (`trigi-widgets.*`), nunca con formatos de texto automáticos ni Markdown, nunca con enlaces
+  externos, y su documento nunca carga un recurso. Las URLs de una respuesta se quedan como texto.
+
+**Tickets y el log de OBS (`report-bug-dialog.*`, `bug-report.*`, `log-redact.*`).**
+- Con sesión: un ticket de la categoría `dynamic_delay` con asunto, mensaje (que termina en un pie
+  visible y editable con las versiones del plugin, de OBS y del SO) y, tras una conversación, un
+  enlace a ella. Solo se lee el ID del ticket, que ni se muestra ni se escribe en el log. Después, si
+  la casilla está marcada, el log va como una sola parte `text/plain` llamada `obs-log.txt`; si eso
+  falla, el ticket ya existe y el diálogo ofrece "Guardar log".
+- Invitado: el diálogo pregunta primero si trigglow.com exige una comprobación humana a los
+  invitados; si la exige (o se rechaza un ticket de invitado por ese motivo), no muestra el
+  formulario de invitado sino "inicia sesión o usa el formulario web", sin reintentar. El adjunto de
+  invitado envía su clave de acceso en una cabecera, nunca en la URL, y después el ticket se abre en
+  el navegador.
+- El log: el log actual de OBS (que solo se localiza en Windows) se lee y se redacta en memoria,
+  línea a línea, con escáneres lineales en vez de `std::regex`: URLs de stream, URLs web (se conserva
+  el host), nombres de usuario en rutas de Windows/macOS/Linux, enlaces de overlay, emails, secretos
+  con clave y valores Bearer, direcciones IPv4/IPv6 y tokens largos con letras y dígitos; las marcas
+  de tiempo, las versiones y los atajos se mantienen. Si pasa de 4,5 MB después de redactar, se
+  quedan los primeros 256 KB, una marca y el final. La vista previa muestra las primeras y las últimas
+  200 líneas. Ya no se escribe ninguna copia, y las que dejaron versiones anteriores en
+  `%TEMP%\Trigglow` se borran al cargar.
+
+**Qué llega al log de OBS.** `[auth-manager]` signed in, signed out, session ended, token renewed,
+migrated legacy login; `[trigi]` session started, message sent (longitud, datos técnicos sí o no),
+reply (código HTTP, longitud, acción), refused, unavailable, rate limited, errores HTTP por código;
+`[support]` ticket created (con o sin el log). Nunca el token, el enlace, los códigos ni el secreto,
+IDs de conversaciones o de tickets, la clave de acceso de un ticket, el texto de las preguntas o las
+respuestas, los datos técnicos, un email o un nombre, ni rutas absolutas.
+
 ## 4. v0.3.0: compresión real MJPEG del ring de RAM
 
 La aritmética del presupuesto de RAM del §3.5 anterior sigue asumiendo un ring sin comprimir para el
@@ -1028,6 +1152,25 @@ overlay-badge.*               → §3.6 -- pinta el overlay del directo como un 
 overlay-layout.*              → §3.6 -- colocación pura del overlay en el lienzo
 auto-names.*                  → §3.7 -- nombres de los objetos gestionados y su migración
 hardware-info.*               → consulta de la RAM total del sistema (sustituye a la antigua consulta VRAM/DXGI)
+win-http.* / api-client.*     → §3.8 -- el único camino HTTPS endurecido y el cliente de
+                                api.trigglow.com (Windows; "no disponible" en macOS/Linux hasta la
+                                v0.6.1)
+json.*                        → §3.8 -- lector/escritor JSON estricto y acotado
+auth-manager.* / auth-client.* → §3.8 -- inicio de sesión (vinculación v2), renovación, cierre de
+                                sesión, cambio desde la v0.5.x, reglas de 401/403; la puerta de
+                                cuenta (docs/ACCOUNT_GATE.md)
+token-store.*                 → §3.8 -- el inicio de sesión del plugin, cifrado con CryptProtectData
+support-client.* / support-service.* → §3.8 -- llamadas de Trigi y de tickets; hilos, una petición
+                                de Trigi a la vez, elecciones locales, líneas de log
+support-diagnostics.* / diagnostics-collector.* → §3.8 -- los datos técnicos v1 opcionales
+chat-text.*                   → §3.8 -- saneado y parser puros de las respuestas de Trigi
+trigi-page.* / trigi-widgets.* / trigi-states.* → §3.8 -- la página de Trigi, su vista segura y
+                                sus decisiones de estado
+report-bug-dialog.*           → §3.8 -- "Reportar un problema": Trigi, tickets con cuenta y de
+                                invitado
+bug-report.* / log-redact.*   → §3.8 -- el log actual de OBS, leído y redactado en memoria
+update-checker.*              → comprobación de la última release de GitHub; solo abre las
+                                releases de este repo
 scene-combo-box.*             → combo box del dock poblado desde obs_frontend_get_scene_names()
 settings-ui.*                 → el dock de Qt (escena en directo/de carga, segundos, calidad, estimación
                                 de ajuste, Enable/Disable, cuenta atrás de llenado en vivo, campos
@@ -1038,10 +1181,13 @@ hotkeys.*                     → registro de las 3 hotkeys nativas de OBS, cone
                                 Enable()/Disable()/Toggle() de BufferModeController
 logging.*                     → envoltorio de logging con prefijo de componente
 delay-controller.*            → §6 -- lógica heredada del modo reconexión, presente pero sin usar
-tests/                        → 9 suites, solo se compilan con -DTRIGGLOW_BUILD_TESTS=ON o por
+tests/                        → 18 suites, solo se compilan con -DTRIGGLOW_BUILD_TESTS=ON o por
                                 separado (cmake -S tests): buffer_fit, encoder_check, ui_tokens,
                                 auto_names, overlay_layout, frame_arena, frame_ring,
-                                degradation_policy, pipeline_stress
+                                degradation_policy, pipeline_stress, json, log_redact, chat_text,
+                                support_diagnostics, api_client, token_store, auth_client,
+                                support_client, trigi_states (las del cliente, con un sustituto de
+                                red guionizado)
 ```
 
 Principio de diseño: **`BufferModeController` es el único dueño del estado**. Tanto el dock como las

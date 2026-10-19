@@ -93,3 +93,28 @@ The dock appears, showing `● Inactive` — you're ready to pick a live scene a
 ("Using the plugin") for what to configure next.
 
 ![Trigglow Dynamic Delay dock, Inactive state](images/obs-panel-3-dock.png)
+
+## 6. Sign in once
+
+`Enable delay` needs a free trigglow.com account, signed in once from the dock (Windows only in
+v0.6.0):
+
+1. Press **Sign in** in the dock. Your browser opens trigglow.com; sign in there, or create a free
+   account.
+2. The dock shows a code ("The page must show the code KD7F-29QM."; yours is different). Check that
+   the page shows the same code and press **Confirm**. If the codes don't match, or you didn't start
+   it, press **It wasn't me**.
+3. The dock says "Signed in as …" a few seconds later. You don't need to sign in again on the next
+   start.
+
+If the browser doesn't open, **Copy link** and paste it into your browser. More in the "Signing in
+from the dock" section of `docs/TROUBLESHOOTING.md`.
+
+## Updating from an earlier version
+
+Install the new version over the old one, the same way (with OBS closed): your scenes, settings and
+hotkeys are kept. **From v0.5.x or earlier, updating is required**: the sign-in of those versions is
+retired with v0.6.0. On the first start your sign-in moves to the new format by itself; if the dock
+asks you to sign in, do it once (step 6). Since v0.6.0 the objects the plugin manages end in
+"(auto)" instead of "(no tocar)": see `CHANGELOG.md` if a Stream Deck or obs-websocket action uses
+them by name.

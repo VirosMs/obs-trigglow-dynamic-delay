@@ -30,7 +30,10 @@ resources directory would otherwise never find out they exist.
    Redirects are never followed, so the plugin's token can't be bounced to another host.
 2. The plugin opens the page in the user's system browser (`QDesktopServices::openUrl`) -- never an
    embedded browser, never a form inside OBS -- and shows the code in the dock. The page shows the
-   same code: confirm only if they match. "It wasn't me" on the page cancels the request.
+   same code, the app's name as trigglow.com knows it (not text taken from the link), its version
+   and system, how long ago the request was made and, when the request seems to come from a
+   different network than the browser's, a warning: confirm only if the codes match. "It wasn't
+   me" on the page cancels the request. "Copy link" in the dock covers a browser that didn't open.
 3. The user logs in (or creates a free account) using trigglow.com's normal login page -- the exact
    same one the web app itself uses (email/password or Kick OAuth). The plugin is never involved in
    that exchange at all.
@@ -40,13 +43,21 @@ resources directory would otherwise never find out they exist.
 5. Once confirmed, the plugin receives its own token. It only works for the plugin's own calls
    (account check, renewal, sign-out, Trigi and the user's own support tickets), it is renewed
    automatically when the server says so, and "Sign out" revokes it on the server as well as
-   deleting it locally.
+   deleting it locally (the local copy goes even without a connection). The user can also revoke it
+   from trigglow.com: Settings -> Active sessions -> Connected apps.
 6. The token is stored encrypted with the Windows data protection API, for the current Windows
-   user only, apart from the plugin's settings. The email is not stored.
+   user only, apart from the plugin's settings. The email is not stored. If it can't be decrypted
+   (another Windows user, a restored profile), it is deleted and the dock goes back to "Sign in".
+   It is never read, attached or mentioned by "Report a problem".
 
 Sign-ins made with version 0.5.x or earlier are exchanged once, silently, for a plugin token on the
 first start of 0.6.0, and the old plain-text sign-in file is overwritten and deleted. Until that
 exchange succeeds (for example while offline) the old sign-in keeps Enable working.
+
+The sign-in of 0.5.x and earlier is retired with 0.6.0: those versions can no longer sign in, and
+the sign-ins they already have stop working after a transition period. Updating is therefore
+required to keep using the delay; on 0.6.0 the dock says "This plugin version can't sign in any
+more. Update the plugin." if trigglow.com ever reports the same for it.
 
 On every OBS start, `AuthManager::Init()` makes one `GET /auth/plugin/me` call to confirm the stored
 token still works (plus a renewal when it is due) -- not a loop, not a background heartbeat. If
@@ -54,8 +65,8 @@ trigglow.com can't be reached, the plugin stays signed in and Enable keeps worki
 says the account is suspended or not active, Enable is blocked and the dock says why. Outside of an
 active `StartLogin()` wait, the plugin makes no other network calls related to this feature.
 
-Sign-in (and with it Enable) works only on Windows today: macOS and Linux get an HTTP client in a
-later version.
+Sign-in (and with it Enable and Trigi) works only on Windows in 0.6.0: macOS and Linux get an HTTP
+client, with the sign-in kept in the system's keychain or secret store, in 0.6.1 (planned).
 
 ## Enforcement point
 

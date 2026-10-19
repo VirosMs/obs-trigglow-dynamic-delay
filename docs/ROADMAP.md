@@ -84,9 +84,10 @@
   unrelated features below.
 
 ## v0.6.0 (shipped — 2026-10-18)
-Performance, adaptivity and the Trigglow look. A v0.5.1 performance hotfix was prepared but never
-published; all of it ships here. Reported live first: "Encoding overloaded" as soon as the delay was
-enabled with a 2560x1440 canvas and a 1920x1080 output at 60 fps.
+Performance, adaptivity and the Trigglow look, plus Trigi, a safer sign-in and a security pass. A
+v0.5.1 performance hotfix was prepared but never published; all of it ships here. Reported live
+first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 canvas and a
+1920x1080 output at 60 fps.
 - **Buffer capped at OBS's output resolution.** The ring was sized from the canvas, so a 1440p
   canvas streamed at 1080p was MJPEG-encoded/decoded at 1440p on OBS's graphics thread
   (14.3/17.4 ms p50/p95 per frame). The minimum quality became a RAM floor that never exceeds the
@@ -117,10 +118,27 @@ enabled with a 2560x1440 canvas and a 1920x1080 output at 60 fps.
   sign-in errors shown, the delay seconds locked while the delay runs. The overlay is one generated
   image, the same on every OS, that keeps the position and size you give it.
 - **"(auto)" names** for the scene, filters and overlay the plugin manages, migrated automatically.
-- **Build/CI**: FFmpeg re-pinned to a BtbN month-end build, 9 unit test suites in CI on every
+- **Trigi, Trigglow's AI support assistant, in "Report a problem"** (Windows, signed in): first-use
+  AI and privacy notice, optional OBS technical data (numbers and states only, with a preview), the
+  OBS log never sent to the AI, every error state with its next step, safe rendering of answers,
+  and the conversation turned into a ticket with a summary.
+- **Sign-in v2**: a code to compare on the trigglow.com page with "It wasn't me", the plugin's own
+  scoped sign-in encrypted with the Windows data protection API, renewed automatically and revoked
+  by Sign out (or from trigglow.com's connected apps), and a one-time automatic move from v0.5.x.
+  The v0.5.x-and-earlier sign-in is retired with this version.
+- **Signed-in tickets** with an optional subject and a version footer; the OBS log redacted in
+  memory, previewed and attached only with consent; old copies in `%TEMP%` deleted; guests sent to
+  the web form when trigglow.com asks for a human check.
+- **Hardening**: one WinHTTP path (no redirects, TLS 1.2+, timeouts, size cap, the token only for
+  api.trigglow.com), fixed pages only, no codes, URLs or user paths in the OBS log, the update notice
+  limited to this repo's releases, no build paths in the DLL.
+- **Build/CI**: FFmpeg re-pinned to a BtbN month-end build, 18 unit test suites in CI on every
   platform, `Qt6::Svg`.
 
 ## Next (v0.6.x)
+- **v0.6.1: an HTTP client on macOS and Linux**, so sign-in (and with it Enable delay), Trigi and
+  reports from OBS work there too, with the sign-in kept in the system's keychain or secret store.
+  Until then the plugin's account features are Windows-only.
 - **Deduplicate captures by OBS's frame time** (`obs_get_video_frame_time()`) instead of a
   wall-clock cell per frame interval: exactly one capture per OBS frame, with no dependence on the
   cell's phase, so render jitter can't put two renders in one cell and lose a real frame.

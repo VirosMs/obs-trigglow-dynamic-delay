@@ -3,7 +3,7 @@
 # Technical specification — Trigglow Dynamic Delay for OBS
 
 Status: **MVP / v0.6.0 — Early Access**
-Last updated: 2026-10-18 (v0.6.0: §3.1–§3.7, §4–§4.7, §8; rewritten from scratch on 2026-08-26 —
+Last updated: 2026-10-19 (v0.6.0: §3.1–§3.8, §4–§4.7, §8; rewritten from scratch on 2026-08-26 —
 see §0). A v0.5.1 hotfix was prepared but never published; everything in it shipped in v0.6.0, so
 this document dates those changes v0.6.0.
 Plugin machine name: `obs-trigglow-dynamic-delay`
@@ -496,6 +496,119 @@ obs-websocket) must be updated, and going back to v0.5.0 or earlier after the re
 "(no tocar)" set next to the "(auto)" one (the older version switches the "(auto)" filters off on
 load, so they stay inert).
 
+### 3.8. Account, Trigi and support client (v0.6.0)
+
+This section covers only the plugin's side. How trigglow.com answers (its limits, the assistant
+itself, how long it keeps data) lives outside this repository; the plugin only reacts to the
+documented answers and error codes, and never shows the server's own error text.
+
+**One network path.** `win-http.*` is the only code that opens connections: WinHTTP on Windows; on
+macOS and Linux `Available()` is false and every call returns "unavailable" at once (no sign-in,
+Trigi or reports there until v0.6.1). Every request is HTTPS with TLS 1.2 or newer, never follows a
+redirect (a 3xx is an error, so a Bearer token can't be bounced to another host), sends no cookies
+and no Windows auto-logon, has per-step timeouts plus an overall deadline (a longer receive window
+for Trigi's answers and summaries), caps the response size, rejects header values that could inject
+lines, and logs nothing by itself. `api-client.*` sits on top: requests only to `api.trigglow.com`,
+a `User-Agent` of `TrigglowDynamicDelay/<X.Y.Z> (OBS plugin; <windows|macos|linux>)` with the real
+version, JSON headers, the `{ "error": "<code>" }` body mapped to plugin states, `Retry-After`, and
+the fixed list of pages the plugin may open (sign-in, support, privacy and plugin pages on
+www.trigglow.com, this repository on GitHub), checked by prefix. Requests that create something
+(a conversation, a question, a summary, a ticket, an attachment) are never retried automatically.
+A local test build can point at another host only with the CMake option
+`TRIGGLOW_ALLOW_API_HOST_OVERRIDE`, which CI refuses.
+
+**Sign-in (device link v2; `auth-client.*`, `auth-manager.*`, `token-store.*`).**
+1. Start returns a link code (it goes in the page's URL), a short user code shown in the dock, a poll
+   secret that stays in memory, the page to open, an expiry and a poll interval. Every value is
+   checked (format, the page's prefix, expiry and interval clamped) before anything is opened; if
+   one doesn't fit, sign-in fails cleanly and no older flow is tried.
+2. The page opens in the system browser and the dock shows the user code. The plugin polls with the
+   secret in the request body at the given interval until the expiry: pending, approved (the token
+   is delivered once), denied ("It wasn't me"), expired; "slow down" lengthens the interval and
+   network errors keep polling until the expiry. Cancel forgets the link and the secret locally.
+3. The token is opaque (the plugin never interprets it) and only works for the plugin's own calls.
+   On Windows it's stored with `CryptProtectData` for the current user, without UI, apart from the
+   plugin's settings, written to a temporary file and moved into place. The display name is kept; the
+   email isn't. If it can't be decrypted it's deleted and the plugin is signed out.
+4. On every load: one account check, and a renewal before any other signed-in call when it's due
+   (the new token is stored before it's used). `401 token_rotated` re-reads the stored token or
+   renews, then retries once; any other 401 ends the session (storage deleted; Trigi keeps the text
+   being typed); `403 suspended` or `account_inactive` keeps the token but blocks Enable; network
+   errors, 5xx or an older server keep the plugin signed in, and Enable works offline. The local
+   expiry never blocks Enable: the server decides when it answers.
+5. Sign out sends the revocation in the background with a short timeout and deletes the local
+   storage whatever the result.
+6. v0.5.x migration: when only the old plain-text sign-in exists, it's exchanged once for a plugin
+   token; on success the old file is overwritten with zeros and deleted; a 401 deletes it and ends
+   the session; network errors, 5xx, an older server or a rate limit keep it for the next start (Enable
+   keeps working meanwhile, but Trigi and signed-in tickets don't use the old sign-in).
+
+The dock and the log never show the link, the codes, the secret or the token.
+
+**Trigi (`support-client.*`, `support-service.*`, `trigi-page.*`, `trigi-states.*`).**
+- Shown only on Windows, signed in, when the account check says Trigi is available and the plugin's
+  version is at least the minimum it reports (numeric `X.Y.Z` comparison). Otherwise the dialog opens
+  on the ticket form; signed out it offers "Sign in to ask Trigi".
+- The first-use notice (version 1) has to be accepted before the first question. The accepted
+  version is stored locally, and a higher version shows the notice again.
+- The conversation is created lazily, with the first question; opening the dialog makes no Trigi
+  call. Its creation body carries exactly the locale, the client (`obs_dynamic_delay`, version, OS),
+  the notice version and, only if the box is ticked, the technical data. The conversation ID lives in
+  memory only.
+- At most one Trigi request is in flight; a generation counter drops answers that belong to an
+  earlier conversation or a closed dialog. Calls run on background threads and come back to the UI
+  thread through a guarded pointer; nothing runs on OBS's graphics thread.
+- Three answer shapes: an answer (text plus an optional action), a refusal, or "unavailable". An
+  action to a Dynamic Delay ticket or to a person becomes "Create a ticket with this conversation";
+  a ticket in any other category becomes "Open support on trigglow.com". Feedback, "resolved",
+  "abandoned" (sent in the background when a dialog with questions and no ticket closes) and
+  hand-off events are fire-and-forget.
+- Errors map to page states (`trigi-states.*`, tested without Qt): no connection and "took too long"
+  with a manual retry, server error, rate limit (Send off for the `Retry-After` countdown), session
+  ended, conversation closed (a new one on the next question), Trigi turned off (the form opens with
+  the text), too old a version (the form plus "Get the update"), inactive account. A question that
+  didn't go through is marked "Not sent".
+- **Technical data v1** (`support-diagnostics.*`, `diagnostics-collector.*`): opt-in, unticked by
+  default and remembered locally, previewed as the exact JSON. Only numbers, booleans and fixed
+  values (versions, architecture, renderer, GPU vendor from the adapter's numeric vendor ID, total
+  RAM, encoder family, the delay's state and settings, canvas/output, fps, OBS's lag counters,
+  pipeline health, up to 5 recent problem codes), every number clamped to its range with at most 2
+  decimals, at most 1 KB. The type has no field that could hold a name, path, URL, key, user, GPU
+  name, hardware ID or IP. The snapshot is taken on the UI thread without waiting on the graphics
+  thread and sent once, when the conversation is created. A new field or code means version 2, sent
+  only if the server says it accepts it.
+- **Rendering** (`chat-text.*`, no Qt, tested): strips control characters except the newline, bidi
+  controls, emoji and pictographs and invalid UTF-8; trims to 4,000 characters; splits the text into
+  lines (paragraph, `- ` bullet, `N. ` step) and segments (text, `**bold**`, `` `code` ``); headings
+  and code fences stay text. The page builds rich text only from escaped segments with `<b>` and
+  `<span class="code">` (`trigi-widgets.*`), never with automatic or Markdown text formats, never
+  with external links, and its document never loads a resource. URLs in an answer stay plain text.
+
+**Tickets and the OBS log (`report-bug-dialog.*`, `bug-report.*`, `log-redact.*`).**
+- Signed in: a ticket in category `dynamic_delay` with subject, message (ending in a visible,
+  editable footer with the plugin, OBS and OS versions) and, after a conversation, a link to it. Only
+  the ticket's ID is read, and it's neither shown nor logged. Then, if the box is ticked, the log goes
+  as one `text/plain` part named `obs-log.txt`; if that fails, the ticket already exists and the
+  dialog offers "Save log".
+- Guest: the dialog first asks whether trigglow.com requires a human check for guests; if it does
+  (or a guest ticket is refused for that reason), it doesn't show the guest form but "sign in or use
+  the web form", without retrying. The guest attachment sends its access key in a header, never in
+  the URL, and the ticket then opens in the browser.
+- The log: OBS's current log (located on Windows only) is read and redacted in memory, line by line,
+  with linear scanners instead of `std::regex`: stream URLs, web URLs (host kept), user names in
+  Windows/macOS/Linux paths, overlay links, emails, keyed secrets and Bearer values, IPv4/IPv6
+  addresses and long tokens with letters and digits; timestamps, versions and hotkeys survive. Above
+  4.5 MB after redaction it keeps the first 256 KB, a marker and the end. The preview shows the
+  first and last 200 lines. No copy is written any more, and copies older versions left in
+  `%TEMP%\Trigglow` are deleted at load.
+
+**What the OBS log gets.** `[auth-manager]` signed in, signed out, session ended, token renewed,
+migrated legacy login; `[trigi]` session started, message sent (length, technical data on or off),
+reply (HTTP code, length, action), refused, unavailable, rate limited, HTTP errors by code;
+`[support]` ticket created (with or without the log). Never the token, the link, codes or secret,
+conversation or ticket IDs, a ticket's access key, the text of questions or answers, the technical
+data, an email or a name, or absolute paths.
+
 ## 4. v0.3.0: real MJPEG compression of the RAM ring
 
 §3.5's RAM budget math above still assumes an uncompressed ring for §3's core mechanism — that was
@@ -943,6 +1056,21 @@ overlay-badge.*               → §3.6 -- paints the live overlay as one PNG (Q
 overlay-layout.*              → §3.6 -- pure placement of the overlay on the canvas
 auto-names.*                  → §3.7 -- names of the managed objects and their migration
 hardware-info.*               → total system RAM query (replaces the earlier VRAM/DXGI query)
+win-http.* / api-client.*     → §3.8 -- the one hardened HTTPS path and the api.trigglow.com client
+                                (Windows; "unavailable" on macOS/Linux until v0.6.1)
+json.*                        → §3.8 -- strict, bounded JSON reader/writer
+auth-manager.* / auth-client.* → §3.8 -- sign-in (device link v2), renewal, sign-out, v0.5.x
+                                exchange, 401/403 rules; the account gate (docs/ACCOUNT_GATE.md)
+token-store.*                 → §3.8 -- the plugin's sign-in, encrypted with CryptProtectData
+support-client.* / support-service.* → §3.8 -- Trigi and ticket calls; threads, one Trigi
+                                request at a time, local choices, log lines
+support-diagnostics.* / diagnostics-collector.* → §3.8 -- the opt-in technical data v1
+chat-text.*                   → §3.8 -- pure sanitizer and parser of Trigi's answers
+trigi-page.* / trigi-widgets.* / trigi-states.* → §3.8 -- Trigi's page, its safe view and its
+                                state decisions
+report-bug-dialog.*           → §3.8 -- "Report a problem": Trigi, signed-in and guest tickets
+bug-report.* / log-redact.*   → §3.8 -- OBS's current log, read and redacted in memory
+update-checker.*              → latest GitHub release check; opens only this repo's releases
 scene-combo-box.*             → dock combo box populated from obs_frontend_get_scene_names()
 settings-ui.*                 → the Qt dock (live/loading scene, seconds, quality, fit estimate,
                                 Enable/Disable, live fill countdown, locked fields, degradation
@@ -953,10 +1081,12 @@ hotkeys.*                     → registration of the 3 native OBS hotkeys, wire
                                 BufferModeController's Enable()/Disable()/Toggle()
 logging.*                     → logging wrapper with a component prefix
 delay-controller.*            → §6 -- legacy reconnect-mode logic, present but unused
-tests/                        → 9 suites, built only with -DTRIGGLOW_BUILD_TESTS=ON or on their own
+tests/                        → 18 suites, built only with -DTRIGGLOW_BUILD_TESTS=ON or on their own
                                 (cmake -S tests): buffer_fit, encoder_check, ui_tokens, auto_names,
                                 overlay_layout, frame_arena, frame_ring, degradation_policy,
-                                pipeline_stress
+                                pipeline_stress, json, log_redact, chat_text, support_diagnostics,
+                                api_client, token_store, auth_client, support_client, trigi_states
+                                (the client ones with a scripted network stand-in)
 ```
 
 Design principle: **`BufferModeController` is the only owner of state**. The dock and the hotkeys both
