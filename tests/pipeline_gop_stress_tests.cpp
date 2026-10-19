@@ -38,6 +38,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // freed on the graphics thread. Timing checks (looser with TRIGGLOW_STRESS_CI=1,
 // like pipeline_stress_tests): the p99.9 of the graphics thread's calls into
 // the pipeline, and how many due frames are shown exactly in a steady run.
+//
+// What a run must have exercised (frames in flight, chain breaks and orphan
+// drops, adoptions, hard errors, setup failures, restarts on a P-frame) never
+// depends on how fast the machine is: the fake encoders hold frames in flight
+// by count, not only by time (latencyFrames), the chaos scenario loses keys on
+// purpose (loseKeyEvery), and the hardware scenarios walk through a scripted
+// prologue before their chaos (Prologue).
 
 #include "check.hpp"
 #include "codec-pipeline.hpp"
@@ -132,7 +139,8 @@ struct Scenario {
 	uint32_t fixedGop = 0;         // 0: 2-8 per encoder.
 	bool injectFailures = true;    // Failed and Busy sends.
 	bool tightArenas = true;       // Some rings' arenas too small: packets lost after their encode.
-	bool expectLosses = false;     // The run must have exercised chain breaks and orphan drops.
+	bool expectLosses = false;     // The run must have exercised chain breaks and orphan drops...
+	uint32_t loseKeyEvery = 0;     // ...which this makes sure of: every this many keys lost after its encode.
 	bool checkExact = false;       // Timing check on the exact frame shown (steady runs).
 	// v0.7.0 hardware path: the inter encoder comes from a setup thread
 	// (0-300 ms, sometimes none, probing on that thread and handing the encoder
@@ -142,6 +150,37 @@ struct Scenario {
 	bool hardware = false;
 	bool expectHardwareFaults = false; // Long enough for setups that fail and encoders that break.
 };
+
+// The hardware scenarios open with a scripted prologue, chaos off, that walks
+// through what their checks need to have seen, each step waiting for the
+// pipeline to report the last one done: however slow the machine, every run
+// has exercised them (the chaos that follows may or may not repeat them).
+enum class Prologue {
+	Adopt,        // An encoder from the setup thread adopted, its frames decoded.
+	Restart,      // The decoder switched (software decode on/off) and restarted on a P-frame.
+	Break,        // The adopted encoder breaks: a hard error, intra from then on.
+	SetupFailure, // Inter again: a setup that finds no encoder.
+	Done,
+};
+
+const char *PrologueName(Prologue p)
+{
+	switch (p) {
+	case Prologue::Adopt:
+		return "adopt";
+	case Prologue::Restart:
+		return "restart on a P-frame";
+	case Prologue::Break:
+		return "hard error";
+	case Prologue::SetupFailure:
+		return "setup failure";
+	case Prologue::Done:
+		return "done";
+	}
+	return "?";
+}
+
+constexpr uint64_t kPrologueLimitNs = 30000000000ULL; // A prologue still not done by then: a failure.
 
 // A ring of slots for the delay; tight: its arena only fits ~3/4 of the packets.
 std::shared_ptr<FrameRing> MakeRing(const Scenario &s, uint64_t captureIntervalNs, bool tight)
@@ -260,6 +299,7 @@ RunStats RunScenario(const Scenario &s)
 	std::atomic<uint32_t> opened{0};
 	std::atomic<uint32_t> setups{0};
 	std::atomic<uint32_t> setupFailures{0};
+	std::atomic<bool> failSetups{false}; // The prologue's setup failure.
 	auto control = std::make_shared<storage::InterControl>();
 
 	CodecPipeline::Options options;
@@ -274,7 +314,7 @@ RunStats RunScenario(const Scenario &s)
 			const uint32_t n = setups++;
 			std::mt19937 local(n + 77);
 			std::this_thread::sleep_for(std::chrono::milliseconds(local() % 200));
-			if (n % 4 == 3) {
+			if (failSetups.load() || n % 4 == 3) {
 				++setupFailures;
 				return {}; // No encoder works for this size.
 			}
@@ -283,6 +323,7 @@ RunStats RunScenario(const Scenario &s)
 			o.codec = storage::CodecId::Hevc;
 			o.gop = 4 + n % 9;
 			o.latencyNs = static_cast<uint64_t>(n % 3) * s.periodNs;
+			o.latencyFrames = 1 + n % 2; // AMF-like: frames in flight however slowly they come.
 			o.fillerBytes = 380;
 			o.seed = n + 1000;
 			o.clockNs = &NowNs;
@@ -338,9 +379,15 @@ RunStats RunScenario(const Scenario &s)
 		o.inter = !s.hardware && (!s.mixIntra || n % 3 != 2); // The hardware path's bridge is intra.
 		o.codec = o.inter ? storage::CodecId::Hevc : storage::CodecId::Mjpeg;
 		o.gop = s.fixedGop ? s.fixedGop : 2 + (n * 5) % 7;
-		const uint32_t latency = s.fixedLatency ? s.maxLatencyFrames : (n * 3) % (s.maxLatencyFrames + 1);
+		// The first encoder holds a frame (n = 0: latency 1 when it can).
+		const uint32_t latency = s.fixedLatency ? s.maxLatencyFrames : (n * 3 + 1) % (s.maxLatencyFrames + 1);
 		o.latencyNs = static_cast<uint64_t>(latency) * s.periodNs;
 		o.busyAbove = s.injectFailures && n % 4 == 1 ? 2 : 0;
+		// Frames in flight however slowly they come (not only for latencyNs),
+		// fewer than a Busy encoder's limit: its queue always drains.
+		if (o.inter)
+			o.latencyFrames = o.busyAbove > 0 ? std::min(latency, o.busyAbove - 1) : latency;
+		o.loseKeyEvery = s.loseKeyEvery;
 		o.failOneIn = s.injectFailures ? 150 : 0;
 		o.fillerBytes = 380;
 		o.seed = n + 1;
@@ -385,7 +432,12 @@ RunStats RunScenario(const Scenario &s)
 	ChainBook book;
 	uint64_t lastShown = 0, lastDue = 0, lastCell = 0, nextInspect = 0, nextStats = 0;
 	const uint64_t start = NowNs();
-	const uint64_t end = start + static_cast<uint64_t>(s.seconds) * 1000000000ULL;
+	const uint64_t runNs = static_cast<uint64_t>(s.seconds) * 1000000000ULL;
+	// The hardware scenarios' prologue first (chaos off), then `seconds` of chaos.
+	Prologue prologue = s.hardware ? Prologue::Adopt : Prologue::Done;
+	uint64_t end = s.hardware ? start + kPrologueLimitNs : start + runNs;
+	uint64_t prologueNs = 0, nextPrologueStep = 0, adoptedNs = 0, lastDecodeSwitch = 0;
+	bool softwareDecode = false;
 	uint64_t nextTick = start;
 	while (NowNs() < end) {
 		const uint64_t now = NowNs();
@@ -465,8 +517,61 @@ RunStats RunScenario(const Scenario &s)
 			Accumulate(stats.total, w);
 		}
 
+		// --- the hardware scenarios' prologue: one step at a time ---
+		if (prologue != Prologue::Done && now >= nextPrologueStep) {
+			nextPrologueStep = now + 20000000;
+			CodecPipeline::WindowStats w;
+			pipeline->TakeWindowStats(w);
+			Accumulate(stats.total, w);
+			const CodecPipeline::CodecStatus st = pipeline->GetCodecStatus();
+			switch (prologue) {
+			case Prologue::Adopt:
+				// Adopted, and long enough ago that its frames are being decoded.
+				if (st.adoptions > 0 && adoptedNs == 0)
+					adoptedNs = now;
+				if (adoptedNs != 0 && now >= adoptedNs + s.delayNs + 100000000ULL)
+					prologue = Prologue::Restart;
+				break;
+			case Prologue::Restart:
+				// Each switch drops the decoder's references: it restarts on
+				// the next frame, a P-frame more often than not.
+				if (stats.total.catchUps + stats.total.noKeyWaits > 0) {
+					if (softwareDecode)
+						timed([&] { pipeline->SetSoftwareDecode(false); });
+					softwareDecode = false;
+					prologue = Prologue::Break;
+				} else if (now >= lastDecodeSwitch + 60000000ULL) {
+					lastDecodeSwitch = now;
+					softwareDecode = !softwareDecode;
+					timed([&] { pipeline->SetSoftwareDecode(softwareDecode); });
+				}
+				break;
+			case Prologue::Break:
+				counters.breakHandoverEncoders = st.hardErrors == 0;
+				if (st.hardErrors > 0)
+					prologue = Prologue::SetupFailure;
+				break;
+			case Prologue::SetupFailure:
+				if (setupFailures.load() > 0) {
+					failSetups = false;
+					// Inter again, the size that failed included.
+					timed([&] { pipeline->SetStorageTarget(true); });
+					prologue = Prologue::Done;
+					prologueNs = now - start;
+					end = now + runNs;
+				} else if (!failSetups.load()) {
+					failSetups = true;
+					// Lifts the hard error's block: a setup, which fails.
+					timed([&] { pipeline->SetStorageTarget(true); });
+				}
+				break;
+			case Prologue::Done:
+				break;
+			}
+		}
+
 		// --- chaos ---
-		if (s.chaos) {
+		if (s.chaos && prologue == Prologue::Done) {
 			if (chance(400)) {
 				// Disable/Enable or a hard resize: a whole new ring (sometimes with
 				// an arena too small for it).
@@ -566,19 +671,21 @@ RunStats RunScenario(const Scenario &s)
 		    static_cast<unsigned long long>(book.snapshots), static_cast<unsigned long long>(book.readyInter),
 		    static_cast<double>(p999) / 1e6, static_cast<double>(maxCall) / 1e6);
 	if (s.hardware)
-		std::printf("    inter: setups %u (failed %u), adoptions %llu, hard errors %llu, codec changes %llu, "
-			    "bridge frames %llu, inter keys %llu (forced %llu), catch-ups %llu (%llu frames, max %.1f "
-			    "ms), no-key waits %llu\n",
-			    setups.load(), setupFailures.load(), static_cast<unsigned long long>(status.adoptions),
-			    static_cast<unsigned long long>(status.hardErrors),
-			    static_cast<unsigned long long>(stats.total.codecChanges),
-			    static_cast<unsigned long long>(stats.total.bridgeFrames),
-			    static_cast<unsigned long long>(stats.total.interKeys),
-			    static_cast<unsigned long long>(stats.total.forcedKeys),
-			    static_cast<unsigned long long>(stats.total.catchUps),
-			    static_cast<unsigned long long>(stats.total.catchUpFrames),
-			    static_cast<double>(stats.total.catchUpMaxNs) / 1e6,
-			    static_cast<unsigned long long>(stats.total.noKeyWaits));
+		std::printf(
+			"    inter: prologue %s in %.2f s, setups %u (failed %u), adoptions %llu, hard errors %llu, "
+			"codec changes %llu, bridge frames %llu, inter keys %llu (forced %llu), catch-ups %llu (%llu "
+			"frames, max %.1f ms), no-key waits %llu\n",
+			PrologueName(prologue), static_cast<double>(prologueNs) / 1e9, setups.load(),
+			setupFailures.load(), static_cast<unsigned long long>(status.adoptions),
+			static_cast<unsigned long long>(status.hardErrors),
+			static_cast<unsigned long long>(stats.total.codecChanges),
+			static_cast<unsigned long long>(stats.total.bridgeFrames),
+			static_cast<unsigned long long>(stats.total.interKeys),
+			static_cast<unsigned long long>(stats.total.forcedKeys),
+			static_cast<unsigned long long>(stats.total.catchUps),
+			static_cast<unsigned long long>(stats.total.catchUpFrames),
+			static_cast<double>(stats.total.catchUpMaxNs) / 1e6,
+			static_cast<unsigned long long>(stats.total.noKeyWaits));
 
 	// Correctness: always strict.
 	CHECK_EQ(counters.corruptDecodes.load(), 0u); // I2: never a P-frame without its reference.
@@ -590,6 +697,7 @@ RunStats RunScenario(const Scenario &s)
 	CHECK_EQ(book.chainsNotOnKey, 0u);
 	CHECK_EQ(stats.total.encoderResets, 0u); // Packets always came back in Send() order.
 	if (s.hardware) {
+		CHECK(prologue == Prologue::Done);                  // Each step below seen at least once.
 		CHECK(status.adoptions > 0);                        // The setup thread's encoders were used...
 		CHECK(stats.total.bridgeFrames > 0);                // ...with the intra codec bridging meanwhile...
 		CHECK(stats.total.codecChanges > status.adoptions); // ...and retired again.
@@ -673,6 +781,7 @@ int main(int argc, char **argv)
 	chaos.name = "chaos, inter + intra, one context";
 	chaos.seconds = 5 * scale;
 	chaos.expectLosses = true;
+	chaos.loseKeyEvery = 6;
 	RunScenario(chaos);
 
 	Scenario two;

@@ -69,6 +69,9 @@ struct Counters {
 	// Every hardware decoder fails from its next decode on and says it's
 	// broken (a lost device); software ones go on.
 	std::atomic<bool> breakHardwareDecoders{false};
+	// Every encoder opened with `handover` (a setup thread's) breaks at its
+	// next Send(): Broken(), every Send() fails from then on.
+	std::atomic<bool> breakHandoverEncoders{false};
 };
 
 struct EncoderOptions {
@@ -86,6 +89,10 @@ struct EncoderOptions {
 	bool handover = false;
 	uint32_t breakAfter = 0; // After this many sends: Broken(), every Send() fails (0: never).
 	uint32_t stallAfter = 0; // After this many sends: no packet comes out any more (0: never).
+	// Every this many keys, the key's packet comes out empty (0: never): lost
+	// after its encode, so the P-frames after it that are already in flight
+	// (latencyFrames > 0) have no reference.
+	uint32_t loseKeyEvery = 0;
 	std::function<uint64_t()> clockNs;
 	Counters *counters = nullptr;
 };
@@ -162,7 +169,8 @@ public:
 		ThreadGuard::Scope scope(guard_, options_.counters);
 		if (broken_)
 			return storage::SendResult::Failed;
-		if (options_.breakAfter > 0 && sends_ >= options_.breakAfter) {
+		if ((options_.breakAfter > 0 && sends_ >= options_.breakAfter) ||
+		    (options_.handover && options_.counters && options_.counters->breakHandoverEncoders.load())) {
 			broken_ = true;
 			return storage::SendResult::Failed;
 		}
@@ -258,6 +266,11 @@ private:
 		out.seq = current_.seq;
 		out.key = current_.key;
 		out.codec = options_.codec;
+		if (options_.inter && current_.key && options_.loseKeyEvery > 0 &&
+		    ++keysOut_ % options_.loseKeyEvery == 0) {
+			out.data = nullptr; // Lost after its encode.
+			out.bytes = 0;
+		}
 	}
 
 	storage::EncoderConfig config_;
@@ -270,6 +283,7 @@ private:
 	uint64_t lastStamp_ = 0;
 	bool haveRef_ = false;
 	uint32_t sends_ = 0;
+	uint32_t keysOut_ = 0;
 	bool broken_ = false;
 };
 
