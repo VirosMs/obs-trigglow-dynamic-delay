@@ -6,6 +6,15 @@ project(${_name} VERSION ${_version})
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
+option(TRIGGLOW_BUILD_TESTS "Build the standalone unit tests (no libobs needed, run with ctest)" OFF)
+
+# Local test builds only: the plugin reads its API host from the TRIGGLOW_API_HOST
+# environment variable (a bare hostname, still HTTPS only). Never on in a published
+# build: a CI build with it ON stops here.
+option(TRIGGLOW_ALLOW_API_HOST_OVERRIDE "Test builds only: API host from the TRIGGLOW_API_HOST variable" OFF)
+if(TRIGGLOW_ALLOW_API_HOST_OVERRIDE AND DEFINED ENV{CI})
+  message(FATAL_ERROR "TRIGGLOW_ALLOW_API_HOST_OVERRIDE is for local test builds only")
+endif()
 
 include(compilerconfig)
 include(defaults)
@@ -54,6 +63,7 @@ if(OS_WINDOWS)
     PRIVATE "${_ffmpeg_root}/lib/avcodec.lib" "${_ffmpeg_root}/lib/avutil.lib"
   )
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_FFMPEG)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/mjpeg-codec.cpp src/mjpeg-codec.hpp)
 
   # Same DESTINATION set_target_properties_plugin() (cmake/windows/helpers.cmake)
   # uses for the plugin binary itself -- these need to land right next to it,
@@ -85,7 +95,12 @@ elseif(OS_LINUX)
   pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE PkgConfig::FFMPEG)
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_FFMPEG)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/mjpeg-codec.cpp src/mjpeg-codec.hpp)
 endif()
+
+# v0.6.0: the MJPEG encode/decode runs on worker threads (src/codec-pipeline.*).
+find_package(Threads REQUIRED)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Threads::Threads)
 
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
@@ -93,8 +108,11 @@ if(ENABLE_FRONTEND_API)
 endif()
 
 if(ENABLE_QT)
-  find_package(Qt6 COMPONENTS Widgets Core)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+  # Qt6::Svg: QSvgRenderer recolors the dock's SVG icons at runtime
+  # (src/ui-theme.cpp). OBS itself loads Qt6Svg for its themes' icons, and
+  # obs-deps (Windows/macOS) and the Ubuntu build deps (libqt6svg6-dev) ship it.
+  find_package(Qt6 COMPONENTS Widgets Core Svg)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets Qt6::Svg)
 
   if(OS_WINDOWS)
     # AuthManager's HTTPS calls (see docs/ACCOUNT_GATE.md, src/auth-manager.hpp,
@@ -108,7 +126,10 @@ if(ENABLE_QT)
     # anyway just gets silently rejected ("No functional TLS backend was
     # found") rather than working. WinHTTP has no such dependency: TLS is
     # handled by the OS itself.
-    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp)
+    # crypt32: the sign-in is stored with the Windows data protection API
+    # (CryptProtectData, src/token-store.cpp). dxgi: the GPU's PCI vendor ID for
+    # Trigi's opt-in technical data (src/diagnostics-collector.cpp).
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE winhttp crypt32 dxgi)
   endif()
 
   target_compile_options(
@@ -137,6 +158,21 @@ target_sources(
     src/logging.hpp
     src/video-delay-filter.cpp
     src/video-delay-filter.hpp
+    src/buffer-fit.cpp
+    src/buffer-fit.hpp
+    src/codec-pipeline.cpp
+    src/codec-pipeline.hpp
+    src/degradation-policy.cpp
+    src/degradation-policy.hpp
+    src/frame-arena.cpp
+    src/frame-arena.hpp
+    src/frame-ring.cpp
+    src/frame-ring.hpp
+    src/perf-stats.cpp
+    src/perf-stats.hpp
+    src/pipeline-health.hpp
+    src/encoder-check.cpp
+    src/encoder-check.hpp
     src/audio-delay-filter.cpp
     src/audio-delay-filter.hpp
     src/hardware-info.cpp
@@ -147,17 +183,81 @@ target_sources(
     src/buffer-mode-controller.hpp
     src/auth-manager.cpp
     src/auth-manager.hpp
+    src/cancel-token.cpp
+    src/cancel-token.hpp
+    src/background-tasks.cpp
+    src/background-tasks.hpp
+    src/ui-tasks.cpp
+    src/ui-tasks.hpp
     src/win-http.cpp
     src/win-http.hpp
+    src/json.cpp
+    src/json.hpp
+    src/log-redact.cpp
+    src/log-redact.hpp
+    src/chat-text.cpp
+    src/chat-text.hpp
+    src/support-diagnostics.cpp
+    src/support-diagnostics.hpp
+    src/diagnostics-collector.cpp
+    src/diagnostics-collector.hpp
+    src/support-client.cpp
+    src/support-client.hpp
+    src/support-service.cpp
+    src/support-service.hpp
+    src/api-client.cpp
+    src/api-client.hpp
+    src/token-store.cpp
+    src/token-store.hpp
+    src/auth-client.cpp
+    src/auth-client.hpp
     src/bug-report.cpp
     src/bug-report.hpp
     src/report-bug-dialog.cpp
     src/report-bug-dialog.hpp
+    src/trigi-page.cpp
+    src/trigi-page.hpp
+    src/trigi-states.cpp
+    src/trigi-states.hpp
+    src/trigi-widgets.cpp
+    src/trigi-widgets.hpp
     src/update-checker.cpp
     src/update-checker.hpp
     src/i18n.hpp
+    src/auto-names.cpp
+    src/auto-names.hpp
+    src/overlay-layout.cpp
+    src/overlay-layout.hpp
+    src/overlay-badge.cpp
+    src/overlay-badge.hpp
+    src/ui-tokens.cpp
+    src/ui-tokens.hpp
+    src/ui-theme.cpp
+    src/ui-theme.hpp
+    src/resources/trigglow-ui.qrc
 )
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
+if(TRIGGLOW_ALLOW_API_HOST_OVERRIDE)
+  message(WARNING "Test build: the API host can be changed with TRIGGLOW_API_HOST. Never publish this build.")
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_ALLOW_API_HOST_OVERRIDE)
+endif()
+
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+# Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
+# src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*,
+# src/frame-arena.*, src/frame-ring.*, src/degradation-policy.*, the background
+# jobs' lifecycle, the account, Trigi and ticket client) and a stress test of
+# src/codec-pipeline.*. Off by
+# default so plugin packaging is unchanged:
+#   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
+#   cmake --build <dir> --config RelWithDebInfo
+#   ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
+# The target itself lives in tests/CMakeLists.txt, which also configures on
+# its own (no OBS deps) for CI's unit-tests job.
+if(TRIGGLOW_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

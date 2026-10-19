@@ -1,0 +1,54 @@
+<!DOCTYPE RCC>
+<!--
+  Compiled into the plugin (AUTORCC) and read through ":/trigglow/...":
+  - icons/: stroke icons from the Trigglow web app's icon set plus a few more
+    in its style, all Lucide paths (ISC, see data/licenses/LICENSE-lucide.txt).
+    "currentColor" is replaced at runtime by ui-theme.cpp; check-ink/check-light
+    are the check box's fixed-color checks and chevron-{up,down}-{ink,light,muted}
+    the spin box's arrows (QSS url() can't tint, so each color is a file).
+  - overlay/: the Dynamic Delay mark painted into the live overlay badge
+    (overlay-badge.cpp), the website's Dynamic Delay icon without its
+    background.
+  The brand fonts are NOT here: they are files in data/fonts (with their OFL
+  licenses next to them), loaded by ui-theme.cpp's LoadBrandFonts().
+-->
+<RCC version="1.0">
+  <qresource prefix="/trigglow">
+    <file>icons/alert-triangle.svg</file>
+    <file>icons/arrow-left.svg</file>
+    <file>icons/bolt.svg</file>
+    <file>icons/check.svg</file>
+    <file>icons/check-ink.svg</file>
+    <file>icons/check-light.svg</file>
+    <file>icons/chevron-down-ink.svg</file>
+    <file>icons/chevron-down-light.svg</file>
+    <file>icons/chevron-down-muted.svg</file>
+    <file>icons/chevron-up-ink.svg</file>
+    <file>icons/chevron-up-light.svg</file>
+    <file>icons/chevron-up-muted.svg</file>
+    <file>icons/circle.svg</file>
+    <file>icons/clock.svg</file>
+    <file>icons/copy.svg</file>
+    <file>icons/download.svg</file>
+    <file>icons/external-link.svg</file>
+    <file>icons/eye.svg</file>
+    <file>icons/flag.svg</file>
+    <file>icons/info.svg</file>
+    <file>icons/loader.svg</file>
+    <file>icons/lock.svg</file>
+    <file>icons/log-in.svg</file>
+    <file>icons/message-circle.svg</file>
+    <file>icons/paperclip.svg</file>
+    <file>icons/refresh.svg</file>
+    <file>icons/send.svg</file>
+    <file>icons/shield.svg</file>
+    <file>icons/sliders.svg</file>
+    <file>icons/thumbs-down.svg</file>
+    <file>icons/thumbs-up.svg</file>
+    <file>icons/ticket.svg</file>
+    <file>icons/user.svg</file>
+    <file>icons/wifi-off.svg</file>
+    <file>icons/x.svg</file>
+    <file>overlay/dynamic-delay-mark.png</file>
+  </qresource>
+</RCC>

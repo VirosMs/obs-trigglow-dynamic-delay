@@ -80,3 +80,30 @@ relevant additions from these releases.
      Sends the name/email/message they typed plus the current OBS log file as an attachment.
      **Who:** whoever writes the forum submission text — fold this into the same disclosure
      paragraph as the account-gate network use above rather than treating it separately.
+
+- **v0.6.0 changes the network disclosure — update the listing text with all of this:**
+  1. **Sign-in is new (device link v2)** and still happens only in the user's browser on
+     trigglow.com: the dock shows a code that the page must match. The plugin then keeps its own
+     scoped token, encrypted with the Windows data protection API (never the password or the
+     email), and "Sign out" revokes it on the server. On every OBS start the plugin makes one
+     sign-in check to `api.trigglow.com` (plus a renewal when it's due) — the only automatic
+     calls besides the GitHub update check. **The v0.5.x-and-earlier sign-in is retired**, so the
+     listing should tell existing users to update.
+  2. **Trigi, Trigglow's AI support assistant**, in "Report a problem" (Windows, signed in): only
+     when the user opens the dialog, accepts the first-use AI and privacy notice and sends a
+     question. It sends what the user types and, only if they tick it, a small set of OBS technical
+     numbers and states (previewed first). The OBS log is never sent to the AI. Link the
+     [Privacy Policy](https://www.trigglow.com/legal/privacy), which lists the AI provider and the
+     retention (up to 12 months, deletable earlier).
+  3. **Reports**: signed-in tickets go to the user's account; the OBS log is attached only if the
+     user ticks its box, which starts unticked and can only be ticked after seeing the log in the
+     preview. It is redacted on the user's machine first (user names in paths, URLs, keys, emails,
+     IPs); names of scenes, sources, audio devices and windows can remain, and the dialog says so.
+     Only the log of the OBS the plugin runs in is ever attached. No copy is left in `%TEMP%` any
+     more.
+  4. **Hardening worth stating**: HTTPS only, redirects never followed, the token only sent to
+     `api.trigglow.com`, the plugin only opens its own fixed pages, nothing sensitive in the OBS log.
+  5. **macOS/Linux**: no HTTP client in v0.6.0, so no sign-in (and no Enable), Trigi or reports from
+     the plugin there; planned for v0.6.1. Say so plainly next to the platform list.
+     **Who:** whoever writes or updates the forum listing for v0.6.0. Don't name the AI provider or
+     any server-side limit in the listing: link the Privacy Policy instead.

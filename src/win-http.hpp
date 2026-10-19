@@ -18,10 +18,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
-// Minimal synchronous HTTPS client for AuthManager's account-gate calls, built on WinHTTP
-// (native Windows API, TLS via the OS's own Schannel) instead of Qt's QNetworkAccessManager.
+#include "cancel-token.hpp"
+
+// Minimal synchronous HTTPS client for the plugin's few network calls (the
+// Trigglow account, Trigi and support tickets through api-client.hpp, and the
+// GitHub update check), built on WinHTTP (native Windows API, TLS via the OS's
+// own Schannel) instead of Qt's QNetworkAccessManager.
 //
 // Why not Qt: QNetworkAccessManager's TLS backend on Windows loads as a Qt plugin
 // (qschannelbackend.dll) whose ABI is tied EXACTLY to the Qt minor.patch version that built it
@@ -35,36 +41,97 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // re-vendoring) it on every OBS Qt bump -- WinHTTP sidesteps the whole problem: it's a stable
 // Win32 API, TLS is handled by the OS, and it has zero dependency on whatever Qt version happens
 // to be loaded in the host process.
-namespace trigglow {
+//
+// Rules every request follows (no per-call opt-out):
+//   - HTTPS on port 443 only, TLS 1.2 or later.
+//   - Redirects are NEVER followed: a 3xx comes back as the response itself,
+//     so a request carrying "Authorization: Bearer" can't be bounced to
+//     another host. Callers treat a 3xx as an error.
+//   - No cookies, no automatic Windows sign-in (NTLM/Kerberos) to any host.
+//   - Timeouts (WinHttpSetTimeouts) from Request::timeouts, plus an overall
+//     deadline for the whole call (Timeouts::totalMs). Error::Timeout means
+//     the server was reached but didn't answer in time (or the deadline
+//     passed); resolving the name or connecting for too long is
+//     Error::Connect.
+//   - Cancellable: when Request::cancel is cancelled, a call blocked on the
+//     network (DNS, connecting, waiting up to 90 s for Trigi's answer,
+//     uploading the log) is aborted at once and returns Error::Cancelled.
+//     WinHTTP runs in its asynchronous mode for this; Send() itself still
+//     blocks the calling thread, and returns only once WinHTTP is done with
+//     the request (no callback of it can arrive afterwards).
+//   - The response body is capped (Request::maxResponseBytes): past it the
+//     read stops and the call fails with Error::TooLarge.
+//   - Header values with CR or LF are refused (no header injection).
+//   - Nothing here is logged: not the URL, headers, tokens nor bodies.
+//
+// macOS and Linux have no HTTP client yet (planned for a later version): there
+// Available() is false and Send() returns Error::Unavailable at once, so the
+// account, Trigi and ticket features degrade cleanly instead of failing to
+// build.
+namespace trigglow::http {
 
-struct HttpResult {
-	bool ok = false;    // false only for a transport-level failure (DNS, connect, TLS handshake).
-	int statusCode = 0; // HTTP status code, valid whenever ok is true, regardless of 2xx/4xx/5xx.
-	std::string body;
-	std::string error; // Human-readable, set when ok is false.
+// Per-step timeouts (WinHttpSetTimeouts). WinHTTP checks them with a coarse
+// timer: measured on Windows 11, a step's timeout fires at the first multiple
+// of 4 s past it, so a stalled call ends up to about 4 s later than asked.
+struct Timeouts {
+	int resolveMs = 10000;
+	int connectMs = 10000;
+	int sendMs = 15000;
+	int receiveMs = 30000; // Per read; Trigi's answers need up to 90 s.
+	int totalMs = 0;       // Overall deadline for the whole call; 0 = none beyond the above.
 };
 
-// All calls are BLOCKING -- callers must not run them on the UI thread. AuthManager runs each
-// on a short-lived background std::thread and marshals the result back via
-// QMetaObject::invokeMethod(..., Qt::QueuedConnection); ReportBugDialog does the same for the
-// two calls below.
-//
-// host: bare hostname, e.g. "api.trigglow.com" (no scheme, no path). Always connects over
-// HTTPS (port 443). pathAndQuery: e.g. "/auth/plugin/poll?code=...". bearerToken: omit for none.
-HttpResult HttpsGet(const std::wstring &host, const std::wstring &pathAndQuery, const std::wstring &bearerToken = L"");
-HttpResult HttpsPostJson(const std::wstring &host, const std::wstring &pathAndQuery, const std::string &jsonBody,
-			 const std::wstring &bearerToken = L"");
+inline constexpr size_t kDefaultMaxResponseBytes = 256 * 1024;
 
-// Single-file multipart/form-data POST -- used by ReportBugDialog to attach OBS's log to a
-// freshly created support ticket (apps/api/src/routes/support.ts's
-// POST /api/support/public/tickets/:id/attachments in the main streampulse monorepo, which reads
-// the file via Fastify's request.file() -- any form field name works server-side there, but
-// fieldName is kept explicit here rather than hardcoded since a raw multipart body is being
-// built by hand, not through a library that would otherwise fix it for us). bearerToken: omit
-// for none -- that endpoint authorizes via its own ?token=... query param instead, not a header.
-HttpResult HttpsPostMultipartFile(const std::wstring &host, const std::wstring &pathAndQuery,
-				  const std::string &fieldName, const std::string &fileName,
-				  const std::string &fileContentType, const std::string &fileBytes,
-				  const std::wstring &bearerToken = L"");
+struct Header {
+	std::string name;
+	std::string value;
+};
 
-} // namespace trigglow
+struct Request {
+	std::string method = "GET";
+	std::string host; // Bare hostname, e.g. "api.trigglow.com".
+	std::string path; // Path and query, e.g. "/auth/plugin/me". Never put a secret in it.
+	std::string userAgent = "TrigglowDynamicDelay";
+	std::vector<Header> headers;
+	std::string body; // Sent as is (empty = no body).
+	Timeouts timeouts;
+	size_t maxResponseBytes = kDefaultMaxResponseBytes;
+	// Aborts the call when cancelled (background-tasks.hpp gives every job
+	// one). Null: not cancellable. Must outlive the call.
+	const tasks::CancelToken *cancel = nullptr;
+};
+
+enum class Error : unsigned char {
+	None,        // An HTTP response arrived (any status, 3xx included).
+	Unavailable, // No HTTP client on this platform.
+	Invalid,     // The request itself was refused (bad header, empty host).
+	Resolve,     // DNS.
+	Connect,     // TCP connection.
+	Timeout,     // Connected, but no answer in time; or the call's overall deadline passed.
+	Tls,         // Certificate or TLS handshake.
+	TooLarge,    // Response body over Request::maxResponseBytes.
+	Cancelled,   // Request::cancel was cancelled (OBS is closing, or the dialog was).
+	Other,
+};
+
+struct Response {
+	Error error = Error::Other;
+	int status = 0;                // Valid when error == None.
+	std::string body;              // Valid when error == None.
+	std::string retryAfter;        // Raw Retry-After header, empty if absent.
+	unsigned long systemError = 0; // WinHTTP error code (for the log), 0 if none.
+
+	bool Ok() const { return error == Error::None; }
+};
+
+// True where Send() can actually reach the network (Windows today).
+bool Available();
+
+// BLOCKING: never call it on the UI thread or OBS's graphics thread.
+Response Send(const Request &request);
+
+// Short English name of an error, for the log ("timeout", "tls", ...).
+const char *ErrorName(Error error);
+
+} // namespace trigglow::http
