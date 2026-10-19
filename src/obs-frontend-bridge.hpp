@@ -295,6 +295,14 @@ public:
 	// per mix. The main mix's own count the filter reads itself. A mix seen
 	// for the first time only sets its baseline. Takes outputs_mutex.
 	uint64_t TakeMixSkippedFrames() const;
+	// The ceiling OBS's main-canvas encoders put on the buffer
+	// (encodercheck::EncoderCeiling()), 0 x 0 for none.
+	bool SetBufferFilterEncoderCeiling(const std::string &liveSceneName, uint32_t width, uint32_t height) const;
+	// Whether an output without an encoder (virtual camera, NDI, DeckLink) is
+	// active on the main mix: it takes OBS's output as it is. Takes outputs_mutex.
+	bool RawVideoOutputOnMainMix() const;
+	// obs_video_info's canvas (base) and output sizes; false without video.
+	bool MainCanvasGeometry(encodercheck::Size &base, encodercheck::Size &output) const;
 	// Whether a hardware storage codec passed its probe this session (and
 	// isn't blacklisted): the next Enable sizes the ring for the inter class.
 	bool HardwareStorageAvailable() const;

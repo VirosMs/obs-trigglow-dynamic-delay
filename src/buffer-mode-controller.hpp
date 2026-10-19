@@ -323,6 +323,12 @@ private:
 	// v0.7.0 storage codec: OBS's active video encoders, by family, to the
 	// video filter (Enable, and every output start or stop).
 	void PushObsEncoders();
+	// v0.7.0 (design 6.3): the ceiling OBS's main-canvas encoders put on the
+	// buffer, recomputed and pushed at Enable and at every output start or
+	// stop (Enhanced Broadcasting's tracks only exist after Go Live).
+	void PushEncoderCeiling();
+	uint32_t lastCeilingWidth_ = UINT32_MAX; // What was pushed (UINT32_MAX: nothing yet this cycle).
+	uint32_t lastCeilingHeight_ = UINT32_MAX;
 	// The storage class of the cycle running, or (Inactive) of the next one:
 	// inter only with buffer_codec auto, the codec workers, and a hardware
 	// codec that passed its probe this session (the first Enable of a session

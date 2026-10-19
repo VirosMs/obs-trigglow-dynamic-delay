@@ -898,6 +898,54 @@ uint64_t ObsFrontendBridge::TakeMixSkippedFrames() const
 	return skipped;
 }
 
+bool ObsFrontendBridge::SetBufferFilterEncoderCeiling(const std::string &liveSceneName, uint32_t width,
+						      uint32_t height) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter)
+		return false;
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return false;
+	calldata_t cd = {};
+	calldata_set_int(&cd, "width", width);
+	calldata_set_int(&cd, "height", height);
+	const bool ok = proc_handler_call(procHandler, "set_encoder_ceiling", &cd);
+	calldata_free(&cd);
+	return ok;
+}
+
+bool ObsFrontendBridge::RawVideoOutputOnMainMix() const
+{
+	struct Ctx {
+		const video_t *mainVideo;
+		bool found;
+	} ctx{obs_get_video(), false};
+	obs_enum_outputs(
+		[](void *param, obs_output_t *output) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			const uint32_t flags = obs_output_get_flags(output);
+			if (obs_output_active(output) && (flags & OBS_OUTPUT_VIDEO) && !(flags & OBS_OUTPUT_ENCODED) &&
+			    obs_output_video(output) == c->mainVideo) {
+				c->found = true;
+				return false;
+			}
+			return true;
+		},
+		&ctx);
+	return ctx.found;
+}
+
+bool ObsFrontendBridge::MainCanvasGeometry(encodercheck::Size &base, encodercheck::Size &output) const
+{
+	obs_video_info ovi = {};
+	if (!obs_get_video_info(&ovi))
+		return false;
+	base = {ovi.base_width, ovi.base_height};
+	output = {ovi.output_width, ovi.output_height};
+	return true;
+}
+
 bool ObsFrontendBridge::HardwareStorageAvailable() const
 {
 #ifdef TRIGGLOW_HAVE_HW_STORAGE

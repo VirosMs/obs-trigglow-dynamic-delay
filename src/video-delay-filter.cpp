@@ -1102,6 +1102,11 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	policy_ = degradation::Policy(degradation::BuildLadder(fit.bufferWidth, fit.bufferHeight, floorHeight,
 							       allowHalfRate),
 				      std::move(steps), initialStep, runsThreaded);
+	ladderTopWidth_ = fit.bufferWidth;
+	ladderTopHeight_ = fit.bufferHeight;
+	ladderFloorHeight_ = floorHeight;
+	ladderHalfRate_ = allowHalfRate;
+	ApplyEncoderCeiling(true); // The ceiling OBS's encoders put on it (design 6.3), if any.
 	ClearPolicyWindows();
 	nextPolicyEvalNs_ = 0;
 	ApplyCurrentRung();
@@ -1190,6 +1195,62 @@ void VideoDelayFilter::ApplyCurrentRung()
 	}
 }
 
+void VideoDelayFilter::ApplyEncoderCeiling(bool force)
+{
+	const uint64_t serial = ceilingSerial_.load();
+	if (!force && serial == appliedCeilingSerial_)
+		return;
+	appliedCeilingSerial_ = serial;
+	if (!policy_.Valid() || bufferWidth_ == 0 || bufferHeight_ == 0)
+		return;
+	// Only below the ring's own size, and only for the live scene the size of
+	// the canvas (the case the output cap applies to): a soft ceiling.
+	uint32_t topWidth = bufferWidth_;
+	uint32_t topHeight = bufferHeight_;
+	const uint32_t width = ceilingWidth_.load();
+	const uint32_t height = ceilingHeight_.load();
+	const bool canvasSized = lastFitInput_.sourceWidth == mixBaseWidth_ &&
+				 lastFitInput_.sourceHeight == mixBaseHeight_;
+	if (configuredOutputCap_.load() && canvasSized && width > 0 && height > 0 && height < bufferHeight_ &&
+	    width <= bufferWidth_) {
+		topWidth = width;
+		topHeight = height;
+	}
+	if (topWidth == ladderTopWidth_ && topHeight == ladderTopHeight_ && !force)
+		return;
+	const bool changed = topWidth != ladderTopWidth_ || topHeight != ladderTopHeight_;
+	ladderTopWidth_ = topWidth;
+	ladderTopHeight_ = topHeight;
+	if (!changed)
+		return;
+	std::vector<degradation::Rung> ladder =
+		degradation::BuildLadder(topWidth, topHeight, std::min(ladderFloorHeight_, topHeight), ladderHalfRate_);
+	// The same capture size or a smaller one: never up because of the ceiling
+	// unless the buffer was at its top already.
+	size_t rung = 0;
+	if (policy_.RungIndex() > 0) {
+		rung = ladder.size() - 1;
+		for (size_t i = 0; i < ladder.size(); ++i) {
+			if (ladder[i].height <= captureHeight_ && ladder[i].captureDivisor == captureDivisor_) {
+				rung = i;
+				break;
+			}
+		}
+	}
+	policy_.Rebase(std::move(ladder), rung);
+	ApplyCurrentRung();
+	ClearPolicyWindows();
+	++healthChanges_;
+	if (topWidth != bufferWidth_ || topHeight != bufferHeight_)
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "encoder ceiling: capturing at most %ux%u (the largest encoder of the main canvas) "
+				  "instead of %ux%u -- the ring, its RAM limit and the delay are unchanged",
+				  topWidth, topHeight, bufferWidth_, bufferHeight_);
+	else
+		TRIGGLOW_LOG_INFO(kComponent, "encoder ceiling lifted: capturing up to %ux%u again", topWidth,
+				  topHeight);
+}
+
 void VideoDelayFilter::ClearPolicyWindows()
 {
 	renderRecent_.Clear();
@@ -1207,9 +1268,12 @@ void VideoDelayFilter::MaybeEvaluateDegradation(uint64_t nowNs)
 	if (!policy_.Valid() || !pipeline_ || nowNs < nextPolicyEvalNs_)
 		return;
 	nextPolicyEvalNs_ = nowNs + kPolicyEvalIntervalNs;
-	// v0.7.0: the storage codec first; a rung or steps change resets the
-	// degradation policy's windows, so it waits for the next evaluation.
-	if (EvaluateCodecPolicy(nowNs))
+	// v0.7.0: a new ceiling from OBS's encoders, then the storage codec; a
+	// rung or steps change resets the degradation policy's windows, so it
+	// waits for the next evaluation.
+	const uint64_t ladderSerial = healthChanges_;
+	ApplyEncoderCeiling(false);
+	if (EvaluateCodecPolicy(nowNs) || healthChanges_ != ladderSerial)
 		return;
 
 	// OBS's lagged frames since the last evaluation.
@@ -2140,6 +2204,8 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 				 &VideoDelayFilter::SetManagedDelaySecondsProc, filter);
 		proc_handler_add(procHandler, "void set_managed_min_resolution_height(in int height)",
 				 &VideoDelayFilter::SetManagedMinResolutionHeightProc, filter);
+		proc_handler_add(procHandler, "void set_encoder_ceiling(in int width, in int height)",
+				 &VideoDelayFilter::SetEncoderCeilingProc, filter);
 		proc_handler_add(procHandler, "void set_obs_encoders(in ptr encoders)",
 				 &VideoDelayFilter::SetObsEncodersProc, filter);
 		proc_handler_add(procHandler, "void report_encoder_lag(in int skipped)",
@@ -2272,6 +2338,26 @@ void VideoDelayFilter::SetManagedMinResolutionHeightProc(void *data, calldata_t 
 	const long long height = calldata_int(params, "height");
 	static_cast<VideoDelayFilter *>(data)->SetManagedSetting(
 		kSettingMinResolutionHeight, static_cast<uint32_t>(std::clamp<long long>(height, 0, UINT32_MAX)));
+}
+
+void VideoDelayFilter::SetEncoderCeilingProc(void *data, calldata_t *params)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(data);
+	long long width = calldata_int(params, "width");
+	long long height = calldata_int(params, "height");
+	obs_video_info ovi = {};
+	// Never above the canvas, never odd: anything else is no ceiling.
+	if (!obs_get_video_info(&ovi) || width <= 0 || height <= 0 || width > static_cast<long long>(ovi.base_width) ||
+	    height > static_cast<long long>(ovi.base_height) || width % 8 != 0 || height % 2 != 0) {
+		width = 0;
+		height = 0;
+	}
+	if (static_cast<uint32_t>(width) == filter->ceilingWidth_.load() &&
+	    static_cast<uint32_t>(height) == filter->ceilingHeight_.load())
+		return;
+	filter->ceilingWidth_ = static_cast<uint32_t>(width);
+	filter->ceilingHeight_ = static_cast<uint32_t>(height);
+	filter->ceilingSerial_.fetch_add(1);
 }
 
 void VideoDelayFilter::SetObsEncodersProc(void *data, calldata_t *params)

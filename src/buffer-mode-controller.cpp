@@ -243,6 +243,34 @@ void BufferModeController::Enable()
 	yieldPending_ = false;
 	PushObsEncoders();
 	bridge_.TakeMixSkippedFrames();
+	lastCeilingWidth_ = UINT32_MAX;
+	lastCeilingHeight_ = UINT32_MAX;
+	PushEncoderCeiling();
+}
+
+void BufferModeController::PushEncoderCeiling()
+{
+	encodercheck::Size base, output;
+	if (!bridge_.MainCanvasGeometry(base, output))
+		return;
+	std::vector<encodercheck::CeilingEncoder> encoders;
+	for (const ActiveVideoEncoder &encoder : bridge_.ListActiveVideoEncoders())
+		encoders.push_back({encoder.source, encoder.scope, {encoder.width, encoder.height}});
+	const encodercheck::Ceiling ceiling = encodercheck::EncoderCeiling(encoders, base, output, bufferOutputCap_,
+									   bridge_.RawVideoOutputOnMainMix());
+	const uint32_t width = ceiling.applies ? ceiling.size.width : 0;
+	const uint32_t height = ceiling.applies ? ceiling.size.height : 0;
+	if (width == lastCeilingWidth_ && height == lastCeilingHeight_)
+		return;
+	lastCeilingWidth_ = width;
+	lastCeilingHeight_ = height;
+	if (ceiling.applies)
+		TRIGGLOW_LOG_INFO(kComponent, "encoder ceiling %ux%u: %s (output %ux%u, canvas %ux%u)", width, height,
+				  encodercheck::CeilingWhyText(ceiling.why), output.width, output.height, base.width,
+				  base.height);
+	else
+		TRIGGLOW_LOG_INFO(kComponent, "no encoder ceiling: %s", encodercheck::CeilingWhyText(ceiling.why));
+	bridge_.SetBufferFilterEncoderCeiling(status_.liveSceneName, width, height);
 }
 
 bool BufferModeController::NextCycleStorageInter() const
@@ -544,8 +572,10 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 	if (started && yieldPending_ && outputStartedNs_ == 0)
 		outputStartedNs_ = SteadyNowNs();
 	if (busy && (started || stopped || event == FrontendEvent::VirtualcamStarted ||
-		     event == FrontendEvent::VirtualcamStopped))
+		     event == FrontendEvent::VirtualcamStopped)) {
 		PushObsEncoders();
+		PushEncoderCeiling();
+	}
 	// A new output's encoders may encode above the delay buffer. No-op unless
 	// the delay is Filling/Active (see WarnAboutEncodersAboveBuffer).
 	if (started)

@@ -299,6 +299,9 @@ private:
 	storage::EngineShare CurrentEngineShare(const CodecPipeline::CodecStatus &status);
 	void ApplyCurrentRung();
 	void ClearPolicyWindows();
+	// v0.7.0: rebuilds the ladder from the encoders' ceiling when it moved
+	// (or force: a new ring). Graphics thread.
+	void ApplyEncoderCeiling(bool force);
 	// Copies the current state into health_ (under healthMutex_).
 	void PublishHealth(bool running);
 
@@ -400,6 +403,11 @@ private:
 	//     the call waits up to 100 ms for it to be gone;
 	//   "resume_hw_encoder()": that output started (or never will): the
 	//     buffer may set up hardware again.
+	//   "set_encoder_ceiling(in int width, in int height)": the size OBS's
+	//     encoders of the main canvas need at most (encodercheck::EncoderCeiling(),
+	//     design 6.3), 0 x 0 for none: the ladder starts there instead of at
+	//     the ring's size -- a soft ceiling, the ring and the delay unchanged.
+	static void SetEncoderCeilingProc(void *data, calldata_t *params);
 	static void SetObsEncodersProc(void *data, calldata_t *params);
 	static void ReportEncoderLagProc(void *data, calldata_t *params);
 	static void YieldHwEncoderProc(void *data, calldata_t *params);
@@ -503,6 +511,16 @@ private:
 	uint64_t codecChanges_ = 0;
 	// May hold an NVENC session (or be about to): what yield_hw_encoder acts on. Written on G.
 	std::atomic<bool> mayUseNvenc_{false};
+	// The encoders' ceiling (set_encoder_ceiling, UI thread), 0 x 0 = none,
+	// and what G built the ladder from.
+	std::atomic<uint32_t> ceilingWidth_{0};
+	std::atomic<uint32_t> ceilingHeight_{0};
+	std::atomic<uint64_t> ceilingSerial_{0};
+	uint64_t appliedCeilingSerial_ = 0;
+	uint32_t ladderTopWidth_ = 0;
+	uint32_t ladderTopHeight_ = 0;
+	uint32_t ladderFloorHeight_ = 0;
+	bool ladderHalfRate_ = false;
 	// OBS's active video encoders (set_obs_encoders, UI thread).
 	mutable std::mutex obsEncodersMutex_;
 	ObsEncoderSet obsEncoders_;
