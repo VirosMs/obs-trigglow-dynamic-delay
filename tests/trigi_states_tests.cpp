@@ -34,29 +34,29 @@ void TestProblems()
 {
 	testcheck::g_currentTest = "problems";
 	using support::Status;
-	CHECK(trigiui::ProblemFor(Status::Ok, 200, 10) == Problem::None);
+	CHECK(trigiui::ProblemFor(Status::Ok, 200) == Problem::None);
 
-	// Transport errors: "no connection", or "took too long" after a long wait.
-	CHECK(trigiui::ProblemFor(Status::Network, 0, 1200) == Problem::Offline);
-	CHECK(trigiui::ProblemFor(Status::Network, 0, trigiui::kTimeoutAfterMs - 1) == Problem::Offline);
-	CHECK(trigiui::ProblemFor(Status::Network, 0, trigiui::kTimeoutAfterMs) == Problem::Timeout);
-	CHECK(trigiui::ProblemFor(Status::Network, 0, 95000) == Problem::Timeout);
-	// 5xx: the server answered, so never "no connection", however long it took.
-	CHECK(trigiui::ProblemFor(Status::Network, 502, 300) == Problem::ServerBusy);
-	CHECK(trigiui::ProblemFor(Status::Network, 503, 95000) == Problem::ServerBusy);
+	// Transport errors: "no connection", or "took too long" when the client
+	// itself says the answer didn't come in time (never deduced from the
+	// time the call took).
+	CHECK(trigiui::ProblemFor(Status::Network, 0) == Problem::Offline);
+	CHECK(trigiui::ProblemFor(Status::Timeout, 0) == Problem::Timeout);
+	// 5xx: the server answered, so never "no connection".
+	CHECK(trigiui::ProblemFor(Status::Network, 502) == Problem::ServerBusy);
+	CHECK(trigiui::ProblemFor(Status::Network, 503) == Problem::ServerBusy);
 
-	CHECK(trigiui::ProblemFor(Status::RateLimited, 429, 0) == Problem::RateLimited);
-	CHECK(trigiui::ProblemFor(Status::SessionEnded, 401, 0) == Problem::SessionEnded);
-	CHECK(trigiui::ProblemFor(Status::SignedOut, 401, 0) == Problem::SessionEnded);
-	CHECK(trigiui::ProblemFor(Status::ConversationGone, 409, 0) == Problem::ConversationClosed);
-	CHECK(trigiui::ProblemFor(Status::NotFound, 404, 0) == Problem::ConversationClosed);
-	CHECK(trigiui::ProblemFor(Status::Disabled, 403, 0) == Problem::Disabled);
-	CHECK(trigiui::ProblemFor(Status::Outdated, 426, 0) == Problem::Outdated);
-	CHECK(trigiui::ProblemFor(Status::AccountInactive, 403, 0) == Problem::AccountInactive);
-	CHECK(trigiui::ProblemFor(Status::Unavailable, 0, 0) == Problem::Disabled);
+	CHECK(trigiui::ProblemFor(Status::RateLimited, 429) == Problem::RateLimited);
+	CHECK(trigiui::ProblemFor(Status::SessionEnded, 401) == Problem::SessionEnded);
+	CHECK(trigiui::ProblemFor(Status::SignedOut, 401) == Problem::SessionEnded);
+	CHECK(trigiui::ProblemFor(Status::ConversationGone, 409) == Problem::ConversationClosed);
+	CHECK(trigiui::ProblemFor(Status::NotFound, 404) == Problem::ConversationClosed);
+	CHECK(trigiui::ProblemFor(Status::Disabled, 403) == Problem::Disabled);
+	CHECK(trigiui::ProblemFor(Status::Outdated, 426) == Problem::Outdated);
+	CHECK(trigiui::ProblemFor(Status::AccountInactive, 403) == Problem::AccountInactive);
+	CHECK(trigiui::ProblemFor(Status::Unavailable, 0) == Problem::Disabled);
 	for (Status s : {Status::Invalid, Status::ScopeError, Status::BadResponse, Status::CaptchaRequired,
 			 Status::AttachmentRejected, Status::TicketClosed})
-		CHECK(trigiui::ProblemFor(s, 400, 0) == Problem::Generic);
+		CHECK(trigiui::ProblemFor(s, 400) == Problem::Generic);
 
 	// Trigi turned off, too old, or the account not active: the ticket form.
 	// Everything else stays on the page with a banner.

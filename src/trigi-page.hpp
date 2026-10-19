@@ -21,7 +21,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <functional>
 #include <vector>
 
-#include <QElapsedTimer>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
@@ -142,7 +141,7 @@ private:
 	// fromComposer: a new question (its bubble is added and the box cleared);
 	// otherwise "Try again" with `bubble`, the message that didn't go through.
 	void Send(const QString &text, QWidget *bubble, bool fromComposer);
-	void OnReply(const SupportService::AskResult &result, long long elapsedMs);
+	void OnReply(const SupportService::AskResult &result);
 	QWidget *AddUserMessage(const QString &text);
 	QWidget *AddTrigiMessage(const std::vector<chat::Line> &lines, const QString &plain);
 	QWidget *AddTrigiText(const QString &text);
@@ -159,7 +158,7 @@ private:
 	// "Was this helpful?" and the handovers.
 	void OnHelpful(QWidget *row, bool helpful);
 	void StartTicket(bool handoff);
-	void OnSummary(const support::SummaryResult &result, long long elapsedMs);
+	void OnSummary(const support::SummaryResult &result);
 	TicketDraft OwnWordsDraft() const;
 
 	// States (contract A3.9).
@@ -236,10 +235,9 @@ private:
 	std::vector<QPointer<QPushButton>> replyButtons_;
 	QPointer<QWidget> feedbackRow_; // The latest unanswered "Was this helpful?".
 
-	Pending pending_;       // The question in flight.
-	Pending failed_;        // The last question that didn't go through ("Try again").
-	QElapsedTimer elapsed_; // Since the question in flight was sent.
-	QStringList asked_;     // What the user asked in this dialog (the own-words draft).
+	Pending pending_;   // The question in flight.
+	Pending failed_;    // The last question that didn't go through ("Try again").
+	QStringList asked_; // What the user asked in this dialog (the own-words draft).
 	trigiui::Problem problem_ = trigiui::Problem::None;
 	bool summarizing_ = false;
 	bool userMessages_ = false;

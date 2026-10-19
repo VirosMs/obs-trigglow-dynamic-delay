@@ -1109,6 +1109,7 @@ void ReportBugDialog::OnTicketDone(const SupportService::TicketOutcome &outcome)
 			ShowError(T("ReportDialog.ErrorInvalid"));
 			break;
 		case Status::Network:
+		case Status::Timeout:
 		case Status::Unavailable:
 			ShowError(T("ReportDialog.ErrorNetwork"));
 			break;

@@ -23,7 +23,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <windows.h>
 #include <winhttp.h>
 
+#include <atomic>
 #include <chrono>
+#include <vector>
 
 namespace trigglow::http {
 
@@ -105,6 +107,8 @@ Error MapError(DWORD code)
 		return Error::Connect;
 	case ERROR_WINHTTP_TIMEOUT:
 		return Error::Timeout;
+	case ERROR_WINHTTP_OPERATION_CANCELLED:
+		return Error::Cancelled;
 	case ERROR_WINHTTP_SECURE_FAILURE:
 	case ERROR_WINHTTP_SECURE_CERT_DATE_INVALID:
 	case ERROR_WINHTTP_SECURE_CERT_CN_INVALID:
@@ -140,6 +144,177 @@ void SetDwordOption(HINTERNET handle, DWORD option, DWORD value)
 	WinHttpSetOption(handle, option, &value, sizeof(value));
 }
 
+// --- Asynchronous WinHTTP, waited on step by step ----------------------------------
+//
+// WinHTTP's synchronous calls can't be interrupted: a request waiting for an
+// answer stays blocked until the server or a timeout ends it (up to 90 s for
+// Trigi). In asynchronous mode each step completes through StatusCallback(),
+// and Send() waits for that completion OR the cancel event, whichever comes
+// first. To abort, it closes the request handle and waits for
+// HANDLE_CLOSING, WinHTTP's last callback for that handle, so nothing of the
+// call is touched once Send() returns.
+
+constexpr DWORD kChunkBytes = 64 * 1024;
+
+struct AsyncCall {
+	AsyncCall()
+		: step(CreateEventW(nullptr, FALSE, FALSE, nullptr)),
+		  wake(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+		  closed(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+		  chunk(kChunkBytes)
+	{
+	}
+	~AsyncCall()
+	{
+		for (HANDLE h : {step, wake, closed}) {
+			if (h)
+				CloseHandle(h);
+		}
+	}
+	AsyncCall(const AsyncCall &) = delete;
+	AsyncCall &operator=(const AsyncCall &) = delete;
+	bool Valid() const { return step && wake && closed; }
+
+	HANDLE step;   // Auto-reset: the step started last completed or failed.
+	HANDLE wake;   // Manual-reset: the call was cancelled.
+	HANDLE closed; // Manual-reset: WinHTTP is done with the request handle.
+	// Written by the callback before it sets `step`, read after that wait.
+	DWORD status = 0;
+	DWORD error = 0;
+	DWORD bytes = 0;
+	// The TCP connection to the server was made: a timeout after this means
+	// "no answer in time", before it "no connection".
+	std::atomic<bool> connected{false};
+	std::vector<char> chunk; // WinHttpReadData()'s buffer.
+};
+
+void CALLBACK StatusCallback(HINTERNET, DWORD_PTR context, DWORD status, LPVOID info, DWORD infoLength)
+{
+	AsyncCall *call = reinterpret_cast<AsyncCall *>(context);
+	if (!call)
+		return;
+	switch (status) {
+	case WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE:
+	case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE:
+	case WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE:
+	case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
+		call->status = status;
+		call->error = 0;
+		if (status == WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE)
+			call->bytes = info ? *static_cast<const DWORD *>(info) : 0;
+		else if (status == WINHTTP_CALLBACK_STATUS_READ_COMPLETE)
+			call->bytes = infoLength;
+		else
+			call->bytes = 0;
+		SetEvent(call->step);
+		break;
+	case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR: {
+		const auto *result = static_cast<const WINHTTP_ASYNC_RESULT *>(info);
+		call->status = status;
+		call->error = result ? result->dwError : static_cast<DWORD>(ERROR_WINHTTP_INTERNAL_ERROR);
+		call->bytes = 0;
+		SetEvent(call->step);
+		break;
+	}
+	case WINHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER:
+		call->connected.store(true, std::memory_order_release);
+		break;
+	case WINHTTP_CALLBACK_STATUS_HANDLE_CLOSING:
+		// The last callback for this handle: Send() may free `call` as soon
+		// as this is set, so nothing touches it afterwards.
+		SetEvent(call->closed);
+		break;
+	default:
+		break;
+	}
+}
+
+// Owns the request handle. Once the status callback is installed, closing it
+// waits for HANDLE_CLOSING (a few milliseconds, also when a step is being
+// aborted): until then WinHTTP may still use the AsyncCall, its buffer, the
+// headers and the request body.
+class RequestHandle {
+public:
+	RequestHandle(HINTERNET h, AsyncCall &call) : h_(h), call_(call) {}
+	~RequestHandle()
+	{
+		if (!h_)
+			return;
+		WinHttpCloseHandle(h_);
+		if (callbackInstalled_)
+			WaitForSingleObject(call_.closed, INFINITE);
+	}
+	RequestHandle(const RequestHandle &) = delete;
+	RequestHandle &operator=(const RequestHandle &) = delete;
+	HINTERNET get() const { return h_; }
+	void CallbackInstalled() { callbackInstalled_ = true; }
+
+private:
+	HINTERNET h_;
+	AsyncCall &call_;
+	bool callbackInstalled_ = false;
+};
+
+// The call's overall deadline (Timeouts::totalMs), if it has one.
+class Deadline {
+public:
+	Deadline(std::chrono::steady_clock::time_point start, int totalMs)
+		: active_(totalMs > 0),
+		  at_(start + std::chrono::milliseconds(totalMs > 0 ? totalMs : 0))
+	{
+	}
+	DWORD RemainingMs() const
+	{
+		if (!active_)
+			return INFINITE;
+		const auto left =
+			std::chrono::duration_cast<std::chrono::milliseconds>(at_ - std::chrono::steady_clock::now());
+		return left.count() > 0 ? static_cast<DWORD>(left.count()) : 0;
+	}
+
+private:
+	bool active_;
+	std::chrono::steady_clock::time_point at_;
+};
+
+enum class Step : unsigned char { Done, Failed, Cancelled, Deadline };
+
+// Waits for the step started last to complete with `expected`. A cancel wins
+// over a completion that arrives at the same moment.
+Step WaitStep(AsyncCall &call, DWORD expected, const Deadline &deadline)
+{
+	const HANDLE handles[2] = {call.wake, call.step};
+	const DWORD r = WaitForMultipleObjects(2, handles, FALSE, deadline.RemainingMs());
+	if (r == WAIT_OBJECT_0)
+		return Step::Cancelled;
+	if (r == WAIT_TIMEOUT)
+		return Step::Deadline;
+	if (r != WAIT_OBJECT_0 + 1) {
+		call.error = GetLastError();
+		return Step::Failed;
+	}
+	if (call.status != expected) {
+		if (call.status != WINHTTP_CALLBACK_STATUS_REQUEST_ERROR)
+			call.error = 0; // Out of order: not expected to happen; "other".
+		return Step::Failed;
+	}
+	return Step::Done;
+}
+
+Response StepFailure(Step step, const AsyncCall &call)
+{
+	if (step == Step::Cancelled)
+		return Fail(Error::Cancelled);
+	if (step == Step::Deadline)
+		return Fail(Error::Timeout);
+	Error error = MapError(call.error);
+	// WinHTTP reports a name resolution or connection that took too long as
+	// a timeout too; for the caller that is "no connection".
+	if (error == Error::Timeout && !call.connected.load(std::memory_order_acquire))
+		error = Error::Connect;
+	return Fail(error, call.error);
+}
+
 } // namespace
 
 bool Available()
@@ -159,15 +334,24 @@ Response Send(const Request &req)
 		if (!IsValidHeaderName(h.name) || HasLineBreakOrNul(h.value))
 			return Fail(Error::Invalid);
 	}
+	if (req.cancel && req.cancel->IsCancelled())
+		return Fail(Error::Cancelled);
+
+	AsyncCall call;
+	if (!call.Valid())
+		return FailLast();
+	// Cancelling only sets an event; the wait for the current step sees it.
+	const tasks::CancelSubscription onCancel(req.cancel, [wake = call.wake] { SetEvent(wake); });
+	const Deadline deadline(start, req.timeouts.totalMs);
 
 	const std::wstring agent = Widen(req.userAgent);
 	// The system's proxy configuration (WPAD/PAC included), falling back to
 	// the static WinHTTP proxy settings on systems without it.
 	Handle session(WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
-				   WINHTTP_NO_PROXY_BYPASS, 0));
+				   WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
 	if (!session.get())
 		session.reset(WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
-					  WINHTTP_NO_PROXY_BYPASS, 0));
+					  WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
 	if (!session.get())
 		return FailLast();
 
@@ -201,10 +385,18 @@ Response Send(const Request &req)
 	if (!connection.get())
 		return FailLast();
 
+	// Declared before the request handle: WinHTTP may still read them while
+	// a step is being aborted, until the handle is gone (as `call` and
+	// req.body).
 	const std::wstring method = Widen(req.method);
 	const std::wstring path = Widen(req.path);
-	Handle request(WinHttpOpenRequest(connection.get(), method.c_str(), path.c_str(), nullptr, WINHTTP_NO_REFERER,
-					  WINHTTP_DEFAULT_ACCEPT_TYPES, openFlags));
+	std::wstring headers;
+	for (const Header &h : req.headers)
+		headers += Widen(h.name) + L": " + Widen(h.value) + L"\r\n";
+
+	RequestHandle request(WinHttpOpenRequest(connection.get(), method.c_str(), path.c_str(), nullptr,
+						 WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, openFlags),
+			      call);
 	if (!request.get())
 		return FailLast();
 
@@ -219,9 +411,16 @@ Response Send(const Request &req)
 	SetDwordOption(request.get(), WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT,
 		       static_cast<DWORD>(req.timeouts.receiveMs));
 
-	std::wstring headers;
-	for (const Header &h : req.headers)
-		headers += Widen(h.name) + L": " + Widen(h.value) + L"\r\n";
+	DWORD_PTR context = reinterpret_cast<DWORD_PTR>(&call);
+	if (!WinHttpSetOption(request.get(), WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context)))
+		return FailLast();
+	if (WinHttpSetStatusCallback(request.get(), StatusCallback,
+				     WINHTTP_CALLBACK_FLAG_ALL_COMPLETIONS | WINHTTP_CALLBACK_FLAG_HANDLES |
+					     WINHTTP_CALLBACK_FLAG_CONNECT_TO_SERVER,
+				     0) == WINHTTP_INVALID_STATUS_CALLBACK)
+		return FailLast();
+	request.CallbackInstalled();
+
 	LPCWSTR headersPtr = headers.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headers.c_str();
 	const DWORD headersLen = headers.empty() ? 0 : static_cast<DWORD>(headers.size());
 
@@ -230,10 +429,16 @@ Response Send(const Request &req)
 	if (!req.body.empty())
 		bodyPtr = const_cast<char *>(req.body.data());
 
-	if (!WinHttpSendRequest(request.get(), headersPtr, headersLen, bodyPtr, bodyLen, bodyLen, 0))
+	if (!WinHttpSendRequest(request.get(), headersPtr, headersLen, bodyPtr, bodyLen, bodyLen, context))
 		return FailLast();
+	Step step = WaitStep(call, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, deadline);
+	if (step != Step::Done)
+		return StepFailure(step, call);
 	if (!WinHttpReceiveResponse(request.get(), nullptr))
 		return FailLast();
+	step = WaitStep(call, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, deadline);
+	if (step != Step::Done)
+		return StepFailure(step, call);
 
 	Response result;
 	DWORD statusCode = 0;
@@ -253,23 +458,26 @@ Response Send(const Request &req)
 		}
 	}
 
-	const auto deadline = start + std::chrono::milliseconds(req.timeouts.totalMs);
 	for (;;) {
-		if (req.timeouts.totalMs > 0 && Clock::now() > deadline)
-			return Fail(Error::Timeout);
-		DWORD available = 0;
-		if (!WinHttpQueryDataAvailable(request.get(), &available))
+		if (!WinHttpQueryDataAvailable(request.get(), nullptr))
 			return FailLast();
+		step = WaitStep(call, WINHTTP_CALLBACK_STATUS_DATA_AVAILABLE, deadline);
+		if (step != Step::Done)
+			return StepFailure(step, call);
+		const DWORD available = call.bytes;
 		if (available == 0)
 			break;
 		if (result.body.size() + available > req.maxResponseBytes)
 			return Fail(Error::TooLarge);
-		const size_t offset = result.body.size();
-		result.body.resize(offset + available);
-		DWORD read = 0;
-		if (!WinHttpReadData(request.get(), result.body.data() + offset, available, &read))
+		const DWORD want = available < kChunkBytes ? available : kChunkBytes;
+		if (!WinHttpReadData(request.get(), call.chunk.data(), want, nullptr))
 			return FailLast();
-		result.body.resize(offset + read);
+		step = WaitStep(call, WINHTTP_CALLBACK_STATUS_READ_COMPLETE, deadline);
+		if (step != Step::Done)
+			return StepFailure(step, call);
+		if (call.bytes == 0)
+			break;
+		result.body.append(call.chunk.data(), call.bytes < want ? call.bytes : want);
 	}
 
 	result.error = Error::None;
@@ -319,6 +527,8 @@ const char *ErrorName(Error error)
 		return "tls";
 	case Error::TooLarge:
 		return "response too large";
+	case Error::Cancelled:
+		return "cancelled";
 	default:
 		return "other";
 	}

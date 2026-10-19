@@ -238,6 +238,45 @@ void TestAsk()
 	}
 }
 
+// A call that got no answer in time comes back as Status::Timeout (what the
+// Trigi page shows as "took too long"), not as "no connection"; other
+// transport failures, a cancelled call included, stay Network.
+void TestTimeouts()
+{
+	testcheck::g_currentTest = "timeouts";
+	using http::Error;
+	{
+		Fixture f;
+		f.transport.Push(testsupport::TransportError(Error::Timeout));
+		const support::ReplyResult r = support::Ask(f.ctx, kSession, "hi");
+		CHECK(r.status == Status::Timeout && r.httpStatus == 0);
+		CHECK(f.store.HasToken());
+		CHECK_STR(support::StatusName(r.status), "timeout");
+	}
+	{
+		Fixture f;
+		f.transport.Push(testsupport::TransportError(Error::Timeout));
+		CHECK(support::Summarize(f.ctx, kSession).status == Status::Timeout);
+		f.transport.Push(testsupport::TransportError(Error::Timeout));
+		CHECK(support::CreateSession(f.ctx, "en-US", std::nullopt).status == Status::Timeout);
+		f.transport.Push(testsupport::TransportError(Error::Timeout));
+		CHECK(support::CreateTicket(f.ctx, "Subject", "Message").status == Status::Timeout);
+	}
+	for (Error e : {Error::Connect, Error::Resolve, Error::Tls, Error::TooLarge, Error::Other, Error::Cancelled}) {
+		Fixture f;
+		f.transport.Push(testsupport::TransportError(e));
+		CHECK(support::Ask(f.ctx, kSession, "hi").status == Status::Network);
+	}
+	{
+		// A 5xx is the server answering: Network (the page says "server
+		// error" from the HTTP status), never Timeout.
+		Fixture f;
+		f.transport.Push(Json(504, "{}"));
+		const support::ReplyResult r = support::Ask(f.ctx, kSession, "hi");
+		CHECK(r.status == Status::Network && r.httpStatus == 504);
+	}
+}
+
 void TestSummaryAndEvents()
 {
 	testcheck::g_currentTest = "summary and events";
@@ -390,6 +429,7 @@ int main()
 	TestCreateSession();
 	TestReplies();
 	TestAsk();
+	TestTimeouts();
 	TestSummaryAndEvents();
 	TestTickets();
 	TestPublicTickets();

@@ -35,7 +35,7 @@ namespace trigglow::trigiui {
 enum class Problem : unsigned char {
 	None,
 	Offline,            // No connection to trigglow.com: banner + Try again.
-	Timeout,            // No answer in time: banner + Try again.
+	Timeout,            // Sent, but no answer in time (support::Status::Timeout): banner + Try again.
 	ServerBusy,         // trigglow.com answered with an error (5xx): banner + Try again.
 	RateLimited,        // Too many questions in a row: countdown, Send off, Create a ticket.
 	SessionEnded,       // The sign-in ended: Sign in, or report without Trigi.
@@ -46,13 +46,9 @@ enum class Problem : unsigned char {
 	Generic,            // Anything else: banner + Try again.
 };
 
-// A transport error that took at least this long is reported as "Trigi took
-// too long" rather than "no connection": the request was sent and nothing
-// came back within the answer window.
-inline constexpr long long kTimeoutAfterMs = 60000;
-
-// status/httpStatus: the call's support::CallInfo. elapsedMs: how long it took.
-Problem ProblemFor(support::Status status, int httpStatus, long long elapsedMs);
+// status/httpStatus: the call's support::CallInfo. "Took too long" comes from
+// the client's own timeout status, never from how long the call took.
+Problem ProblemFor(support::Status status, int httpStatus);
 
 // The page gives way to the ticket form (keeping the user's text).
 bool OpensForm(Problem problem);

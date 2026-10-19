@@ -127,7 +127,7 @@ int RetryAfterSeconds(std::string_view header);
 enum class Outcome : unsigned char {
 	Ok,          // 2xx.
 	HttpError,   // Any other status (3xx included).
-	Network,     // Transport failure (DNS, connection, TLS, timeout, size cap).
+	Network,     // Transport failure (DNS, connection, TLS, timeout, size cap, cancelled): see `transport`.
 	Unavailable, // No HTTP client on this platform.
 };
 
@@ -145,6 +145,10 @@ struct Result {
 	http::Error transport = http::Error::None;
 
 	bool Ok() const { return outcome == Outcome::Ok; }
+	// No answer in time: a WinHTTP step timeout or the call's deadline.
+	bool TimedOut() const { return outcome == Outcome::Network && transport == http::Error::Timeout; }
+	// Aborted on purpose (the job was cancelled): nobody is waiting for it.
+	bool Cancelled() const { return outcome == Outcome::Network && transport == http::Error::Cancelled; }
 	bool Is(int httpStatus, std::string_view code = {}) const
 	{
 		return outcome == Outcome::HttpError && status == httpStatus && (code.empty() || error == code);
@@ -173,6 +177,16 @@ public:
 	const std::string &Host() const { return host_; }
 	const std::string &PluginVersion() const { return pluginVersion_; }
 
+	// A copy whose every request is aborted when `cancel` is cancelled (a
+	// background job's token, background-tasks.hpp). The token must outlive
+	// the copy's calls.
+	Client WithCancel(const tasks::CancelToken *cancel) const
+	{
+		Client copy = *this;
+		copy.cancel_ = cancel;
+		return copy;
+	}
+
 	// bearer: the plugin token, or empty for none. A token with characters
 	// outside [A-Za-z0-9_-] is never sent (the call fails as Network/Invalid).
 	Result Get(std::string_view path, std::string_view bearer = {}, Timeout timeout = Timeout::Standard) const;
@@ -190,6 +204,7 @@ private:
 	Transport transport_;
 	std::string host_;
 	std::string pluginVersion_;
+	const tasks::CancelToken *cancel_ = nullptr;
 };
 
 } // namespace trigglow::api

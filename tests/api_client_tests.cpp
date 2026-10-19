@@ -240,6 +240,50 @@ void TestResponses()
 	unavailable.error = http::Error::Unavailable;
 	t.Push(unavailable);
 	CHECK(client.Get("/g").outcome == api::Outcome::Unavailable);
+
+	// A timeout and a cancelled call are told apart from the other failures.
+	t.Push(testsupport::TransportError(http::Error::Timeout));
+	r = client.Get("/h");
+	CHECK(r.outcome == api::Outcome::Network && r.TimedOut() && !r.Cancelled());
+	t.Push(testsupport::TransportError(http::Error::Cancelled));
+	r = client.Get("/i");
+	CHECK(r.outcome == api::Outcome::Network && r.Cancelled() && !r.TimedOut());
+	t.Push(testsupport::NetworkDown());
+	r = client.Get("/j");
+	CHECK(!r.TimedOut() && !r.Cancelled());
+	CHECK_STR(http::ErrorName(http::Error::Timeout), "timeout");
+	CHECK_STR(http::ErrorName(http::Error::Cancelled), "cancelled");
+}
+
+// Every request of a client made WithCancel() carries the job's token, so
+// WinHTTP can abort it; the plain client's requests carry none.
+void TestCancelToken()
+{
+	testcheck::g_currentTest = "cancel token";
+	FakeTransport t;
+	const api::Client client = MakeClient(t);
+	tasks::CancelToken token;
+	const api::Client cancellable = client.WithCancel(&token);
+	t.Push(Json(200, "{}"));
+	CHECK(client.Get("/a").Ok());
+	CHECK(t.Last().cancel == nullptr);
+	t.Push(Json(200, "{}"));
+	CHECK(cancellable.PostJson("/b", json::Value::Object(), "tok").Ok());
+	CHECK(t.Last().cancel == &token);
+	t.Push(Json(201, "{}"));
+	CHECK(cancellable.PostFile("/c", "obs-log.txt", "text/plain", "log", "tok").Ok());
+	CHECK(t.Last().cancel == &token);
+	CHECK_STR(cancellable.Host(), client.Host());
+
+	// The real client with a token already cancelled: refused before any
+	// network access (no HTTP client at all outside Windows).
+	token.Cancel();
+	http::Request request;
+	request.host = "api.trigglow.com";
+	request.path = "/never-sent";
+	request.cancel = &token;
+	const http::Response response = http::Send(request);
+	CHECK(response.error == (http::Available() ? http::Error::Cancelled : http::Error::Unavailable));
 }
 
 void TestMultipart()
@@ -283,6 +327,7 @@ int main()
 	TestWebPages();
 	TestRequests();
 	TestResponses();
+	TestCancelToken();
 	TestMultipart();
 	return testcheck::Finish("api_client_tests");
 }

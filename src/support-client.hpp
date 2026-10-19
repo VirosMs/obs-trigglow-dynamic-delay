@@ -75,7 +75,8 @@ enum class Status : unsigned char {
 	ConversationGone,   // 404 not_found / 409 session_closed: the next question starts a new conversation.
 	Invalid,            // 400 invalid_body (or a value rejected before sending): "Couldn't send. Check the fields".
 	ScopeError,         // 403 insufficient_scope: a plugin bug; generic error, the sign-in stays.
-	Network,            // Transport error, timeout or 5xx: "No connection to trigglow.com" + manual retry.
+	Network,            // Transport error or 5xx: "No connection to trigglow.com" + manual retry.
+	Timeout,            // Sent, but no answer in time (http::Error::Timeout): "took too long" + manual retry.
 	Unavailable,        // No HTTP client on this platform (macOS/Linux today).
 	BadResponse,        // 2xx without the required fields: "Unexpected response from the server".
 	CaptchaRequired,    // Guest ticket refused for lack of a human check: degrade to the web form.

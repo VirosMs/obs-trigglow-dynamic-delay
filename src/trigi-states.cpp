@@ -41,16 +41,16 @@ std::string_view TrimView(std::string_view text)
 
 } // namespace
 
-Problem ProblemFor(support::Status status, int httpStatus, long long elapsedMs)
+Problem ProblemFor(support::Status status, int httpStatus)
 {
 	using support::Status;
 	switch (status) {
 	case Status::Ok:
 		return Problem::None;
 	case Status::Network:
-		if (httpStatus >= 500)
-			return Problem::ServerBusy;
-		return elapsedMs >= kTimeoutAfterMs ? Problem::Timeout : Problem::Offline;
+		return httpStatus >= 500 ? Problem::ServerBusy : Problem::Offline;
+	case Status::Timeout:
+		return Problem::Timeout;
 	case Status::RateLimited:
 		return Problem::RateLimited;
 	case Status::SignedOut:

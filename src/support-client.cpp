@@ -87,6 +87,8 @@ const char *StatusName(Status status)
 		return "scope error";
 	case Status::Network:
 		return "no connection";
+	case Status::Timeout:
+		return "timeout";
 	case Status::Unavailable:
 		return "unavailable on this platform";
 	case Status::BadResponse:
@@ -107,8 +109,11 @@ Status StatusFromResult(const api::Result &r, const auth::AuthEvents &events)
 {
 	if (r.outcome == api::Outcome::Unavailable)
 		return Status::Unavailable;
-	if (r.outcome == api::Outcome::Network)
-		return r.transport == http::Error::Invalid ? Status::Invalid : Status::Network;
+	if (r.outcome == api::Outcome::Network) {
+		if (r.transport == http::Error::Invalid)
+			return Status::Invalid;
+		return r.TimedOut() ? Status::Timeout : Status::Network;
+	}
 	if (r.Ok())
 		return Status::Ok;
 	if (r.Is(401, "signed_out"))

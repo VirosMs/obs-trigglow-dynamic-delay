@@ -487,6 +487,7 @@ Result Client::Run(http::Request request, std::string_view bearer, Timeout timeo
 	request.host = host_;
 	request.userAgent = UserAgent(pluginVersion_);
 	request.timeouts = TimeoutsFor(timeout);
+	request.cancel = cancel_;
 	request.headers.push_back({"Accept", "application/json"});
 	if (!bearer.empty())
 		request.headers.push_back({"Authorization", "Bearer " + std::string(bearer)});

@@ -57,6 +57,14 @@ inline Reply NetworkDown()
 	return r;
 }
 
+// Any transport failure (Timeout, Cancelled...).
+inline Reply TransportError(trigglow::http::Error error)
+{
+	Reply r;
+	r.error = error;
+	return r;
+}
+
 // Records every request and answers from a queue (or a handler, when set).
 // An empty queue answers 599.
 class FakeTransport {

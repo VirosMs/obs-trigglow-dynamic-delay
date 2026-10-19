@@ -22,6 +22,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string>
 #include <vector>
 
+#include "cancel-token.hpp"
+
 // Minimal synchronous HTTPS client for the plugin's few network calls (the
 // Trigglow account, Trigi and support tickets through api-client.hpp, and the
 // GitHub update check), built on WinHTTP (native Windows API, TLS via the OS's
@@ -47,7 +49,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     another host. Callers treat a 3xx as an error.
 //   - No cookies, no automatic Windows sign-in (NTLM/Kerberos) to any host.
 //   - Timeouts (WinHttpSetTimeouts) from Request::timeouts, plus an overall
-//     deadline for reading the response.
+//     deadline for the whole call (Timeouts::totalMs). Error::Timeout means
+//     the server was reached but didn't answer in time (or the deadline
+//     passed); resolving the name or connecting for too long is
+//     Error::Connect.
+//   - Cancellable: when Request::cancel is cancelled, a call blocked on the
+//     network (DNS, connecting, waiting up to 90 s for Trigi's answer,
+//     uploading the log) is aborted at once and returns Error::Cancelled.
+//     WinHTTP runs in its asynchronous mode for this; Send() itself still
+//     blocks the calling thread, and returns only once WinHTTP is done with
+//     the request (no callback of it can arrive afterwards).
 //   - The response body is capped (Request::maxResponseBytes): past it the
 //     read stops and the call fails with Error::TooLarge.
 //   - Header values with CR or LF are refused (no header injection).
@@ -86,6 +97,9 @@ struct Request {
 	std::string body; // Sent as is (empty = no body).
 	Timeouts timeouts;
 	size_t maxResponseBytes = kDefaultMaxResponseBytes;
+	// Aborts the call when cancelled (background-tasks.hpp gives every job
+	// one). Null: not cancellable. Must outlive the call.
+	const tasks::CancelToken *cancel = nullptr;
 };
 
 enum class Error : unsigned char {
@@ -94,9 +108,10 @@ enum class Error : unsigned char {
 	Invalid,     // The request itself was refused (bad header, empty host).
 	Resolve,     // DNS.
 	Connect,     // TCP connection.
-	Timeout,
-	Tls,      // Certificate or TLS handshake.
-	TooLarge, // Response body over Request::maxResponseBytes.
+	Timeout,     // Connected, but no answer in time; or the call's overall deadline passed.
+	Tls,         // Certificate or TLS handshake.
+	TooLarge,    // Response body over Request::maxResponseBytes.
+	Cancelled,   // Request::cancel was cancelled (OBS is closing, or the dialog was).
 	Other,
 };
 

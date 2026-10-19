@@ -896,7 +896,7 @@ void TrigiPage::Send(const QString &text, QWidget *bubble, bool fromComposer)
 	using Refusal = SupportService::AskRefusal;
 	const Refusal refusal = service_.Ask(text, [self](const SupportService::AskResult &result) {
 		if (self)
-			self->OnReply(result, self->elapsed_.isValid() ? self->elapsed_.elapsed() : 0);
+			self->OnReply(result);
 	});
 	switch (refusal) {
 	case Refusal::None:
@@ -942,20 +942,19 @@ void TrigiPage::Send(const QString &text, QWidget *bubble, bool fromComposer)
 	}
 	pending_ = {text, bubble};
 	failed_ = {};
-	elapsed_.start();
 	ShowThinking(T("Trigi.Thinking"));
 	Announce(T("Trigi.Thinking"), false);
 	UpdateControls();
 }
 
-void TrigiPage::OnReply(const SupportService::AskResult &result, long long elapsedMs)
+void TrigiPage::OnReply(const SupportService::AskResult &result)
 {
 	HideThinking();
 	const Pending sent = pending_;
 	pending_ = {};
 	const support::ReplyResult &reply = result.reply;
 	if (!reply.Ok()) {
-		const Problem problem = trigiui::ProblemFor(reply.status, reply.httpStatus, elapsedMs);
+		const Problem problem = trigiui::ProblemFor(reply.status, reply.httpStatus);
 		failed_ = sent;
 		SetNotSent(sent.bubble, true);
 		if (trigiui::OpensForm(problem)) {
@@ -1090,7 +1089,7 @@ void TrigiPage::StartTicket(bool handoff)
 	QPointer<TrigiPage> self(this);
 	const bool started = service_.RequestSummary([self](const support::SummaryResult &result) {
 		if (self)
-			self->OnSummary(result, self->elapsed_.isValid() ? self->elapsed_.elapsed() : 0);
+			self->OnSummary(result);
 	});
 	if (!started) {
 		if (onOpenForm)
@@ -1098,7 +1097,6 @@ void TrigiPage::StartTicket(bool handoff)
 		return;
 	}
 	summarizing_ = true;
-	elapsed_.start();
 	HideProblem();
 	DropUnansweredFeedback();
 	ShowThinking(T("Trigi.Summarizing"));
@@ -1106,7 +1104,7 @@ void TrigiPage::StartTicket(bool handoff)
 	UpdateControls();
 }
 
-void TrigiPage::OnSummary(const support::SummaryResult &result, long long elapsedMs)
+void TrigiPage::OnSummary(const support::SummaryResult &result)
 {
 	summarizing_ = false;
 	HideThinking();
@@ -1125,7 +1123,7 @@ void TrigiPage::OnSummary(const support::SummaryResult &result, long long elapse
 			onOpenForm(draft, Handover::UserChoice);
 		return;
 	}
-	const Problem problem = trigiui::ProblemFor(result.status, result.httpStatus, elapsedMs);
+	const Problem problem = trigiui::ProblemFor(result.status, result.httpStatus);
 	if (trigiui::OpensForm(problem)) {
 		HandOver(problem, QString());
 		return;
