@@ -10,7 +10,7 @@ otherwise unchanged, only that generic styling and the version number in the cor
 
 ## 1. Download
 
-Get `obs-trigglow-dynamic-delay-0.6.0-windows-x64-setup.exe` from the
+Get `obs-trigglow-dynamic-delay-0.7.0-windows-x64-setup.exe` from the
 [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). Prefer to
 install by hand instead? The `.zip` in the same release contains just the plugin files — see
 "Installing the plugin" in `README.md`.
@@ -96,8 +96,8 @@ The dock appears, showing `● Inactive` — you're ready to pick a live scene a
 
 ## 6. Sign in once
 
-`Enable delay` needs a free trigglow.com account, signed in once from the dock (Windows only in
-v0.6.0; macOS and Linux get sign-in in v0.6.1):
+`Enable delay` needs a free trigglow.com account, signed in once from the dock (Windows only for
+now; macOS and Linux get sign-in with the HTTP client planned next, see `docs/ROADMAP.md`):
 
 1. Press **Sign in** in the dock. Your browser opens trigglow.com; sign in there, or create a free
    account.

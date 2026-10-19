@@ -46,9 +46,10 @@
   más detalle del que cabe en el mensaje corto del dock.
 
 ## Iniciar sesión desde el dock
-- **En la v0.6.0 el inicio de sesión solo funciona en Windows.** En macOS y Linux el plugin todavía
-  no tiene cliente HTTP (previsto para la v0.6.1), así que allí no están disponibles el inicio de
-  sesión ni, con él, `Activar delay`, Trigi y los reportes desde OBS.
+- **Por ahora el inicio de sesión solo funciona en Windows (v0.6.0 y v0.7.0).** En macOS y Linux el
+  plugin todavía no tiene cliente HTTP (previsto a continuación, ver `docs/ROADMAP-es.md`), así que
+  allí no están disponibles el inicio de sesión ni, con él, `Activar delay`, Trigi y los reportes
+  desde OBS.
 - **Cómo va.** Pulsa **Iniciar sesión**: el navegador abre trigglow.com (inicia sesión o crea ahí una
   cuenta gratuita) y el dock muestra "La página debe mostrar el código KD7F-29QM." (tu código será
   otro). Comprueba que la página muestra el mismo código y pulsa **Confirmar**; el dock lo recoge solo
@@ -165,7 +166,7 @@
   enviarlo.
 - **"Tu sesión de Trigglow ha caducado. Vuelve a conectar desde el dock."**: vuelve a iniciar sesión
   y envíalo.
-- **macOS y Linux**: en la v0.6.0 el formulario aparece desactivado. Usa
+- **macOS y Linux**: el formulario aparece desactivado (v0.6.0 y v0.7.0). Usa
   [trigglow.com/support](https://www.trigglow.com/support) y adjunta tú el log de OBS (revísalo
   antes: ahí el plugin no puede ocultar tus datos personales).
 
@@ -194,7 +195,30 @@ nueva).
   buffer paso a paso en vez de dejar que OBS se quede atrás, y te lo dice en el dock (sección
   siguiente). El delay en sí no cambia nunca.
 
-**Si sigue pasando con la v0.6.0:**
+**v0.7.0: el buffer y el encoder de vídeo de tu GPU.** En Windows el buffer guarda ahora los frames
+retrasados con el encoder por hardware de la GPU (NVENC, AMF o Quick Sync) cuando lo hay, que puede
+ser el mismo motor en el que codifica tu stream. Con el motor compartido está hecho para cederle el
+paso al encoder de OBS: cuando ese motor se satura baja un peldaño de resolución, y si OBS se salta
+aunque sea un frame por retraso de codificación, o una de sus salidas se para por un error del
+encoder, vuelve a MJPEG al momento, que no toca el motor. En el log se ve como un WARN así:
+
+```
+[obs-trigglow-dynamic-delay] [video-delay-filter] delay buffer codec hevc_nvenc -> mjpeg: OBS skipped frames for encoding lag, on an engine the buffer shares (3 frames skipped in 2 s); buffer encoder latency p95 38 ms -- the delay itself is unchanged, the buffer only takes more RAM until the delay is turned off
+```
+
+(valores ilustrativos). El delay nunca se corta ni se mueve; el buffer simplemente se queda en
+MJPEG, con más RAM, hasta que desactivas y vuelves a activar el delay. Algunos frames saltados justo
+antes de esa línea pueden venir del buffer; si OBS sigue saltándose frames después, no es el buffer
+lo que sobrecarga el encoder. NVENC aún no se ha validado dentro de un OBS real, así que si
+sospechas del buffer:
+- Pon `"buffer_codec": "mjpeg"` (ver "Ajustes ocultos para soporte" más abajo), reinicia OBS y
+  compara con la misma escena y los mismos ajustes. Si "Encoding overloaded" solo desaparece con
+  MJPEG, envía un reporte con los dos logs.
+- Mira el log (ver "Cómo leer las líneas del log"): `engine shared with OBS` en la línea
+  `storage codec: auto -> …`, y en las líneas `storage codec check` la latencia del encoder del
+  buffer (`hwenc lat`) y `obs encode-lag skipped main+N mixes+N`.
+
+**Si sigue pasando con la v0.6.0 o posterior:**
 - **Descarta al propio codificador:** si "Encoding overloaded" también aparece con el delay
   desactivado, el plugin no es la causa — revisa el preset y los ajustes de tu codificador.
 - **Mira el dock mientras ocurre.** Un aviso ámbar "Calidad del buffer reducida" significa que el
@@ -208,7 +232,7 @@ nueva).
 - Si sigues atascado: usa el botón **Reportar un problema** del dock después de tener el delay
   activo al menos 30 segundos en la misma sesión de OBS, y adjunta el log actual de OBS (revísalo con
   **Ver qué se envía** y después marca **Adjuntar el registro (log) de OBS**): incluye las líneas
-  `perf check` y `pipeline check` que se explican más abajo.
+  `perf check`, `pipeline check` y `storage codec check` que se explican más abajo.
 
 ## El dock dice "Calidad del buffer reducida" (aviso ámbar)
 
@@ -221,8 +245,9 @@ descartó algún fotograma, una segunda línea dice cuántos por minuto; en el d
 fotograma repetido, nunca como un cambio del delay.
 
 **Qué hace el plugin, por orden:**
-1. Añade hilos de compresión (hasta dos contextos de compresión con hasta cuatro hilos cada uno).
-   Esto no muestra aviso: la calidad no se toca.
+1. Añade hilos de compresión (hasta dos contextos de compresión con hasta dos hilos cada uno, desde
+   la v0.7.0). Esto no muestra aviso: la calidad no se toca. Con el códec de almacenamiento por
+   hardware (v0.7.0, Windows) no hay hilos que añadir: la compresión la hace la GPU.
 2. Guarda el buffer a menos resolución, en pasos de un 17% aproximadamente, **nunca por debajo de la
    calidad mínima** que elegiste en el dock.
 3. Como último paso, captura un frame de cada dos (30 fps en un stream de 60 fps), solo cuando tu
@@ -231,6 +256,15 @@ fotograma repetido, nunca como un cambio del delay.
 Nunca acorta el delay ni vacía el buffer por esto. Cuando la carga baja y el siguiente peldaño hacia
 arriba lleva 30 segundos seguidos con margen de sobra, vuelve a subir de uno en uno, y el aviso
 desaparece en cuanto el buffer vuelve a la calidad completa.
+
+**Desde la v0.7.0, un motor de vídeo de la GPU saturado también baja un peldaño.** Cuando el encoder
+por hardware del buffer comparte el motor de vídeo de la GPU con el encoder de OBS y ese motor se
+satura (sube la latencia del encoder del buffer, o se le acumulan frames), el plugin baja un peldaño
+de resolución para que el encoder de tu stream conserve su parte, y no vuelve a subir en 5 minutos.
+El aviso dice entonces que la causa es comprimir los fotogramas, y el log tiene un WARN que empieza
+por `storage codec hevc_nvenc: the buffer encoder's latency rose on an engine OBS shares` (o
+`frames queued up in the buffer encoder`). Si ocurre ya en tu calidad mínima, el buffer vuelve a
+MJPEG en su lugar (sección anterior).
 
 **Qué puedes hacer:**
 - Nada, si la imagen retrasada te parece bien: está funcionando como se diseñó.
@@ -248,13 +282,15 @@ desaparece en cuanto el buffer vuelve a la calidad completa.
 
 ## Cómo leer las líneas del log (para soporte)
 
-Con el delay en marcha (Filling o Active), el plugin escribe dos líneas en el log de OBS cada 10
-segundos, y una última pareja al desactivar el delay, ponerlo a 0 s o cerrar OBS. Ejemplo (valores
-ilustrativos — los tuyos serán distintos; cada una es una sola línea en el log):
+Con el delay en marcha (Filling o Active), el plugin escribe tres líneas en el log de OBS cada 10
+segundos (dos antes de la v0.7.0), y una última tanda al desactivar el delay, ponerlo a 0 s o cerrar
+OBS. Ejemplo (valores ilustrativos — los tuyos serán distintos; cada una es una sola línea en el
+log):
 
 ```
 [obs-trigglow-dynamic-delay] [video-delay-filter] perf check (periodic, 10.0s): buf=1920x1080 (capped to OBS output 1920x1080, canvas 2560x1440) fps=60.00 | render p50/p95/max=2.10/2.90/4.80ms own=0.70/1.00/1.90 readback=0.25/0.40/0.90 upload=0.15/0.22/0.60 | calls=60.0/s captures=60.0/s uploads=60.0/s holds=0 (late decode 0, dropped 0, encoding 0) | obs frames+600 lagged+0 skipped+0
-[obs-trigglow-dynamic-delay] [video-delay-filter] pipeline check (periodic): mode=workers rung=0/4 capture=1920x1080@60.00fps enc=1x1 L=3 S=3 | enc0 p50/p95/max=5.10/6.20/9.80ms busy=31% enc1=0.00/0.00/0.00 busy=0% dec=3.60/4.30/6.90 busy=22% | drops reserve=0 backpressure=0 arena=0 capture=0 rawFallback=0 encFail=0 decFail=0 staleEnc=0 decJumps=0 staleDec=0 | queue enc max=1 avg=0.05 dec ahead avg=2.90 min=2 | ratio=16.5x arena=192MB committed (live 110MB, peak 192MB, 6 blocks of 32MB, limit 16384MB) ring=1816 slots (ready 1810, dropped 0, in flight 2, pinned 0)
+[obs-trigglow-dynamic-delay] [video-delay-filter] pipeline check (periodic): mode=workers codec=hevc_nvenc rung=0/4 capture=1920x1080@60.00fps enc=1x1 L=3 S=3 | enc0 p50/p95/max=2.40/3.70/6.10ms busy=15% enc1=0.00/0.00/0.00 busy=0% dec=2.40/2.90/4.80 busy=15% | drops reserve=0 backpressure=0 arena=0 capture=0 rawFallback=0 encFail=0 decFail=0 staleEnc=0 decJumps=0 staleDec=0 | queue enc max=1 avg=0.05 dec ahead avg=2.90 min=2 | ratio=54.0x arena=104MB committed (live 98MB, peak 112MB, 13 blocks of 8MB, limit 16384MB) ring=1831 slots (ready 1828, dropped 0, in flight 1, pinned 0)
+[obs-trigglow-dynamic-delay] [video-delay-filter] storage codec check (periodic): codec=hevc_nvenc(qp20,gop30) dec=d3d11va | hwenc lat p50/p95/max=19.8/20.6/21.5ms inflight max=1 send p95=3.70ms | keys=20 forcedIdr=0 chainBreaks=0 orphanP=0 catchUps=0 (frames 0, max 0ms) noKeyWaits=0 noKeySkips=0 | bridge frames=0 codecChanges=0 hardErrors=0 | policy=Hw guard=off | obs encode-lag skipped main+0 mixes+0
 ```
 
 **`perf check`** (lo que cuesta el plugin en el hilo gráfico de OBS):
@@ -275,6 +311,7 @@ ilustrativos — los tuyos serán distintos; cada una es una sola línea en el l
 | Campo | Qué indica |
 |---|---|
 | `mode` | `workers` (normal) o `sync` (`codec_workers` desactivado, ver abajo: el códec va en el hilo gráfico). |
+| `codec` (v0.7.0) | Lo que guarda los frames ahora mismo: `mjpeg`; un encoder por hardware en Windows, con el nombre que le da FFmpeg (`hevc_nvenc`, `hevc_amf`, `hevc_qsv`, o `h264_nvenc`, `h264_amf`, `h264_qsv` en una GPU sin HEVC); `raw` en macOS (sin comprimir). `mjpeg` en Windows puede significar que no hay encoder por hardware, los primeros segundos mientras se comprueba uno, una vuelta a MJPEG (un WARN dice por qué) o `buffer_codec` en `mjpeg`: la línea `storage codec check` de abajo los distingue. |
 | `rung=N/M` | Paso de degradación: `0` es la calidad completa, `M` el último paso. Cualquier valor por encima de 0 es de lo que habla el aviso ámbar del dock. |
 | `capture=WxH@fps` | Lo que se está capturando ahora mismo. |
 | `enc=CxS`, `L`, `S` | Contextos de compresión × hilos por contexto, frames descomprimidos por adelantado (`L`) y slots de staging (`S`). |
@@ -283,13 +320,33 @@ ilustrativos — los tuyos serán distintos; cada una es una sola línea en el l
 | `rawFallback`, `encFail`, `decFail` | Frames guardados sin comprimir porque falló la compresión, y fallos de compresión/descompresión. Deberían ser 0. |
 | `staleEnc`, `decJumps`, `staleDec` | Compresiones descartadas porque el slot se reutilizó, veces que el descompresor saltó hacia delante para ponerse al día, y frames descomprimidos por adelantado que eran demasiado antiguos para mostrarlos tras una pausa del render. |
 | `queue enc`, `dec ahead` | Profundidad de la cola de compresión (máxima, media) y frames listos por delante de lo que hay en pantalla (media, mínimo). |
-| `ratio`, `arena`, `ring` | Ratio de compresión, memoria del buffer (comprometida, viva, pico, bloques y su tamaño, límite) y estados de los slots. `committed` se acerca a lo que el Administrador de tareas atribuye al buffer: a 1440p60 con 30 s, unos 600–900 MB con gameplay (`ratio=` de unas 11–15x). |
+| `ratio`, `arena`, `ring` | Ratio de compresión, memoria del buffer (comprometida, viva, pico, bloques y su tamaño, límite) y estados de los slots. `committed` son los frames guardados, la mayor parte de lo que el Administrador de tareas atribuye al buffer: a 1440p60 con 30 s y gameplay, unos 200–250 MB con el códec por hardware (`ratio=` de unas 40–60x) y 600–900 MB con MJPEG (unas 11–15x). Los códecs y las reservas de frames suman encima unos 50 MB (MJPEG) a 110 MB (hardware). |
+
+**`storage codec check`** (v0.7.0: cómo se guardan los frames, y la protección del encoder de OBS):
+
+| Campo | Qué indica |
+|---|---|
+| `codec=…` | El encoder que guarda los frames, con sus ajustes: `hevc_nvenc(qp20,gop30)` (QP constante 20, un keyframe cada 30 frames), o `mjpeg(q5,huff=default)`. `bridging` detrás de MJPEG significa que se está preparando un encoder por hardware: mientras tanto guarda MJPEG. Cuando todo el ciclo es MJPEG la línea es corta: `codec=mjpeg(…) dec=mjpeg policy=Mjpeg` y los contadores de OBS. |
+| `dec=` | Lo que los decodifica: `d3d11va` (la GPU), `sw` (la CPU, solo en una emergencia: falló el decoder de la GPU, o el buffer abandonó un motor que compartía con OBS) o `mjpeg`. |
+| `hwenc lat p50/p95/max`, `inflight max`, `send p95` | Tiempo desde que se entrega un frame al encoder por hardware hasta que sale su paquete (más o menos un frame, ~20 ms a 60 fps, es lo normal), cuántos frames llegaron a esperar dentro como mucho, y cuánto tardó entregar un frame. Una latencia p95 por encima de 2,5 frames (42 ms a 60 fps), o 3 frames esperando, en un motor en el que también codifica OBS, baja un peldaño. |
+| `keys`, `forcedIdr`, `chainBreaks`, `orphanP` | Keyframes guardados, keyframes forzados (tras un paquete perdido o un cambio), paquetes perdidos después de codificarse (la arena llena) y los P-frames descartados tras ellos hasta el siguiente keyframe. Salvo `keys`, deberían quedarse cerca de 0. |
+| `catchUps (frames, max)`, `noKeyWaits`, `noKeySkips` | Veces que el decoder empezó desde un keyframe anterior para llegar al frame que toca (tras una pausa o un salto), y veces que esperó al siguiente keyframe: mientras tanto se mantiene el frame en pantalla. |
+| `bridge frames`, `codecChanges`, `hardErrors` | Frames que guardó MJPEG mientras se preparaba un encoder por hardware, cambios del códec en uso, y fallos del encoder o del decoder por hardware (cada uno devuelve el buffer a MJPEG). |
+| `policy=`, `guard=` | El estado de la protección: `Probing` (comprobando un encoder), `Hw` (hardware en uso), `HwGuarded` (se bajó un peldaño por el motor), `Yielded` (NVENC cedido a una salida de OBS que arranca), `Evacuated` (de vuelta en MJPEG hasta la siguiente activación), `Mjpeg` (solo MJPEG). `guard=on` mientras está vetado volver a subir (5 minutos tras un aviso del motor). |
+| `obs encode-lag skipped main+N mixes+N` | Frames que OBS se saltó por retraso de codificación en la ventana, en su mezcla principal y en las mezclas propias de sus encoders (reescalado por GPU, pistas de Enhanced Broadcasting). Con el motor compartido, basta uno para devolver el buffer a MJPEG. |
 
 Otras líneas que conviene conocer: `settings loaded` (al arrancar OBS) y `enabled` (cada vez que
-pulsas Activar) terminan en `output_cap=on|off` y `codec_workers=on|off`; `delay pipeline: …` (cada
-vez que arranca el buffer) da la configuración elegida y la escalera de degradación; un WARN que
-empieza por `delay buffer lower rung` o `delay buffer higher rung` marca cada paso de degradación,
-con su causa y las cifras de los últimos 2 segundos.
+pulsas Activar) muestran `output_cap=on|off`, `codec_workers=on|off` y `buffer_codec=auto|mjpeg`, y
+`enabled` además la `storage_class` del ciclo; `delay pipeline: …` (cada vez que arranca el buffer)
+da la configuración elegida, la clase de almacenamiento (`intra`, `intra-gop` o `inter`, ver
+`docs/SPEC-es.md` §4.8) y la escalera de degradación; un WARN que empieza por `delay buffer lower
+rung` o `delay buffer higher rung` marca cada paso de degradación, con su causa y las cifras de los
+últimos 2 segundos. Desde la v0.7.0, además: `storage codec: auto -> …` cuando un encoder por
+hardware pasa su comprobación (con `engine shared with OBS: yes|no|unknown` y las sesiones NVENC de
+OBS) o `storage codec: auto -> mjpeg at … (…)` con el motivo; el WARN `delay buffer codec … ->
+mjpeg: …` en cada vuelta a MJPEG; `storage codec: … yielded its engine to an OBS output starting`;
+y `encoder ceiling WxH: …` o `no encoder ceiling: …` cuando el encoder del stream fija el tamaño del
+buffer.
 
 **Líneas de inicio de sesión, Trigi y reportes** (desde la v0.6.0): dicen qué ha pasado y, si hay un
 error, el código HTTP: `[auth-manager] signed in`, `signed out`, `session ended`, `token renewed`,
@@ -299,9 +356,9 @@ ticket created (attachment=yes|no)`. Nunca contienen el enlace ni los códigos d
 tokens, IDs de tickets o de conversaciones, lo que preguntaste, las respuestas de Trigi ni los datos
 técnicos.
 
-## Ajustes ocultos para soporte: `buffer_output_cap` y `codec_workers`
+## Ajustes ocultos para soporte: `buffer_output_cap`, `codec_workers` y `buffer_codec`
 
-Dos interruptores sin control en el dock a propósito. Úsalos solo si te lo pide soporte, o si sabes
+Tres ajustes sin control en el dock a propósito. Úsalos solo si te lo pide soporte, o si sabes
 exactamente por qué necesitas uno.
 
 **`buffer_output_cap`: desactivar el límite de salida.** Solo para quien graba (o envía una pista de
@@ -321,9 +378,18 @@ fuera de ese hilo, y la degradación sigue funcionando (primero añade hilos de 
 para averiguar si un problema viene de los hilos de compresión — por ejemplo una imagen retrasada
 congelada o desordenada, o un crash en un hilo llamado `trigglow-enc`, `trigglow-dec` o
 `trigglow-reap`. Devuelve el coste al hilo gráfico, así que a 1440p60 cuenta con ver "Encoding
-overloaded" o el aviso ámbar mucho antes.
+overloaded" o el aviso ámbar mucho antes. Con los hilos de compresión apagados, el buffer usa
+siempre MJPEG, diga lo que diga `buffer_codec`.
 
-**Cómo poner cualquiera de los dos:**
+**`buffer_codec`: forzar MJPEG en vez del códec de almacenamiento por hardware (v0.7.0).** Por
+defecto (`"auto"`) el buffer usa en Windows el encoder por hardware de la GPU cuando lo hay, y MJPEG
+si no. `"buffer_codec": "mjpeg"` hace que use siempre MJPEG, como antes de la v0.7.0: más o menos el
+doble de RAM y más CPU, pero sin tocar el motor de vídeo de la GPU. Sirve para descartar el códec
+por hardware en un problema, por ejemplo "Encoding overloaded" con el delay activo, un problema del
+driver de la GPU, o un crash en el hilo llamado `trigglow-codec-setup`. En Linux y macOS no tiene
+efecto, porque nunca usan el códec por hardware.
+
+**Cómo poner cualquiera de ellos:**
 1. **Cierra OBS del todo.** Los ajustes solo se leen al arrancar OBS, y OBS reescribe este archivo
    al salir, así que un cambio hecho con OBS abierto se pierde.
 2. Abre `%APPDATA%\obs-studio\plugin_config\obs-trigglow-dynamic-delay\buffer-mode-settings.json`
@@ -331,27 +397,33 @@ overloaded" o el aviso ámbar mucho antes.
    dentro de la carpeta de OBS; macOS/Linux: la misma carpeta
    `plugin_config/obs-trigglow-dynamic-delay/` dentro del directorio de configuración de OBS). Si el
    archivo todavía no existe, abre y cierra OBS una vez con el plugin instalado.
-3. Añade `"buffer_output_cap": false` y/o `"codec_workers": false` como una clave más, dejando todo
-   lo demás como está (ojo con la coma de la línea anterior). Tiene que ser un `false` literal, sin
-   comillas: `"false"` (texto), `0` o cualquier otra cosa deja el ajuste activado, el log explica
-   por qué (`"codec_workers" … is not a JSON boolean`) y ese valor desaparece del archivo al cerrar
-   OBS.
+3. Añade `"buffer_output_cap": false`, `"codec_workers": false` y/o `"buffer_codec": "mjpeg"` como
+   una clave más, dejando todo lo demás como está (ojo con la coma de la línea anterior). Los dos
+   primeros tienen que ser un `false` literal, sin comillas: `"false"` (texto), `0` o cualquier otra
+   cosa deja el ajuste activado y el log explica por qué (`"codec_workers" … is not a JSON
+   boolean`). `buffer_codec` tiene que ser exactamente el texto `"mjpeg"`, entre comillas y en
+   minúsculas: `"MJPEG"`, `"hevc"`, `false` o cualquier otra cosa mantiene `"auto"` y el log explica
+   por qué (`"buffer_codec" … is neither "auto" nor "mjpeg" -- keeping auto`); sin las comillas el
+   archivo deja de ser JSON válido (ver más abajo). Un valor que no se acepta desaparece del archivo
+   al cerrar OBS.
 
    ```json
    {
        "delay_seconds": 30,
        "overlay_corner": 0,
-       "codec_workers": false
+       "buffer_codec": "mjpeg"
    }
    ```
 
    (Tu archivo tiene más claves y tus propios valores; solo la última línea es nueva.)
-4. Arranca OBS. La línea `settings loaded` termina en `output_cap=off` y/o `codec_workers=off`, y
-   otra vez la línea `enabled` al pulsar Activar. Con el límite desactivado, `perf check` dice
-   `cap off (buffer_output_cap=false)`; con los hilos de compresión apagados, `pipeline check` dice
-   `mode=sync`.
+4. Arranca OBS. La línea `settings loaded` muestra `output_cap=off`, `codec_workers=off` y/o
+   `buffer_codec=mjpeg`, y lo mismo la línea `enabled` al pulsar Activar. Con el límite desactivado,
+   `perf check` dice `cap off (buffer_output_cap=false)`; con los hilos de compresión apagados,
+   `pipeline check` dice `mode=sync`; con `buffer_codec` en `mjpeg`, dice `codec=mjpeg`, y el log
+   dice `storage codec: MJPEG (buffer_codec=mjpeg)` al arrancar el delay.
 
-Para deshacerlo: con OBS cerrado, borra la clave (o ponla a `true`) y vuelve a arrancar OBS.
+Para deshacerlo: con OBS cerrado, borra la clave (o pon `true` en los dos primeros y `"auto"` en
+`buffer_codec`) y vuelve a arrancar OBS.
 
 **Si el archivo queda con un JSON inválido** (basta con una coma o unas comillas de menos), el
 plugin no lo sobrescribe: al arrancar lo aparta como `buffer-mode-settings.json.<fecha-hora>.invalid`
@@ -359,6 +431,31 @@ en la misma carpeta, usa los valores por defecto (también para las escenas en d
 delay y el overlay, hasta que los vuelvas a elegir) y escribe un WARN con las dos rutas
 (`settings file … is not valid JSON -- moved it to …`). Corrige la copia, cierra OBS, renómbrala de
 vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
+
+## El buffer ocupa más RAM que las cifras de la FAQ
+
+La tabla de `docs/FAQ-es.md` ("¿Cuánta RAM ocupa el buffer del delay?") es la del códec de
+almacenamiento por hardware en Windows. Mira `codec=` en las líneas `pipeline check` y las líneas
+`storage codec` del log de OBS:
+- **`codec=mjpeg` todo el tiempo**, con `storage codec: auto -> mjpeg at … (no hardware encoder to
+  try …)` o `(no hardware encoder works …; tried: …)`: no se pudo usar ningún encoder de la GPU (no
+  hay una GPU NVIDIA, AMD o Intel con encoder de vídeo, o no pasó su comprobación). El buffer
+  funciona como antes, con la RAM de MJPEG. Linux usa siempre MJPEG y macOS guarda el buffer sin
+  comprimir.
+- **`storage codec: MJPEG (buffer_codec=mjpeg)`** o `codec_workers=false`: MJPEG a propósito (ver
+  "Ajustes ocultos para soporte").
+- **Un WARN `delay buffer codec … -> mjpeg: …`**: el buffer volvió a MJPEG con el delay activo (OBS
+  se saltó frames con el motor compartido, un error de un encoder de OBS o un error del códec por
+  hardware). Su RAM sube entonces hasta la cifra de MJPEG durante los siguientes segundos de delay,
+  dentro del presupuesto, hasta que desactivas el delay. Al desactivarlo y volver a activarlo prueba
+  otra vez el hardware (un encoder que falló él mismo no se vuelve a probar hasta reiniciar OBS).
+- **`policy=Yielded`** durante unos segundos después de empezar a emitir, a grabar o a usar el
+  Replay Buffer: el buffer le cedió su sesión NVENC a esa salida y mientras tanto guarda MJPEG.
+- El contenido que cambia mucho en cada frame (cámara rápida, partículas, grano) comprime peor con
+  cualquier códec: un `ratio=` más bajo en `pipeline check`.
+
+Sea cual sea el códec, el buffer nunca ocupa más que su presupuesto de RAM: si los frames no caben,
+descarta frames (un frame repetido en pantalla) en vez de crecer.
 
 ## El vídeo retrasado se ve con menos calidad de la esperada
 - **Mira primero el dock.** Un aviso ámbar "Calidad del buffer reducida" significa que el plugin
@@ -371,6 +468,11 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
   almacenada**. Y el buffer nunca se guarda por encima de la resolución de salida de OBS, así que con
   una salida de 720p es 720p aunque el mínimo sea 1080p — OBS no emite nada por encima de su salida
   de todos modos.
+- Desde la v0.7.0, cuando todos los encoders que ven tu lienzo codifican por debajo de la salida
+  (por ejemplo un stream reescalado a 1080p desde una salida 1440p, sin ninguna grabación por
+  encima), el buffer se guarda al tamaño de ese encoder, porque nadie usa más: el log dice `encoder
+  ceiling WxH: …`. Empezar una grabación a más resolución lo levanta solo; sus primeros `delay`
+  segundos salen reescalados hacia arriba.
 - Con un lienzo mayor que la salida, el frame retrasado se vuelve a dibujar a tamaño de lienzo y OBS
   lo reduce otra vez, lo que puede verse algo más blando que la imagen en directo. Si no necesitas el
   lienzo grande, pon lienzo = salida.
@@ -480,8 +582,10 @@ vuelta a `buffer-mode-settings.json` y vuelve a arrancar OBS.
   contra el SDK real de OBS y Qt6 real en Windows/macOS/Ubuntu, además de pruebas en directo dentro de
   una instancia real de OBS en Windows) y qué no (pruebas en directo en macOS/Linux, y una corrección
   confirmada para el riesgo de GPU Device-Remove/Reset descrito en `docs/SPEC-es.md` §7). Los tests
-  unitarios (19 suites, sin OBS) se compilan con `-DTRIGGLOW_BUILD_TESTS=ON` o por separado con
-  `cmake -S tests -B build_tests`, y CI los ejecuta en todas las plataformas.
+  unitarios (23 suites, sin OBS) se compilan con `-DTRIGGLOW_BUILD_TESTS=ON` o por separado con
+  `cmake -S tests -B build_tests`, y CI los ejecuta en todas las plataformas; una 24.ª,
+  `hw_storage_codec_tests`, se añade en Windows cuando el FFmpeg del plugin ya está en `.deps` (un
+  build local del plugin).
 - Un error de compilación en tu propia máquina es información valiosa — probablemente sea una
   diferencia entre la versión exacta de OBS/Qt que estás usando y las fijadas en `buildspec.json`.
   Abre un issue en el repositorio con el log de error completo.

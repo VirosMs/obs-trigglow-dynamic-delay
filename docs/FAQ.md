@@ -26,7 +26,10 @@ the plugin may lower the buffer's resolution to save RAM: it never goes below it
 actual buffered duration instead if your requested seconds don't fit the RAM budget detected on
 your machine at that quality. Since v0.6.0 it never raises the buffer above OBS's output resolution,
 though (Settings → Video → Output (Scaled) Resolution): with a 720p output the buffer is 720p even
-if you pick 1080p, because OBS has nothing above its output to send. It's also the floor for the
+if you pick 1080p, because OBS has nothing above its output to send. Since v0.7.0, when every
+encoder that sees your canvas (stream, recording, Enhanced Broadcasting tracks) encodes below the
+output, the buffer is stored at the largest of them: a 1440p output streamed by an encoder rescaled
+to 1080p, with nothing recorded above 1080p, buffers at 1080p. It's also the floor for the
 automatic quality reduction when your computer can't keep up (see below). The dock shows a live,
 non-blocking estimate of what a given combination will actually achieve (seconds and resolution) as
 you adjust either setting, before you ever press Enable. See `docs/SPEC.md` §3.5.
@@ -50,15 +53,67 @@ your machine's detected RAM budget (roughly half of total system RAM, floored at
 will tell you before you enable it, and the plugin buffers as many seconds as actually fit instead.
 
 **Does it compress the buffer? Does that lower quality?**
-Yes, since v0.3.0 — on Windows and Linux, each buffered frame is MJPEG-compressed in RAM and
-decompressed back on playback, with an automatic, safe fallback to uncompressed storage if the codec
-isn't available for any reason. The compression is visually close to lossless, and the quality floor
-you pick (480p to 2160p (4K)) works exactly as before: this only changes how the buffered frames are
-stored in memory. Real gameplay compresses about 11–15x (measured live since v0.4.0), though it
-depends on what's on screen. Since v0.6.0 the compression runs on the plugin's own threads, not on
-OBS's graphics thread, and memory follows what the frames really weigh: about 0.6–0.8 GB for 30 s at
-1440p60 in our offline simulation. See `docs/SPEC.md` §4. macOS isn't part of this yet and stores
-the buffer uncompressed.
+Yes. It only changes how the buffered frames are kept in memory: the quality floor you pick (480p to
+2160p (4K)) works exactly the same way.
+- **Windows with a hardware video encoder (v0.7.0):** the frames are stored as HEVC video (or H.264
+  on a GPU without HEVC) with your GPU's encoder (NVIDIA NVENC, AMD AMF or Intel Quick Sync), and
+  decoded on the GPU. A key frame every half second and the frames in between stored as differences,
+  which is why it takes about half the RAM of MJPEG. It's also closer to the original: in our
+  measurements the stored frames come back at a PSNR-Y of ~45 dB, against ~40 dB with MJPEG.
+- **Windows without a hardware encoder, and Linux:** each frame is MJPEG-compressed on its own, as
+  since v0.3.0, visually close to lossless. Real gameplay compresses about 11–15x, though it depends
+  on what's on screen.
+- **macOS:** the buffer is stored uncompressed.
+
+Compression and decompression run on the plugin's own threads (and on the GPU's video engine with
+the hardware encoder), not on OBS's graphics thread, and if a frame can't be compressed it's stored
+uncompressed instead. See `docs/SPEC.md` §4 and §4.8.
+
+**How much RAM does the delay buffer take?**
+It depends on the output resolution, the delay, what's on screen and how it's stored. Measured
+outside OBS with gameplay-like content at 60 fps, the buffer alone:
+
+| Output | 30 s, hardware HEVC (Windows, v0.7.0) | 30 s, MJPEG | 60 s, hardware HEVC | 60 s, MJPEG |
+|---|---|---|---|---|
+| 1080p60 | ~190 MB | ~400 MB | ~290 MB | ~750 MB |
+| 1440p60 | ~325 MB | ~640 MB | ~520 MB | ~1,200 MB |
+| 2160p60 | ~590 MB | ~1,250 MB | ~920 MB | ~2,300 MB |
+
+- The hardware column was measured with an AMD GPU (AMF). **NVIDIA's NVENC isn't measured yet**;
+  its bytes per frame, and so the RAM, may differ somewhat.
+- Against MJPEG, the hardware codec takes 49–62% less depending on resolution and delay. v0.6.0
+  took a little more than the MJPEG column: about 675 MB at 1440p60 for 30 s, ~1.2 GB for 60 s.
+- Add about 11 MB per audio source with sound for 30 s of delay (22 MB for 60 s).
+- Content that changes a lot every frame compresses worse, with both codecs.
+- To see what your buffer really takes, look for `arena=…MB committed` in the `pipeline check` lines
+  of the OBS log: that's the stored frames, the biggest part (the codecs and frame pools add about
+  50 MB with MJPEG and 110 MB with the hardware codec at 1440p). `codec=` in the same line says how
+  it's stored (`docs/TROUBLESHOOTING.md`, "Reading the log lines").
+
+**Does the buffer use my GPU's video encoder? Can that cause "Encoding overloaded"?**
+On Windows, yes: since v0.7.0 the buffer uses the GPU's hardware encoder when there is one, and the
+GPU's decoder too. It's built so that your stream's encoder always comes first. When the buffer
+encodes on the same engine as one of OBS's encoders (both on NVENC, for example):
+- if that engine starts to get busy (the buffer encoder's latency rises), the buffer drops one
+  resolution step, never below your minimum quality, and doesn't go back up for 5 minutes; the dock
+  shows its amber "Buffer quality lowered" notice;
+- if OBS skips even one frame for encoding lag, or one of its outputs stops on an encoder error, the
+  buffer goes back to MJPEG at once, which doesn't use the engine at all. The delay doesn't cut or
+  move; the buffer just takes more RAM until you turn the delay off;
+- when OBS starts streaming, recording or the Replay Buffer, the buffer gives its NVENC session to
+  that output first and takes it back a few seconds later.
+
+If the buffer encodes on another engine (an iGPU while you stream on the dedicated GPU, or a stream
+on x264), it can't cause encoding lag, and none of this needs to kick in. This guard was tested with
+an AMD GPU; **NVENC hasn't been validated inside a real OBS yet**. If you suspect the buffer, force
+MJPEG (next question) and compare.
+
+**Can I make the buffer use MJPEG, like before v0.7.0?**
+Yes, with the hidden `buffer_codec` setting: `"buffer_codec": "mjpeg"` in the plugin's
+`buffer-mode-settings.json`, edited with OBS closed. It has to be exactly that lowercase string;
+anything else keeps the default, `"auto"` (hardware where it works, MJPEG otherwise), and the log
+says why. It's meant for support or to rule the hardware codec in or out of a problem: MJPEG takes
+about twice the RAM and more CPU. Steps in `docs/TROUBLESHOOTING.md`, "Hidden settings for support".
 
 **OBS shows "Encoding overloaded" as soon as I enable the delay. Why?**
 Up to v0.5.0, compressing and decompressing the buffered frames ran inside OBS's graphics thread,
@@ -66,9 +121,10 @@ which has 16.7 ms per frame at 60 fps, and the buffer was stored at your canvas 
 canvas larger than the output (for example 2560x1440 canvas, 1920x1080 output) that work took most
 of the frame and OBS fell behind. **v0.6.0 fixes it**: the buffer is never stored above OBS's output
 resolution, and compression runs on the plugin's own threads, so what's left on OBS's graphics
-thread is a millisecond or two per frame. Update to v0.6.0; if you lowered your canvas to work
-around it, you can set it back. If it still happens, see the "Encoding overloaded" section of
-`docs/TROUBLESHOOTING.md`.
+thread is a millisecond or two per frame. Update to the latest version; if you lowered your canvas
+to work around it, you can set it back. Since v0.7.0 the buffer may also use the GPU's video
+encoder, but it gives way to OBS's encoder (previous questions). If it still happens, see the
+"Encoding overloaded" section of `docs/TROUBLESHOOTING.md`.
 
 **Does it only work at 1080p? What about 2K (1440p)?**
 It works at any resolution — the buffer follows OBS's output resolution. What matters for
@@ -86,9 +142,11 @@ performance is the *output* resolution and frame rate, not the canvas:
   delay gets shorter instead, as with 1080p. Above your output it changes nothing: with a 1080p
   output the buffer stays 1080p. To see the RAM the buffer really takes, look for
   `arena=…MB committed` in the `pipeline check` lines of the OBS log (every 10 s while the delay
-  runs): at 1440p60 with 30 s expect roughly 600–900 MB with gameplay (`ratio=` around 11–15x). The
-  plugin plans for up to ~1.9 GB there (5x), and the dock warns before you enable it if that doesn't
-  fit.
+  runs): at 1440p60 with 30 s and gameplay, expect roughly 200–250 MB with the hardware codec
+  (`ratio=` around 40–60x) and 600–900 MB with MJPEG (around 11–15x); the codecs and frame pools
+  add about 50 MB (MJPEG) to 110 MB (hardware) on top. The plugin plans for up to ~1.9 GB there with
+  MJPEG's assumed 5x, or ~0.8 GB with the hardware codec's 12x once it has worked in this OBS
+  session, and the dock warns before you enable it if that doesn't fit.
 - **If your computer can't keep up** at your settings, the plugin lowers the buffer's resolution
   (never below your minimum quality) and, as a last step, its capture frame rate, instead of
   letting OBS fall behind or cutting the delay. The dock tells you with an amber notice (next
@@ -98,10 +156,12 @@ performance is the *output* resolution and frame rate, not the canvas:
 Your computer couldn't keep up with the delay buffer at full quality, so the plugin lightened it:
 first it adds compression threads (no notice for that), then it buffers at a lower resolution, never
 below your minimum quality, and as a last step it captures every other frame (only with an output at
-48 fps or more). The notice says what was lowered and why. The delay in seconds never changes and
-the stream never cuts; repeated frames, if any, show as a brief stutter. When the load drops, it goes
-back up by itself after 30 s with room to spare, and the notice disappears. What to do about it, if
-anything: `docs/TROUBLESHOOTING.md`.
+48 fps or more). Since v0.7.0 it also lowers one step when the GPU video engine the buffer shares
+with OBS's encoder gets busy (the notice then names compressing the frames as the cause, and it
+doesn't go back up for 5 minutes). The notice says what was lowered and why. The delay in seconds
+never changes and the stream never cuts; repeated frames, if any, show as a brief stutter. When the
+load drops, it goes back up by itself after 30 s with room to spare, and the notice disappears.
+What to do about it, if anything: `docs/TROUBLESHOOTING.md`.
 
 **Does it affect local recording or the Replay Buffer?**
 Indirectly, yes, and this is worth understanding: buffer mode works by switching what OBS's Program
@@ -138,9 +198,9 @@ any specific platform, so the behavior is identical no matter where you're strea
 **Do I need a web panel or a Trigglow account to use it?**
 No web panel: all control lives inside OBS. Since v0.3.3 you do need to sign in once to a free
 trigglow.com account before Enable works (the sign-in happens in your browser, and the plugin stays
-100% free) — see `docs/ACCOUNT_GATE.md`. **In v0.6.0, sign-in (and with it Enable delay and Trigi)
-works only on Windows.** macOS and Linux don't have the plugin's HTTP client yet; it's planned for
-v0.6.1.
+100% free) — see `docs/ACCOUNT_GATE.md`. **For now, sign-in (and with it Enable delay and Trigi)
+works only on Windows**, also in v0.7.0. macOS and Linux don't have the plugin's HTTP client yet;
+it's planned next (`docs/ROADMAP.md`).
 
 **How does signing in work, and what does the plugin keep?**
 Signing in always happens on trigglow.com, in your browser: the plugin never asks for your password.
@@ -155,10 +215,11 @@ disconnect it from the web too: Settings → Active sessions → Connected apps.
 **I'm on v0.5.x or earlier. Do I have to update?**
 Yes. The sign-in of v0.5.x and earlier is switched off when v0.6.0 is published: from then on
 those versions can no longer sign in to Trigglow, and the sign-ins they already have stop working
-after a transition period, so the delay stops working there. Install v0.6.0 over your current
-version, with OBS closed. On the first start your sign-in moves to the new format by itself; if the
-dock asks you to sign in, do it once. Your scenes and settings are kept. On macOS and Linux, sign-in
-isn't available in the plugin yet, in v0.5.x or in v0.6.0; it arrives with v0.6.1.
+after a transition period, so the delay stops working there. Install the latest version over your
+current one, with OBS closed. On the first start your sign-in moves to the new format by itself; if
+the dock asks you to sign in, do it once. Your scenes and settings are kept. On macOS and Linux,
+sign-in isn't available in the plugin yet (not in v0.7.0 either); it arrives with the HTTP client
+planned next.
 
 **The dock or "Report a problem" says to update the plugin. What do I do?**
 "This plugin version can't sign in any more. Update the plugin." in the dock, "Update the plugin to

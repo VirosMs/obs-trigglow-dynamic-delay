@@ -138,10 +138,42 @@ first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 c
 - **Build/CI**: FFmpeg re-pinned to a BtbN month-end build, 19 unit test suites in CI on every
   platform, a ThreadSanitizer job, `Qt6::Svg`.
 
-## Next (v0.6.x)
-- **v0.6.1: an HTTP client on macOS and Linux**, so sign-in (and with it Enable delay), Trigi and
-  reports from OBS work there too, with the sign-in kept in the system's keychain or secret store.
-  Until then the plugin's account features are Windows-only.
+## v0.7.0 (shipped — 2026-10-20)
+An optimization release: the delay buffer takes about half the RAM on Windows. The planned v0.6.1
+(HTTP client for macOS and Linux) wasn't published; it's next.
+- **Hardware storage codec on Windows.** The buffer is stored as HEVC (H.264 on a GPU without HEVC)
+  with the GPU's encoder (NVENC, AMF, Quick Sync) and decoded with D3D11VA, instead of MJPEG:
+  1440p60 from ~675 MB to ~325 MB for 30 s and from ~1.2 GB to ~520 MB for 60 s, PSNR-Y of the
+  stored frames from ~40 to ~45 dB, codec CPU from ~0.8 to ~0.2–0.3 cores (offline, AMD AMF). MJPEG
+  stays as the bridge while an encoder is set up and as the fallback. No new DLLs.
+- **A ring that takes inter-frame codecs**: per-packet codec, key, chain and seq, a GOP of slack,
+  decode from a key with catch-up, several codecs in one ring, an asynchronous encoder interface.
+- **"Encoding overloaded" guard** for a GPU engine shared with OBS's encoders: one rung down on an
+  early latency warning (5-minute veto), back to MJPEG at once on a frame OBS skips for encoding
+  lag, an OBS encoder error or any hardware error, and the NVENC session handed to an output
+  starting.
+- **Sizing**: storage class fixed per cycle (12x once a hardware codec has worked in the session,
+  2.4 times the frames when RAM is short; MJPEG's 5x on the session's first cycle), the buffer
+  capped at the stream encoders' resolution when they all rescale below the output, 8 MiB arena
+  blocks with one spare, at most two slice threads per MJPEG context.
+- **Support**: hidden `buffer_codec` setting (`"auto"` or `"mjpeg"`), `codec=` in `pipeline check`,
+  a `storage codec check` line, `PipelineHealth` v2. No new UI, texts or RAM warnings.
+- **Security and licensing**: no Quick Sync in an elevated OBS, `get_pipeline_state` bounded by the
+  caller's struct size, `LICENSE-ffmpeg.txt` shipped and an LGPL check of the FFmpeg build in CI.
+- **Tests**: 23 suites in CI (fake inter-frame codec stress and adversarial tests, the codec
+  policy), plus the hardware codec over the real FFmpeg on local Windows builds.
+
+## Next
+- **An HTTP client on macOS and Linux** (planned as v0.6.1, not published), so sign-in (and with it
+  Enable delay), Trigi and reports from OBS work there too, with the sign-in kept in the system's
+  keychain or secret store. Until then the plugin's account features are Windows-only.
+- **Validate the hardware storage codec on NVIDIA inside a real OBS**: NVENC shared with the
+  stream's encoder (and Enhanced Broadcasting) with zero frames skipped for encoding lag, NVDEC, the
+  VRAM it takes and the bytes per frame against the AMD figures. Quick Sync too, on Intel hardware.
+- **Then: zero copy on the GPU.** Encode straight from OBS's texture and decode into a D3D11
+  texture, so the CPU copies of each frame (readback, raw frames, the decoded pool) go away: by our
+  estimate another 50–120 MB less and less work on OBS's graphics thread. Riskier (sharing OBS's
+  D3D11 device with FFmpeg across threads), so after the HTTP client.
 - **Deduplicate captures by OBS's frame time** (`obs_get_video_frame_time()`) instead of a
   wall-clock cell per frame interval: exactly one capture per OBS frame, with no dependence on the
   cell's phase, so render jitter can't put two renders in one cell and lose a real frame.
@@ -150,18 +182,22 @@ first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 c
   every frame); a tiny target with the same projection would do.
 - **Output-level delay redesign** — the next big architectural step; see "Later" below for what it
   involves and why it hasn't started.
-- Verify v0.6.0 live: 1440p60 output and the degradation inside a real OBS session (the figures
-  above come from offline benchmarks on an AMD CPU and GPU), and the A/V alignment with a clock and
-  a clap.
+- Verify v0.6.0 and v0.7.0 live: 1440p60 output and the degradation inside a real OBS session (the
+  figures above come from offline benchmarks on an AMD CPU and GPU), and the A/V alignment with a
+  clock and a clap.
 - Saved delay presets (e.g. "Short delay 5s", "Long delay 30s"), selectable from the dock and from
   additional hotkeys.
 - macOS/Linux **live verification** — both already build green in CI; this is about actually
   running and confirming the plugin on those platforms, not new build-system work.
-- Revisit `kAssumedCompressionRatio = 5.0` with the `ratio` and arena figures of the `pipeline
-  check` line from more sessions and games. Since v0.6.0 it only decides how many seconds fit the
-  budget, so raising it would buy duration, not resident memory.
+- Revisit the assumed compression ratios (5x for MJPEG, 12x for the hardware codec since v0.7.0)
+  with the `ratio` and arena figures of the `pipeline check` line from more sessions and games. They
+  only decide how many seconds fit the budget, so raising them would buy duration, not resident
+  memory.
 
-## v0.7.0 (paused — scoped, not started, 2026-09-08)
+## True-live Replay Buffer (paused — scoped, not started, 2026-09-08)
+Planned as v0.7.0 when it was scoped; v0.7.0 became the RAM release above, and this keeps no version
+number until it's picked up again.
+
 Goal: a "true-live" Replay Buffer (dedicated to Trigglow, saved via its own hotkey — OBS's native
 "Save Replay" hotkey can't be redirected to a custom output, so this was never going to reuse it)
 that keeps working while buffer mode is Active, instead of capturing the delayed wrapper scene like
@@ -201,13 +237,14 @@ see below.
 ## Later
 - **Output-level delay redesign** (studied 2026-09-08, not started). `obsdelay.com` buffers the
   already-encoded bitstream and re-sends it through its own multi-destination RTMP sender, so
-  Program, scene switching, the Replay Buffer, and recording are never touched at all — with a much
-  smaller memory footprint than our NV12/MJPEG frame ring, since a compressed bitstream is far
-  smaller than decoded frames. Architecturally the cleanest solution to v0.7.0's goal AND to
-  seamless multi-scene switching (see "Out of scope for now" below) at once, but it means replacing
-  OBS's native RTMP output with a custom one (reconnection, keyframe handling, multi-destination
-  sending) — multiple sessions of work and meaningfully higher risk. Only worth prioritizing if
-  v0.7.0's narrower fix turns out not to cover real usage once it ships.
+  Program, scene switching, the Replay Buffer, and recording are never touched at all — with a
+  smaller memory footprint than our frame ring, since the stream's own bitstream is smaller still
+  than the buffer's MJPEG (or, since v0.7.0, high-quality HEVC) frames. Architecturally the cleanest
+  solution to the true-live Replay Buffer's goal AND to seamless multi-scene switching (see "Out of
+  scope for now" below) at once, but it means replacing OBS's native RTMP output with a custom one
+  (reconnection, keyframe handling, multi-destination sending) — multiple sessions of work and
+  meaningfully higher risk. Only worth prioritizing if the Replay Buffer's narrower fix turns out
+  not to cover real usage once it ships.
 - **CA-issued signing for Windows/macOS** (real fix for the SmartScreen/Defender false positive
   in [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10)) — application to
   [SignPath Foundation](https://signpath.org/apply)'s free code-signing program for qualifying

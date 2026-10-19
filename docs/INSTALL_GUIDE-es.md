@@ -11,7 +11,7 @@ desactualizados.
 
 ## 1. Descarga
 
-Consigue `obs-trigglow-dynamic-delay-0.6.0-windows-x64-setup.exe` desde la
+Consigue `obs-trigglow-dynamic-delay-0.7.0-windows-x64-setup.exe` desde la
 [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). ¿Prefieres
 instalarlo a mano? El `.zip` de esa misma release solo trae los archivos del plugin — ver
 "Instalar el plugin" en `README-es.md`.
@@ -100,7 +100,8 @@ El panel aparece mostrando `● Inactive` — ya puedes elegir una escena en dir
 ## 6. Inicia sesión una vez
 
 `Activar delay` necesita una cuenta gratuita de trigglow.com, con la sesión iniciada una vez desde
-el dock (solo en Windows en la v0.6.0; macOS y Linux tendrán inicio de sesión en la v0.6.1):
+el dock (por ahora solo en Windows; macOS y Linux tendrán inicio de sesión con el cliente HTTP
+previsto a continuación, ver `docs/ROADMAP-es.md`):
 
 1. Pulsa **Iniciar sesión** en el dock. El navegador abre trigglow.com; inicia sesión ahí o crea una
    cuenta gratuita.
