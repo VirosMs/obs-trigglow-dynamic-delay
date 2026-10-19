@@ -29,11 +29,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <initializer_list>
 
 using trigglow::bufferfit::AlignedWidth;
+using trigglow::bufferfit::ApplyStorageClass;
 using trigglow::bufferfit::Compute;
 using trigglow::bufferfit::DesiredFrames;
 using trigglow::bufferfit::EvenDim;
 using trigglow::bufferfit::FrameIntervalNs;
 using trigglow::bufferfit::Input;
+using trigglow::bufferfit::KeyframeIntervalFrames;
 using trigglow::bufferfit::Nv12FrameBytes;
 using trigglow::bufferfit::OutputCapScale;
 using trigglow::bufferfit::Result;
@@ -681,6 +683,116 @@ void TestHighFloors()
 	CHECK(WithinBudget(uhd, u));
 }
 
+// v0.7.0 (RAM design 2.4, 6.4): the storage class fixed per cycle. Inter: the
+// assumed ratio 12 and a GOP of slack; intra: 5 and a quarter second, as before.
+void TestStorageClass()
+{
+	g_currentTest = "21 storage class (v0.7.0)";
+	CHECK_EQ(KeyframeIntervalFrames(60, 1), 30u);
+	CHECK_EQ(KeyframeIntervalFrames(30, 1), 15u);
+	CHECK_EQ(KeyframeIntervalFrames(60000, 1001), 30u);
+	CHECK_EQ(KeyframeIntervalFrames(24, 1), 12u);
+	CHECK_EQ(KeyframeIntervalFrames(25, 1), 13u);
+	CHECK_EQ(KeyframeIntervalFrames(120, 1), 60u);
+	CHECK_EQ(KeyframeIntervalFrames(0, 1), 0u);
+	CHECK_EQ(SlackFrames(30, 60, 1, 30), 30u);
+	CHECK_EQ(SlackFrames(30, 60, 1, 10), 15u); // Never below the quarter second.
+	CHECK_EQ(SlackFrames(0, 60, 1, 30), 0u);
+	CHECK_EQ(SlackFrames(30, 30, 1, 15), 15u);
+	CHECK_EQ(DesiredFrames(30, 60, 1, 30), 1831u);
+	CHECK_EQ(DesiredFrames(30, 60, 1), 1816u);
+
+	Input intra = MakeInput(2560, 1440, 2560, 1440, 1440);
+	Input inter = intra;
+	ApplyStorageClass(intra, false, 5.0);
+	ApplyStorageClass(inter, true, 5.0);
+	CHECK_NEAR(intra.compressionRatio, 5.0, 1e-9);
+	CHECK_EQ(intra.keyframeIntervalFrames, 0u);
+	CHECK_NEAR(inter.compressionRatio, 12.0, 1e-9);
+	CHECK_EQ(inter.keyframeIntervalFrames, 30u);
+	Input noFfmpeg = intra;
+	ApplyStorageClass(noFfmpeg, false, 1.0);
+	CHECK_NEAR(noFfmpeg.compressionRatio, 1.0, 1e-9);
+
+	// Room to spare: the same buffer and delay, the GOP margin in slots.
+	const Result a = Compute(intra);
+	const Result b = Compute(inter);
+	CHECK(a.fitsFullDuration && b.fitsFullDuration);
+	CHECK_EQ(a.actualFrames, 1816u);
+	CHECK_EQ(b.actualFrames, 1831u);
+	CHECK_EQ(a.bufferWidth, b.bufferWidth);
+	CHECK_EQ(a.bufferHeight, b.bufferHeight);
+	CHECK_EQ(a.effectiveDelaySeconds, 30u);
+	CHECK_EQ(b.effectiveDelaySeconds, 30u);
+
+	// 4K60, 60 s on a 16 GB machine (8 GiB budget): reduced with intra, full
+	// resolution with inter (design 6.4).
+	Input k4 = MakeInput(3840, 2160, 3840, 2160, 720);
+	k4.delaySeconds = 60;
+	k4.budgetBytes = 8 * kGiB;
+	Input k4Inter = k4;
+	ApplyStorageClass(k4, false, 5.0);
+	ApplyStorageClass(k4Inter, true, 5.0);
+	const Result k4a = Compute(k4);
+	const Result k4b = Compute(k4Inter);
+	CHECK(k4a.reducedByRam);
+	CHECK(!k4b.reducedByRam);
+	CHECK_EQ(k4b.bufferHeight, 2160u);
+	CHECK_EQ(k4b.actualFrames, 3631u);
+	CHECK_EQ(k4b.effectiveDelaySeconds, 60u);
+
+	// Trimmed at the floor: 2.4x the frames in the same budget, the GOP as slack.
+	Input tight = MakeInput(2560, 1440, 1920, 1080, 720);
+	tight.budgetBytes = 100 * kMiB;
+	Input tightInter = tight;
+	ApplyStorageClass(tight, false, 5.0);
+	ApplyStorageClass(tightInter, true, 5.0);
+	const Result ta = Compute(tight);
+	const Result tb = Compute(tightInter);
+	CHECK_EQ(ta.actualFrames, 379u);
+	CHECK_EQ(tb.actualFrames, 910u); // 104857600 / (1280 * 720 * 1.5 / 12).
+	CHECK_EQ(ta.bufferHeight, tb.bufferHeight);
+	CHECK_EQ(ta.effectiveDelaySeconds, 6u);
+	CHECK_EQ(tb.effectiveDelaySeconds, 14u); // (909 - 30) / 60.
+	CHECK(WithinBudget(tightInter, tb));
+
+	// Sweeps: monotonic in the budget, within it, never past the request.
+	int violations = 0;
+	for (uint32_t delay : {5u, 30u, 60u}) {
+		for (uint32_t fps : {30u, 60u}) {
+			Result previous;
+			for (uint64_t budgetMiB : {40, 64, 100, 250, 500, 1000, 2000, 4000, 16000}) {
+				Input sweep = MakeInput(3840, 2160, 2560, 1440, 720);
+				sweep.delaySeconds = delay;
+				sweep.fpsNum = fps;
+				sweep.budgetBytes = budgetMiB * kMiB;
+				ApplyStorageClass(sweep, true, 5.0);
+				const Result r = Compute(sweep);
+				bool ok = WithinBudget(sweep, r) && r.effectiveDelaySeconds <= delay &&
+					  r.actualFrames <= r.desiredFrames;
+				ok = ok &&
+				     r.desiredFrames == DesiredFrames(delay, fps, 1, KeyframeIntervalFrames(fps, 1));
+				if (previous.bufferHeight != 0)
+					ok = ok && r.bufferHeight >= previous.bufferHeight &&
+					     r.actualFrames >= previous.actualFrames &&
+					     r.effectiveDelaySeconds >= previous.effectiveDelaySeconds;
+				if (!r.fitsFullDuration)
+					ok = ok &&
+					     static_cast<uint64_t>(r.effectiveDelaySeconds) * fps <= r.actualFrames - 1;
+				if (!ok && violations++ < 5)
+					std::printf(
+						"  inter sweep violation: budget %lluMiB delay %u fps %u -> %ux%u %llu "
+						"frames, %u s\n",
+						static_cast<unsigned long long>(budgetMiB), delay, fps, r.bufferWidth,
+						r.bufferHeight, static_cast<unsigned long long>(r.actualFrames),
+						r.effectiveDelaySeconds);
+				previous = r;
+			}
+		}
+	}
+	CHECK_EQ(violations, 0);
+}
+
 } // namespace
 
 int main()
@@ -705,6 +817,7 @@ int main()
 	TestEffectiveDelay();
 	TestWidthAlignment();
 	TestHighFloors();
+	TestStorageClass();
 
 	std::printf("buffer_fit_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
