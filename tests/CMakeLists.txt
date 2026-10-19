@@ -139,7 +139,17 @@ add_test(NAME pipeline_stress_tests COMMAND pipeline_stress_tests)
 # v0.7.0 storage codecs: the interface's pure parts (in-flight queue, chain
 # tracker, raw codec) with the fake inter-frame codec, and the pipeline's
 # stress test with it (frames in flight, GOPs, chain breaks, mixed codecs).
-add_executable(storage_codec_tests storage_codec_tests.cpp check.hpp fake-gop-codec.hpp "${_src}/storage-codec.hpp")
+add_executable(
+  storage_codec_tests
+  storage_codec_tests.cpp
+  check.hpp
+  fake-gop-codec.hpp
+  "${_src}/storage-codec.hpp"
+  "${_src}/annexb.cpp"
+  "${_src}/annexb.hpp"
+  "${_src}/storage-codec-select.cpp"
+  "${_src}/storage-codec-select.hpp"
+)
 target_include_directories(storage_codec_tests PRIVATE "${_src}")
 set_target_properties(storage_codec_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME storage_codec_tests COMMAND storage_codec_tests)

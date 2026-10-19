@@ -42,10 +42,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     the fallback when an encode fails).
 //   - MJPEG (mjpeg-codec.hpp): all-intra, synchronous: every packet is a key
 //     and comes out of the Receive() right after its Send().
-//   - Inter-frame ones (hardware H.264/HEVC) plug in here later: they need the
-//     chain bookkeeping below (ChainTracker, InFlightQueue) and the ring's
-//     per-packet metadata (FrameRing::Payload), which the pipeline already
-//     keeps for every codec.
+//   - Inter-frame ones: hardware H.264/HEVC on Windows (hw-storage-codec.hpp),
+//     opened and checked on the pipeline's setup thread (InterSetupFn below).
+//     They rely on the chain bookkeeping below (ChainTracker, InFlightQueue)
+//     and the ring's per-packet metadata (FrameRing::Payload), which the
+//     pipeline keeps for every codec.
 //
 // A "chain" is one bitstream session: an encoder from its first key on, for
 // one ring. Inside a chain packets are numbered by seq (consecutive in the
@@ -54,7 +55,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //
 // Threads: every Encoder and Decoder is used by one thread at a time, never
 // the graphics thread (the sync kill switch excepted, where G is the codec
-// thread). Their contexts are opened, used and closed by that thread.
+// thread). Intra ones are opened, used and closed by that thread; hardware
+// ones are opened by the setup thread, handed over under the pipeline's mutex
+// and closed by the worker using them or by the reaper (invariant I8).
 //
 // Header-only: the interface, the raw codec and the bookkeeping helpers are
 // all inline, so every target that uses the ring or the pipeline (the plugin,
@@ -117,6 +120,38 @@ inline I420View PackedI420View(const uint8_t *data, uint32_t width, uint32_t hei
 	view.plane[2] = view.plane[1] + static_cast<size_t>(width / 2) * (height / 2);
 	view.stride[2] = width / 2;
 	return view;
+}
+
+// NV12's interleaved chroma (U V U V..., what hardware decoders hand back)
+// split into separate U and V planes, chromaWidth x chromaHeight samples each.
+inline void DeinterleaveUv(const uint8_t *uv, uint32_t uvStride, uint32_t chromaWidth, uint32_t chromaHeight,
+			   uint8_t *u, uint32_t uStride, uint8_t *v, uint32_t vStride)
+{
+	for (uint32_t row = 0; row < chromaHeight; ++row) {
+		const uint8_t *src = uv + static_cast<size_t>(row) * uvStride;
+		uint8_t *du = u + static_cast<size_t>(row) * uStride;
+		uint8_t *dv = v + static_cast<size_t>(row) * vStride;
+		for (uint32_t col = 0; col < chromaWidth; ++col) {
+			du[col] = src[2 * col];
+			dv[col] = src[2 * col + 1];
+		}
+	}
+}
+
+// The reverse: U and V planes interleaved into NV12's chroma plane (Intel
+// Quick Sync only takes NV12).
+inline void InterleaveUv(const uint8_t *u, uint32_t uStride, const uint8_t *v, uint32_t vStride, uint32_t chromaWidth,
+			 uint32_t chromaHeight, uint8_t *uv, uint32_t uvStride)
+{
+	for (uint32_t row = 0; row < chromaHeight; ++row) {
+		const uint8_t *su = u + static_cast<size_t>(row) * uStride;
+		const uint8_t *sv = v + static_cast<size_t>(row) * vStride;
+		uint8_t *dst = uv + static_cast<size_t>(row) * uvStride;
+		for (uint32_t col = 0; col < chromaWidth; ++col) {
+			dst[2 * col] = su[col];
+			dst[2 * col + 1] = sv[col];
+		}
+	}
 }
 
 namespace storage {
@@ -210,6 +245,11 @@ public:
 	// order, until deadlineNs (the pipeline's clock); the rest is lost.
 	virtual void Drain(uint64_t deadlineNs, const std::function<void(const Packet &)> &sink) = 0;
 	virtual uint32_t InFlight() const = 0; // Frames sent and not received yet.
+	// The encoder hit an error it can't recover from (a hardware encoder's
+	// send or receive failing, a lost device): the pipeline closes it and
+	// stores the frames that follow with the intra codec. Intra encoders never
+	// break; a failed Send() of theirs only costs that frame.
+	virtual bool Broken() const { return false; }
 };
 
 // One stored packet to decode: the bytes the ring holds and the frame's size.
@@ -239,6 +279,12 @@ public:
 	// Discontinuity (new ring, decoder skipped ahead, a failure): drops the
 	// references and anything buffered; the next packet must be a key.
 	virtual void Flush() = 0;
+	// The decoder itself failed (a hardware decoder's device, not a bad
+	// packet): the pipeline replaces it with a software one.
+	virtual bool Broken() const { return false; }
+	// Decoding runs on the GPU (a hardware decoder): what the codec policy
+	// weighs when the GPU's video engine also encodes for OBS.
+	virtual bool Hardware() const { return false; }
 };
 
 // The pipeline fills config's geometry and slice threads; nullptr: the frames
@@ -247,6 +293,39 @@ using EncoderFactory = std::function<std::unique_ptr<Encoder>(const EncoderConfi
 // A decoder for `codec` (never Raw: the pipeline has its own); nullptr if
 // this build can't decode it.
 using DecoderFactory = std::function<std::unique_ptr<Decoder>(CodecId codec)>;
+
+// --- The inter-frame (hardware) storage codec, v0.7.0 RAM design 2.5-2.7 ---
+//
+// Opening a hardware encoder and checking it (the setup probe: a few frames,
+// forced keys, a decode from a key) takes 50-1000 ms, so the pipeline does it
+// on a setup thread of its own while the cycle goes on storing frames with
+// the intra codec (the MJPEG "bridge"); the encoder and the decoder it
+// warmed up are then handed over to the workers that use them (invariant I8:
+// one thread at a time, the handover under the pipeline's mutex).
+
+// What a setup hands back: an open, checked encoder for the requested frame
+// size (nullptr: no hardware encoder works for it), and optionally the
+// decoder the probe used, flushed (the decode worker adopts it).
+struct InterSession {
+	std::unique_ptr<Encoder> encoder;
+	std::unique_ptr<Decoder> decoder;
+};
+
+// Runs on the pipeline's setup thread (it may block). config: the frame size
+// (the rest is the provider's choice: codec, quality, keyframe interval).
+using InterSetupFn = std::function<InterSession(const EncoderConfig &config)>;
+
+// State shared between the UI thread and the pipeline's encode worker, for
+// what can't wait for the graphics thread's next policy evaluation (design
+// 4.5): while `yielded`, the worker closes its hardware encoder and stores
+// with the intra codec, so OBS can open an encoder of its own on that engine
+// (the NVENC session limit); clearing it lets the worker set up hardware
+// again. openEncoders: hardware encoders alive (the UI waits for 0 after a
+// yield).
+struct InterControl {
+	std::atomic<bool> yielded{false};
+	std::atomic<int> openEncoders{0};
+};
 
 // The frame itself: no copy here (Packet::rawInput), the pipeline packs it
 // into the arena.
