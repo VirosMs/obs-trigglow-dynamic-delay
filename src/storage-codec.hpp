@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <utility>
 #include <vector>
@@ -325,6 +326,24 @@ using InterSetupFn = std::function<InterSession(const EncoderConfig &config)>;
 struct InterControl {
 	std::atomic<bool> yielded{false};
 	std::atomic<int> openEncoders{0};
+
+	// Wakes the pipeline's encode worker (set by the pipeline for its life),
+	// so a yield doesn't wait for the next frame. Any thread.
+	void Wake()
+	{
+		std::lock_guard<std::mutex> lock(wakeMutex);
+		if (wake)
+			wake();
+	}
+	void SetWake(std::function<void()> fn)
+	{
+		std::lock_guard<std::mutex> lock(wakeMutex);
+		wake = std::move(fn);
+	}
+
+private:
+	std::mutex wakeMutex;
+	std::function<void()> wake;
 };
 
 // The frame itself: no copy here (Packet::rawInput), the pipeline packs it
@@ -528,6 +547,7 @@ public:
 	bool Empty() const { return size_ == 0; }
 	size_t Size() const { return size_; }
 	size_t MaxDepth() const { return maxDepth_; }
+	const Entry *Front() const { return size_ == 0 ? nullptr : &entries_[head_]; } // The oldest, or null.
 
 private:
 	// A ring of entries that only grows: nothing is allocated per frame once

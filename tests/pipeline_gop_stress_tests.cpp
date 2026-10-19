@@ -134,6 +134,13 @@ struct Scenario {
 	bool tightArenas = true;       // Some rings' arenas too small: packets lost after their encode.
 	bool expectLosses = false;     // The run must have exercised chain breaks and orphan drops.
 	bool checkExact = false;       // Timing check on the exact frame shown (steady runs).
+	// v0.7.0 hardware path: the inter encoder comes from a setup thread
+	// (0-300 ms, sometimes none, probing on that thread and handing the encoder
+	// and its decoder over), an intra codec bridges and takes over; chaos adds
+	// evacuations (intra target), yields, software-decode switches, encoders
+	// that break or stall.
+	bool hardware = false;
+	bool expectHardwareFaults = false; // Long enough for setups that fail and encoders that break.
 };
 
 // A ring of slots for the delay; tight: its arena only fits ~3/4 of the packets.
@@ -218,7 +225,28 @@ void Accumulate(CodecPipeline::WindowStats &total, const CodecPipeline::WindowSt
 	total.noKeySkips += w.noKeySkips;
 	total.decodeFailures += w.decodeFailures;
 	total.inFlightMax = std::max(total.inFlightMax, w.inFlightMax);
+	total.bridgeFrames += w.bridgeFrames;
+	total.codecChanges += w.codecChanges;
+	total.interHardErrors += w.interHardErrors;
+	total.catchUps += w.catchUps;
+	total.catchUpFrames += w.catchUpFrames;
+	total.catchUpMaxNs = std::max(total.catchUpMaxNs, w.catchUpMaxNs);
+	total.noKeyWaits += w.noKeyWaits;
+	total.interKeys += w.interKeys;
+	total.forcedKeys += w.forcedKeys;
 }
+
+// A stamped I420 frame of its own (the setup's probe frames).
+struct OwnedFrame {
+	std::vector<uint8_t> bytes;
+	I420View view;
+	OwnedFrame(uint32_t width, uint32_t height, uint64_t stamp) : bytes(I420FrameBytes(width, height))
+	{
+		view = PackedI420View(bytes.data(), width, height);
+		std::memset(bytes.data(), static_cast<int>(stamp & 0xFF), bytes.size());
+		std::memcpy(bytes.data(), &stamp, sizeof(stamp));
+	}
+};
 
 RunStats RunScenario(const Scenario &s)
 {
@@ -230,16 +258,83 @@ RunStats RunScenario(const Scenario &s)
 	fakegop::Counters counters;
 	counters.graphicsThread = g_graphicsThread;
 	std::atomic<uint32_t> opened{0};
+	std::atomic<uint32_t> setups{0};
+	std::atomic<uint32_t> setupFailures{0};
+	auto control = std::make_shared<storage::InterControl>();
 
 	CodecPipeline::Options options;
 	options.threaded = true;
 	options.clockNs = &NowNs;
 	options.lookaheadFrames = 3;
+	if (s.hardware) {
+		options.interControl = control;
+		options.interSetup = [&](const storage::EncoderConfig &requested) -> storage::InterSession {
+			// The setup thread: whatever it decides comes from n.
+			const uint32_t n = setups++;
+			std::mt19937 local(n + 77);
+			std::this_thread::sleep_for(std::chrono::milliseconds(local() % 200));
+			if (n % 4 == 3) {
+				++setupFailures;
+				return {}; // No encoder works for this size.
+			}
+			fakegop::EncoderOptions o;
+			o.inter = true;
+			o.codec = storage::CodecId::Hevc;
+			o.gop = 4 + n % 9;
+			o.latencyNs = static_cast<uint64_t>(n % 3) * s.periodNs;
+			o.fillerBytes = 380;
+			o.seed = n + 1000;
+			o.clockNs = &NowNs;
+			o.counters = &counters;
+			o.handover = true;
+			o.breakAfter = n % 3 == 1 ? 120 : 0;
+			o.stallAfter = n % 5 == 2 ? 90 : 0;
+			storage::EncoderConfig config = requested;
+			config.keyframeInterval = o.gop;
+			auto encoder = std::make_unique<fakegop::FakeGopEncoder>(config, o);
+			// The probe, on this thread: two frames, a forced key, drained, and
+			// decoded by the decoder it hands over.
+			auto decoder = std::make_unique<fakegop::FakeGopDecoder>(storage::CodecId::Hevc, &counters,
+										 true, true);
+			std::vector<storage::Packet> packets;
+			std::vector<std::vector<uint8_t>> copies;
+			for (uint64_t i = 0; i < 2; ++i) {
+				OwnedFrame frame(config.width, config.height, 7 + i);
+				if (encoder->Send(frame.view, i, i == 0) != storage::SendResult::Ok)
+					return {};
+			}
+			encoder->Drain(NowNs() + 50000000ULL, [&](const storage::Packet &packet) {
+				copies.emplace_back(packet.data, packet.data + packet.bytes);
+				packets.push_back(packet);
+			});
+			for (size_t i = 0; i < packets.size(); ++i) {
+				storage::EncodedFrame in;
+				in.data = copies[i].data();
+				in.bytes = copies[i].size();
+				in.width = config.width;
+				in.height = config.height;
+				in.seq = packets[i].seq;
+				in.key = packets[i].key;
+				DecodedImage image;
+				uint64_t outSeq = 0;
+				decoder->Decode(in, true, image, outSeq);
+			}
+			decoder->Flush();
+			storage::InterSession session;
+			session.encoder = std::move(encoder);
+			if (n % 2 == 0)
+				session.decoder = std::move(decoder); // Sometimes the decode worker opens its own.
+			return session;
+		};
+		options.softwareDecoderFactory = [&](storage::CodecId codec) -> std::unique_ptr<storage::Decoder> {
+			return std::make_unique<fakegop::FakeGopDecoder>(codec, &counters);
+		};
+	}
 	options.encoderFactory = [&](const storage::EncoderConfig &config) -> std::unique_ptr<storage::Encoder> {
 		// Called on the encode workers: everything it decides comes from n.
 		const uint32_t n = opened++;
 		fakegop::EncoderOptions o;
-		o.inter = !s.mixIntra || n % 3 != 2;
+		o.inter = !s.hardware && (!s.mixIntra || n % 3 != 2); // The hardware path's bridge is intra.
 		o.codec = o.inter ? storage::CodecId::Hevc : storage::CodecId::Mjpeg;
 		o.gop = s.fixedGop ? s.fixedGop : 2 + (n * 5) % 7;
 		const uint32_t latency = s.fixedLatency ? s.maxLatencyFrames : (n * 3) % (s.maxLatencyFrames + 1);
@@ -253,10 +348,15 @@ RunStats RunScenario(const Scenario &s)
 		return std::make_unique<fakegop::FakeGopEncoder>(config, o);
 	};
 	options.decoderFactory = [&](storage::CodecId codec) -> std::unique_ptr<storage::Decoder> {
-		return std::make_unique<fakegop::FakeGopDecoder>(codec, &counters);
+		// With the hardware path, the inter codec's decoder poses as a hardware one.
+		return std::make_unique<fakegop::FakeGopDecoder>(codec, &counters, false,
+								 s.hardware && codec == storage::CodecId::Hevc);
 	};
 	auto pipeline = std::make_unique<CodecPipeline>(options);
 	pipeline->SetEncodeParallelism(1, 1);
+	if (s.hardware)
+		pipeline->SetStorageTarget(true);
+	bool interTarget = s.hardware;
 
 	std::mt19937 rng(4321);
 	auto chance = [&](int oneIn) {
@@ -399,6 +499,20 @@ RunStats RunScenario(const Scenario &s)
 				std::this_thread::sleep_for(std::chrono::milliseconds(100 + rng() % 150));
 				++stats.pauses;
 			}
+			if (s.hardware) {
+				if (chance(250)) {
+					// An evacuation to the intra codec, or back to the inter one.
+					interTarget = !interTarget;
+					timed([&] { pipeline->SetStorageTarget(interTarget); });
+				}
+				if (chance(500)) {
+					// A yield (an OBS output starting) or its end, from "the UI".
+					control->yielded = !control->yielded.load();
+					control->Wake();
+				}
+				if (chance(400))
+					timed([&] { pipeline->SetSoftwareDecode(chance(2)); });
+			}
 		}
 
 		nextTick += s.periodNs;
@@ -411,6 +525,7 @@ RunStats RunScenario(const Scenario &s)
 	CodecPipeline::WindowStats w;
 	pipeline->TakeWindowStats(w);
 	Accumulate(stats.total, w);
+	const CodecPipeline::CodecStatus status = pipeline->GetCodecStatus();
 	pipeline->Shutdown();
 	const FrameArena::Stats arenaStats = ring->Arena().GetStats();
 	CHECK(arenaStats.liveBytes <= ring->SlotCount() * (I420FrameBytes(64, 32) + 64));
@@ -445,6 +560,20 @@ RunStats RunScenario(const Scenario &s)
 		    static_cast<unsigned long long>(stats.total.arenaDrops), stats.total.inFlightMax,
 		    static_cast<unsigned long long>(book.snapshots), static_cast<unsigned long long>(book.readyInter),
 		    static_cast<double>(p999) / 1e6, static_cast<double>(maxCall) / 1e6);
+	if (s.hardware)
+		std::printf("    inter: setups %u (failed %u), adoptions %llu, hard errors %llu, codec changes %llu, "
+			    "bridge frames %llu, inter keys %llu (forced %llu), catch-ups %llu (%llu frames, max %.1f "
+			    "ms), no-key waits %llu\n",
+			    setups.load(), setupFailures.load(), static_cast<unsigned long long>(status.adoptions),
+			    static_cast<unsigned long long>(status.hardErrors),
+			    static_cast<unsigned long long>(stats.total.codecChanges),
+			    static_cast<unsigned long long>(stats.total.bridgeFrames),
+			    static_cast<unsigned long long>(stats.total.interKeys),
+			    static_cast<unsigned long long>(stats.total.forcedKeys),
+			    static_cast<unsigned long long>(stats.total.catchUps),
+			    static_cast<unsigned long long>(stats.total.catchUpFrames),
+			    static_cast<double>(stats.total.catchUpMaxNs) / 1e6,
+			    static_cast<unsigned long long>(stats.total.noKeyWaits));
 
 	// Correctness: always strict.
 	CHECK_EQ(counters.corruptDecodes.load(), 0u); // I2: never a P-frame without its reference.
@@ -455,6 +584,16 @@ RunStats RunScenario(const Scenario &s)
 	CHECK_EQ(book.orphanReady, 0u);                 // I3.
 	CHECK_EQ(book.chainsNotOnKey, 0u);
 	CHECK_EQ(stats.total.encoderResets, 0u); // Packets always came back in Send() order.
+	if (s.hardware) {
+		CHECK(status.adoptions > 0);                        // The setup thread's encoders were used...
+		CHECK(stats.total.bridgeFrames > 0);                // ...with the intra codec bridging meanwhile...
+		CHECK(stats.total.codecChanges > status.adoptions); // ...and retired again.
+		CHECK(stats.total.catchUps + stats.total.noKeyWaits > 0); // (Re)starts on a P-frame.
+		if (s.expectHardwareFaults) {
+			CHECK(status.hardErrors > 0);    // Broken and stalled encoders failed...
+			CHECK(setupFailures.load() > 0); // ...and some setups found none.
+		}
+	}
 	CHECK(book.readyInter > 0);
 	CHECK(stats.displayed > 0);
 	CHECK(stats.displayed * 4 >= stats.dueFrames); // Frames keep being shown.
@@ -534,6 +673,22 @@ int main(int argc, char **argv)
 	quick.delayNs = 40000000;
 	quick.maxLatencyFrames = 0;
 	RunScenario(quick);
+
+	Scenario hardware;
+	hardware.name = "hardware setup, bridge, evacuations, yields";
+	hardware.seconds = 6 * scale;
+	hardware.hardware = true;
+	hardware.expectHardwareFaults = true;
+	hardware.mixIntra = false;
+	hardware.injectFailures = false;
+	RunScenario(hardware);
+
+	Scenario hardwareTwo = hardware;
+	hardwareTwo.name = "hardware setup, two intra contexts while bridging";
+	hardwareTwo.seconds = 3 * scale;
+	hardwareTwo.twoContexts = true;
+	hardwareTwo.expectHardwareFaults = false;
+	RunScenario(hardwareTwo);
 
 	done = true;
 	watchdog.join();

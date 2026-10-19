@@ -78,6 +78,11 @@ struct EncoderOptions {
 	uint32_t failOneIn = 0;     // Send() fails once in this many (0: never).
 	uint32_t fillerBytes = 16;  // Packet size: the header, this, and stamp % 97 more.
 	uint32_t seed = 1;
+	// Opened and checked on one thread, used on another (the setup thread's
+	// handover, invariant I8): the guard then checks exclusive use, not one owner.
+	bool handover = false;
+	uint32_t breakAfter = 0; // After this many sends: Broken(), every Send() fails (0: never).
+	uint32_t stallAfter = 0; // After this many sends: no packet comes out any more (0: never).
 	std::function<uint64_t()> clockNs;
 	Counters *counters = nullptr;
 };
@@ -90,21 +95,46 @@ inline uint64_t ReadStamp(const uint8_t *y)
 }
 
 // Checks every call comes from the thread of the first one (and, when set,
-// never from the graphics thread).
+// never from the graphics thread). With `handover`, the object may move from
+// one thread to another (the setup thread opens it, a worker uses it), so the
+// check is that no two calls ever overlap instead.
 class ThreadGuard {
 public:
-	void Check(Counters *counters)
-	{
-		const std::thread::id self = std::this_thread::get_id();
-		if (owner_ == std::thread::id())
-			owner_ = self;
-		if (counters && (self != owner_ ||
-				 (counters->graphicsThread != std::thread::id() && self == counters->graphicsThread)))
-			++counters->threadViolations;
-	}
+	explicit ThreadGuard(bool handover = false) : handover_(handover) {}
+
+	class Scope {
+	public:
+		Scope(ThreadGuard &guard, Counters *counters) : guard_(guard)
+		{
+			const std::thread::id self = std::this_thread::get_id();
+			bool bad = counters && counters->graphicsThread != std::thread::id() &&
+				   self == counters->graphicsThread;
+			if (guard.handover_) {
+				bad = bad || guard.inUse_.fetch_add(1) != 0;
+			} else {
+				if (guard.owner_ == std::thread::id())
+					guard.owner_ = self;
+				bad = bad || self != guard.owner_;
+			}
+			if (bad && counters)
+				++counters->threadViolations;
+		}
+		~Scope()
+		{
+			if (guard_.handover_)
+				guard_.inUse_.fetch_sub(1);
+		}
+		Scope(const Scope &) = delete;
+		Scope &operator=(const Scope &) = delete;
+
+	private:
+		ThreadGuard &guard_;
+	};
 
 private:
+	bool handover_;
 	std::thread::id owner_;
+	std::atomic<int> inUse_{0};
 };
 
 class FakeGopEncoder final : public storage::Encoder {
@@ -112,7 +142,8 @@ public:
 	FakeGopEncoder(const storage::EncoderConfig &config, const EncoderOptions &options)
 		: config_(config),
 		  options_(options),
-		  rng_(options.seed)
+		  rng_(options.seed),
+		  guard_(options.handover)
 	{
 		config_.keyframeInterval = options.inter ? options.gop : 0;
 	}
@@ -125,7 +156,13 @@ public:
 
 	storage::SendResult Send(const I420View &frame, uint64_t seq, bool forceKey) override
 	{
-		guard_.Check(options_.counters);
+		ThreadGuard::Scope scope(guard_, options_.counters);
+		if (broken_)
+			return storage::SendResult::Failed;
+		if (options_.breakAfter > 0 && sends_ >= options_.breakAfter) {
+			broken_ = true;
+			return storage::SendResult::Failed;
+		}
 		if (frame.width != config_.width || frame.height != config_.height) {
 			if (options_.counters)
 				++options_.counters->wrongSize;
@@ -158,6 +195,7 @@ public:
 				--older.sendsLeft;
 		}
 		pending_.push_back(std::move(p));
+		++sends_;
 		sinceKey_ = key ? 1 : sinceKey_ + 1;
 		lastStamp_ = stamp;
 		haveRef_ = true;
@@ -173,8 +211,8 @@ public:
 
 	bool Receive(storage::Packet &out) override
 	{
-		guard_.Check(options_.counters);
-		if (pending_.empty())
+		ThreadGuard::Scope scope(guard_, options_.counters);
+		if (pending_.empty() || (options_.stallAfter > 0 && sends_ >= options_.stallAfter))
 			return false;
 		const Pending &front = pending_.front();
 		if (front.sendsLeft > 0 || (options_.clockNs && options_.clockNs() < front.readyNs))
@@ -185,7 +223,9 @@ public:
 
 	void Drain(uint64_t /*deadlineNs*/, const std::function<void(const storage::Packet &)> &sink) override
 	{
-		guard_.Check(options_.counters);
+		ThreadGuard::Scope scope(guard_, options_.counters);
+		if (options_.stallAfter > 0 && sends_ >= options_.stallAfter)
+			return; // Stalled: nothing comes out.
 		while (!pending_.empty()) {
 			storage::Packet packet;
 			TakeFront(packet);
@@ -194,6 +234,7 @@ public:
 	}
 
 	uint32_t InFlight() const override { return static_cast<uint32_t>(pending_.size()); }
+	bool Broken() const override { return broken_; }
 
 private:
 	struct Pending {
@@ -225,6 +266,8 @@ private:
 	uint32_t sinceKey_ = 0;
 	uint64_t lastStamp_ = 0;
 	bool haveRef_ = false;
+	uint32_t sends_ = 0;
+	bool broken_ = false;
 };
 
 // Decodes FakeGopEncoder packets into a stamped 4:2:0 picture: Y bytes 0-7
@@ -232,20 +275,27 @@ private:
 // whose reference isn't the last frame decoded gets the stamp XOR kCorruptMask.
 class FakeGopDecoder final : public storage::Decoder {
 public:
-	FakeGopDecoder(storage::CodecId codec, Counters *counters) : codec_(codec), counters_(counters) {}
+	FakeGopDecoder(storage::CodecId codec, Counters *counters, bool handover = false, bool hardware = false)
+		: codec_(codec),
+		  counters_(counters),
+		  hardware_(hardware),
+		  guard_(handover)
+	{
+	}
 
 	storage::CodecId Codec() const override { return codec_; }
 	const char *Name() const override { return "fake-gop"; }
+	bool Hardware() const override { return hardware_; }
 	void Flush() override
 	{
-		guard_.Check(counters_);
+		ThreadGuard::Scope scope(guard_, counters_);
 		haveRef_ = false;
 	}
 
 	storage::DecodeStatus Decode(const storage::EncodedFrame &in, bool wantImage, DecodedImage &out,
 				     uint64_t &outSeq) override
 	{
-		guard_.Check(counters_);
+		ThreadGuard::Scope scope(guard_, counters_);
 		outSeq = in.seq;
 		uint32_t magic = 0, width = 0, height = 0;
 		uint64_t seq = 0, stamp = 0, ref = 0;
@@ -313,6 +363,7 @@ private:
 
 	storage::CodecId codec_;
 	Counters *counters_;
+	bool hardware_;
 	ThreadGuard guard_;
 	uint64_t lastStamp_ = 0;
 	bool haveRef_ = false;
