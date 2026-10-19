@@ -187,6 +187,8 @@ target_sources(
     src/cancel-token.hpp
     src/background-tasks.cpp
     src/background-tasks.hpp
+    src/ui-tasks.cpp
+    src/ui-tasks.hpp
     src/win-http.cpp
     src/win-http.hpp
     src/json.cpp

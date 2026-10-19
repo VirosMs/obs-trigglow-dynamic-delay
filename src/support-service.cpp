@@ -21,14 +21,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "bug-report.hpp"
 #include "json.hpp"
 #include "logging.hpp"
+#include "ui-tasks.hpp"
 #include "win-http.hpp"
 
 #include <fstream>
 #include <iterator>
 #include <optional>
-#include <thread>
 
-#include <QCoreApplication>
 #include <QPointer>
 
 extern "C" {
@@ -61,35 +60,37 @@ void LogFailure(const char *component, const char *what, const support::CallInfo
 		TRIGGLOW_LOG_WARN(component, "%s: %s", what, support::StatusName(info.status));
 }
 
+// The redacted log for a ticket: the one already prepared, or read now unless
+// the job was cancelled meanwhile (the read itself can't be interrupted, so it
+// isn't started then).
+std::shared_ptr<const std::string> LogForTicket(std::shared_ptr<const std::string> prepared,
+						const tasks::CancelToken &cancel)
+{
+	if (prepared || cancel.IsCancelled())
+		return prepared;
+	RedactedObsLog fresh = ReadCurrentObsLogRedacted();
+	if (!fresh.found)
+		return nullptr;
+	return std::make_shared<const std::string>(std::move(fresh.text));
+}
+
 } // namespace
 
-template<typename R> void SupportService::RunAsync(std::function<R()> work, std::function<void(const R &)> done)
+template<typename R>
+void SupportService::RunAsync(std::function<R(const tasks::CancelToken &)> work, std::function<void(const R &)> done)
 {
 	QPointer<SupportService> self(this);
-	std::thread([work = std::move(work), done = std::move(done), self]() {
-		// R's default is the "no answer" outcome: an exception in the work
-		// (out of memory) ends up as that instead of terminating OBS.
-		R result{};
-		try {
-			result = work();
-		} catch (...) {
-			TRIGGLOW_LOG_WARN(kSupport, "a background call failed unexpectedly");
-		}
-		QMetaObject::invokeMethod(
-			qApp,
-			[done, result = std::move(result), self]() {
-				if (!self)
-					return; // The dialog was closed before the answer arrived.
-				done(result);
-			},
-			Qt::QueuedConnection);
-	}).detach();
+	uitasks::RunAsync<R>(tasks_, kSupport, std::move(work), [self, done = std::move(done)](const R &result) {
+		if (self)
+			done(result);
+	});
 }
 
 SupportService::SupportService(AuthManager &auth, DiagnosticsProvider diagnostics, QObject *parent)
 	: QObject(parent),
 	  auth_(auth),
-	  diagnostics_(std::move(diagnostics))
+	  diagnostics_(std::move(diagnostics)),
+	  tasks_(uitasks::Registry())
 {
 	if (!auth_.ConfigDir().empty())
 		prefsPath_ = (auth_.ConfigDir() / kPrefsFile).u8string();
@@ -98,26 +99,30 @@ SupportService::SupportService(AuthManager &auth, DiagnosticsProvider diagnostic
 
 SupportService::~SupportService()
 {
+	// The dialog's own calls end now (tasks_, destroyed first): their
+	// answers have nobody to go to.
+	tasks_.CancelAndWait(tasks::kOwnerLimit);
+
 	// A conversation with questions, no ticket and no "it helped": tell the
-	// server it was abandoned (in the background, short timeouts).
-	if (!HasConversation() || ticketCreated_ || resolved_ || !auth_.Store())
+	// server it was abandoned (in the background, short timeouts). Owned by
+	// no one, so closing the dialog doesn't cancel it; OBS closing does.
+	tasks::Registry *registry = uitasks::Registry();
+	if (!HasConversation() || ticketCreated_ || resolved_ || !auth_.Store() || !registry)
 		return;
 	try {
 		const api::Client client = auth_.ApiClient();
 		std::shared_ptr<TokenStore> store = auth_.Store();
 		const std::string sessionId = sessionId_;
-		std::thread([client, store, sessionId]() {
-			try {
-				const support::CallInfo r =
-					support::SendEvent({client, *store}, sessionId, support::Event::CloseAbandoned);
-				if (!r.Ok())
-					TRIGGLOW_LOG_INFO(kTrigi, "close event: HTTP %d", r.httpStatus);
-			} catch (...) {
-				TRIGGLOW_LOG_WARN(kTrigi, "close event failed unexpectedly");
-			}
-		}).detach();
+		const bool started = registry->Run([client, store, sessionId](const tasks::TaskContext &ctx) {
+			const support::CallInfo r = support::SendEvent({client.WithCancel(&ctx.Token()), *store},
+								       sessionId, support::Event::CloseAbandoned);
+			if (!r.Ok() && !ctx.Cancelled())
+				TRIGGLOW_LOG_INFO(kTrigi, "close event: HTTP %d", r.httpStatus);
+		});
+		if (!started && !registry->IsShutDown())
+			TRIGGLOW_LOG_WARN(kTrigi, "close event not sent");
 	} catch (...) {
-		// No thread for it: the server closes the conversation on its own.
+		// The server closes the conversation on its own.
 		TRIGGLOW_LOG_WARN(kTrigi, "close event not sent");
 	}
 }
@@ -320,9 +325,10 @@ SupportService::AskRefusal SupportService::Ask(const QString &question, std::fun
 
 	Enqueue([this, client, store, sessionId, locale, snapshot, text, chars, generation, done]() {
 		RunAsync<Outcome>(
-			[client, store, sessionId, locale, snapshot, text]() {
+			[client, store, sessionId, locale, snapshot, text](const tasks::CancelToken &cancel) {
 				Outcome o;
-				const support::Context ctx{client, *store};
+				const api::Client cancellable = client.WithCancel(&cancel);
+				const support::Context ctx{cancellable, *store};
 				std::string sid = sessionId;
 				if (sid.empty()) {
 					o.sessionTried = true;
@@ -405,7 +411,9 @@ bool SupportService::RequestSummary(std::function<void(const support::SummaryRes
 	const int generation = generation_;
 	Enqueue([this, client, store, sessionId, generation, done]() {
 		RunAsync<support::SummaryResult>(
-			[client, store, sessionId]() { return support::Summarize({client, *store}, sessionId); },
+			[client, store, sessionId](const tasks::CancelToken &cancel) {
+				return support::Summarize({client.WithCancel(&cancel), *store}, sessionId);
+			},
 			[this, generation, done](const support::SummaryResult &r) {
 				busy_ = false;
 				if (generation == generation_)
@@ -426,8 +434,8 @@ void SupportService::QueueEvent(support::Event event)
 	const std::string sessionId = sessionId_;
 	Enqueue([this, client, store, sessionId, event]() {
 		RunAsync<support::CallInfo>(
-			[client, store, sessionId, event]() {
-				return support::SendEvent({client, *store}, sessionId, event);
+			[client, store, sessionId, event](const tasks::CancelToken &cancel) {
+				return support::SendEvent({client.WithCancel(&cancel), *store}, sessionId, event);
 			},
 			[this](const support::CallInfo &r) {
 				// Errors are only worth their HTTP code in the log.
@@ -493,9 +501,10 @@ void SupportService::SubmitTicket(const QString &subject, const QString &message
 	std::shared_ptr<const std::string> prepared = preparedLog_;
 
 	RunAsync<Outcome>(
-		[client, store, s, m, botSessionId, attachLog, prepared]() {
+		[client, store, s, m, botSessionId, attachLog, prepared](const tasks::CancelToken &cancel) {
 			Outcome o;
-			const support::Context ctx{client, *store};
+			const api::Client cancellable = client.WithCancel(&cancel);
+			const support::Context ctx{cancellable, *store};
 			const support::TicketResult t = support::CreateTicket(ctx, s, m, botSessionId);
 			o.events = t.authEvents;
 			o.ticket.status = t.status;
@@ -505,12 +514,7 @@ void SupportService::SubmitTicket(const QString &subject, const QString &message
 			o.ticket.created = true;
 			o.ticket.ticketUrl = QUrl(QString::fromStdString(api::AppSupportTicketUrl(t.ticketId)));
 			if (attachLog) {
-				std::shared_ptr<const std::string> log = prepared;
-				if (!log) {
-					RedactedObsLog fresh = ReadCurrentObsLogRedacted();
-					if (fresh.found)
-						log = std::make_shared<const std::string>(std::move(fresh.text));
-				}
+				const std::shared_ptr<const std::string> log = LogForTicket(prepared, cancel);
 				if (log && !log->empty()) {
 					o.ticket.attachmentTried = true;
 					const support::CallInfo a = support::AttachLog(ctx, t.ticketId, *log);
@@ -544,14 +548,16 @@ void SupportService::SubmitTicket(const QString &subject, const QString &message
 void SupportService::CheckGuestForm(std::function<void(GuestForm)> done)
 {
 	const api::Client client = auth_.ApiClient();
-	RunAsync<support::PublicConfigResult>([client]() { return support::FetchPublicConfig(client); },
-					      [done](const support::PublicConfigResult &r) {
-						      if (!r.Ok())
-							      done(GuestForm::Unknown);
-						      else
-							      done(r.challengeRequired ? GuestForm::WebOnly
-										       : GuestForm::Available);
-					      });
+	RunAsync<support::PublicConfigResult>(
+		[client](const tasks::CancelToken &cancel) {
+			return support::FetchPublicConfig(client.WithCancel(&cancel));
+		},
+		[done](const support::PublicConfigResult &r) {
+			if (!r.Ok())
+				done(GuestForm::Unknown);
+			else
+				done(r.challengeRequired ? GuestForm::WebOnly : GuestForm::Available);
+		});
 }
 
 void SupportService::SubmitGuestTicket(const QString &name, const QString &email, const QString &subject,
@@ -566,9 +572,10 @@ void SupportService::SubmitGuestTicket(const QString &name, const QString &email
 	std::shared_ptr<const std::string> prepared = preparedLog_;
 
 	RunAsync<TicketOutcome>(
-		[client, n, e, s, m, attachLog, prepared]() {
+		[client, n, e, s, m, attachLog, prepared](const tasks::CancelToken &cancel) {
 			TicketOutcome o;
-			const support::PublicTicketResult t = support::CreatePublicTicket(client, n, e, s, m);
+			const api::Client cancellable = client.WithCancel(&cancel);
+			const support::PublicTicketResult t = support::CreatePublicTicket(cancellable, n, e, s, m);
 			o.status = t.status;
 			o.retryAfterSeconds = t.retryAfterSeconds;
 			o.needsWebForm = t.status == support::Status::CaptchaRequired;
@@ -578,16 +585,11 @@ void SupportService::SubmitGuestTicket(const QString &name, const QString &email
 			o.ticketUrl =
 				QUrl(QString::fromStdString(api::PublicSupportTicketUrl(t.ticketId, t.accessToken)));
 			if (attachLog) {
-				std::shared_ptr<const std::string> log = prepared;
-				if (!log) {
-					RedactedObsLog fresh = ReadCurrentObsLogRedacted();
-					if (fresh.found)
-						log = std::make_shared<const std::string>(std::move(fresh.text));
-				}
+				const std::shared_ptr<const std::string> log = LogForTicket(prepared, cancel);
 				if (log && !log->empty()) {
 					o.attachmentTried = true;
 					const support::CallInfo a =
-						support::AttachLogPublic(client, t.ticketId, t.accessToken, *log);
+						support::AttachLogPublic(cancellable, t.ticketId, t.accessToken, *log);
 					o.attachmentSent = a.Ok();
 					o.attachmentStatus = a.status;
 				} else {
@@ -615,8 +617,10 @@ void SupportService::SubmitGuestTicket(const QString &name, const QString &email
 void SupportService::PrepareLog(std::function<void(const PreparedLog &)> done)
 {
 	RunAsync<PreparedLog>(
-		[]() {
+		[](const tasks::CancelToken &cancel) {
 			PreparedLog p;
+			if (cancel.IsCancelled())
+				return p; // The dialog is closing: nobody waits for it.
 			RedactedObsLog log = ReadCurrentObsLogRedacted();
 			p.found = log.found;
 			p.capped = log.capped;

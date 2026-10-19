@@ -45,6 +45,7 @@ extern "C" {
 #include "obs-frontend-bridge.hpp"
 #include "overlay-badge.hpp"
 #include "settings-ui.hpp"
+#include "ui-tasks.hpp"
 #include "ui-theme.hpp"
 #include "video-delay-filter.hpp"
 
@@ -301,6 +302,11 @@ bool obs_module_load(void)
 	trigglow::VideoDelayFilter::Register();
 	trigglow::AudioDelayFilter::Register();
 
+	// Background jobs (sign-in, Trigi, tickets, the update check): before
+	// anything below can start one. Stopped first thing in
+	// obs_module_unload().
+	trigglow::uitasks::Start();
+
 	g_state = new PluginState();
 
 	// Before the dock and the first overlay image use them.
@@ -352,6 +358,13 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+	// Before anything is torn down: aborts every network call still in
+	// flight (a Trigi answer can take up to 90 s), drops every result not yet
+	// delivered and waits for those threads, at most 2 s in all. Nothing of
+	// this plugin runs on another thread, or from Qt's event queue, after OBS
+	// unloads it.
+	trigglow::uitasks::Shutdown();
+
 	if (!g_state)
 		return;
 
@@ -362,8 +375,8 @@ void obs_module_unload(void)
 	// back into.
 	if (g_state->hotkeys)
 		g_state->hotkeys->Shutdown();
-	// Cancels any in-flight login poll timer before teardown -- see
-	// AuthManager::Shutdown().
+	// Cancels any in-flight login poll timer before teardown (its network
+	// calls already ended above) -- see AuthManager::Shutdown().
 	if (g_state->authManager)
 		g_state->authManager->Shutdown();
 	g_state->bridge.Shutdown();

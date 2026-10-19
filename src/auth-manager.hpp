@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "api-client.hpp"
 #include "auth-client.hpp"
+#include "background-tasks.hpp"
 #include "token-store.hpp"
 
 class QTimer;
@@ -80,10 +81,12 @@ public:
 	~AuthManager() override;
 
 	// Loads the stored sign-in (or migrates a v0.5.x one) and checks it once
-	// with the server, in the background. Call once from obs_module_load()
-	// (it resolves the module's config folder, only possible during load).
+	// with the server, in the background. Call once from obs_module_load(),
+	// after uitasks::Start() (it resolves the module's config folder, only
+	// possible during load).
 	void Init();
-	// Stops a sign-in wait. Call from obs_module_unload().
+	// Stops a sign-in wait and aborts this object's calls in flight. Call
+	// from obs_module_unload().
 	void Shutdown();
 
 	// Signed in: a plugin token, or a v0.5.x sign-in still waiting for its
@@ -150,11 +153,12 @@ private:
 	void StopPolling();
 	void NotifyChanged();
 
-	// Runs `work` (blocking network calls) on a short-lived background thread
-	// and delivers its result back on this object's thread (the OBS/Qt UI
-	// thread) via a queued call to `done` -- guarded by a QPointer so a result
-	// arriving after this AuthManager is gone is silently dropped.
-	template<typename R> void RunAsync(std::function<R()> work, std::function<void(const R &)> done);
+	// Runs `work` (blocking network calls, which must use the token) on a
+	// background thread of tasks_ and delivers its result to `done` on the UI
+	// thread: never after this object is gone or the plugin shut down
+	// (ui-tasks.hpp), with a QPointer check as a second guard.
+	template<typename R>
+	void RunAsync(std::function<R(const tasks::CancelToken &)> work, std::function<void(const R &)> done);
 
 	api::Client client_;
 	std::shared_ptr<TokenStore> store_;
@@ -178,6 +182,10 @@ private:
 	LoginError lastError_ = LoginError::None;
 
 	StatusChangedCallback onStatusChanged_;
+
+	// This object's background calls. Last member, so it is destroyed first:
+	// the calls are aborted before anything they report to goes away.
+	tasks::Group tasks_;
 };
 
 } // namespace trigglow

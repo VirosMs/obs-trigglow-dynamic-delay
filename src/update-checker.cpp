@@ -64,7 +64,7 @@ bool IsNewer(const std::string &latest, const std::string &current)
 
 } // namespace
 
-UpdateCheckResult CheckForUpdate(const std::string &currentVersion)
+UpdateCheckResult CheckForUpdate(const std::string &currentVersion, const tasks::CancelToken *cancel)
 {
 	UpdateCheckResult result;
 
@@ -77,7 +77,10 @@ UpdateCheckResult CheckForUpdate(const std::string &currentVersion)
 	request.userAgent = api::UserAgent(currentVersion);
 	request.headers.push_back({"Accept", "application/vnd.github+json"});
 	request.maxResponseBytes = 1024 * 1024; // The release notes travel along.
+	request.cancel = cancel;
 	const http::Response response = http::Send(request);
+	if (response.error == http::Error::Cancelled)
+		return result; // The dock or OBS is closing.
 	if (!response.Ok() || response.status != 200) {
 		TRIGGLOW_LOG_INFO(kComponent, "update check failed (HTTP %d, %s) -- treating as unknown, not an error",
 				  response.status, http::ErrorName(response.error));

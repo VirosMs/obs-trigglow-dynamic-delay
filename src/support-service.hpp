@@ -28,6 +28,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QString>
 #include <QUrl>
 
+#include "background-tasks.hpp"
 #include "log-redact.hpp"
 #include "support-client.hpp"
 #include "support-diagnostics.hpp"
@@ -39,9 +40,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // and no ticket, tells the server it was abandoned, in the background).
 //
 // Threading: every call below returns at once; the network work runs on a
-// background thread and `done` is called later on the UI thread (never
-// after this object is destroyed). At most one Trigi request (question or
-// summary) is in flight; feedback and close events wait their turn.
+// background thread (ui-tasks.hpp) and `done` is called later on the UI
+// thread, never after this object is destroyed or OBS started closing:
+// destroying it aborts its calls in flight. At most one Trigi request
+// (question or summary) is in flight; feedback and close events wait their
+// turn.
 //
 // What the dialog still owns (contract A3, A5): the first-use notice and its
 // two buttons, the "Include OBS technical data" checkbox with its "See what is
@@ -122,8 +125,9 @@ public:
 		// conversation itself may have come back unavailable). Otherwise the
 		// state to show (support::Status): SessionEnded (keep the text),
 		// Disabled (open the form, keep the text), Outdated, RateLimited,
-		// Network (manual retry), ConversationGone (the next Ask() starts a new
-		// one, keep the text), BadResponse...
+		// Network or Timeout (manual retry; Timeout: sent, but no answer in
+		// time), ConversationGone (the next Ask() starts a new one, keep the
+		// text), BadResponse...
 		support::ReplyResult reply;
 		bool conversationStarted = false; // This question started a new conversation.
 	};
@@ -210,7 +214,10 @@ private:
 	void NoteStatus(const support::CallInfo &info, const char *what);
 	std::string Locale() const;
 
-	template<typename R> void RunAsync(std::function<R()> work, std::function<void(const R &)> done);
+	// work runs on a background thread of tasks_ (its network calls must use
+	// the token); done runs on the UI thread unless this object is gone.
+	template<typename R>
+	void RunAsync(std::function<R(const tasks::CancelToken &)> work, std::function<void(const R &)> done);
 
 	AuthManager &auth_;
 	DiagnosticsProvider diagnostics_;
@@ -232,6 +239,10 @@ private:
 	// Bumped by ForgetConversation(): answers for an older conversation are dropped.
 	int generation_ = 0;
 	std::shared_ptr<const std::string> preparedLog_;
+
+	// This dialog's background calls. Last member, so it is destroyed first:
+	// closing the dialog aborts them before anything else goes away.
+	tasks::Group tasks_;
 };
 
 } // namespace trigglow

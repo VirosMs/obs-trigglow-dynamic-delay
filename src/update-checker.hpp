@@ -20,6 +20,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <string>
 
+#include "cancel-token.hpp"
+
 // Checks this repo's latest published GitHub release against the running
 // plugin's own version -- the ONLY update-awareness this plugin has today:
 // distribution is otherwise fully manual (the user has to notice a new
@@ -27,8 +29,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // simple: a public, unauthenticated GET against GitHub's REST API, no new
 // trigglow.com backend endpoint needed. Kept Qt-free (plain filesystem/
 // networking code only) -- same "one small file, one job" split as
-// bug-report.hpp/win-http.hpp; TrigglowDelayDock does its own threading
-// around this, same RunHttp-style pattern ReportBugDialog uses.
+// bug-report.hpp/win-http.hpp; TrigglowDelayDock runs it as one of its
+// background jobs (ui-tasks.hpp), cancelled when the dock or OBS closes.
 namespace trigglow {
 
 struct UpdateCheckResult {
@@ -76,6 +78,8 @@ inline bool IsOwnReleasePageUrl(const std::string &url)
 // every call in win-http.hpp (this is built directly on top of http::Send).
 // currentVersion: PLUGIN_VERSION (plugin-support.h), passed in rather than
 // read here so this file stays free of that header's C-linkage extern.
-UpdateCheckResult CheckForUpdate(const std::string &currentVersion);
+// cancel: the job's token; when it is cancelled the request ends at once and
+// the result is "not checked", without a log line.
+UpdateCheckResult CheckForUpdate(const std::string &currentVersion, const tasks::CancelToken *cancel = nullptr);
 
 } // namespace trigglow

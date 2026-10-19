@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <utility>
 #include <vector>
 
+#include "background-tasks.hpp"
 #include "buffer-mode-controller.hpp"
 #include "ui-theme.hpp"
 
@@ -315,6 +316,10 @@ private:
 	// fillArmed_ is false whenever the timer is disarmed.
 	uint32_t armedFillGeneration_ = 0;
 	bool fillArmed_ = false;
+
+	// The update check's background job (ui-tasks.hpp). Last member, so it is
+	// destroyed first: a check still running is aborted with the dock.
+	tasks::Group updateTasks_;
 };
 
 } // namespace trigglow

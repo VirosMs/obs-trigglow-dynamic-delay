@@ -18,11 +18,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "auth-manager.hpp"
 #include "logging.hpp"
+#include "ui-tasks.hpp"
 #include "win-http.hpp"
 
-#include <thread>
-
-#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QPointer>
 #include <QTimer>
@@ -62,30 +60,22 @@ void Wipe(std::string &s)
 
 } // namespace
 
-template<typename R> void AuthManager::RunAsync(std::function<R()> work, std::function<void(const R &)> done)
+template<typename R>
+void AuthManager::RunAsync(std::function<R(const tasks::CancelToken &)> work, std::function<void(const R &)> done)
 {
 	QPointer<AuthManager> self(this);
-	std::thread([work = std::move(work), done = std::move(done), self]() {
-		// R's default is the "no answer" outcome: an exception in the work
-		// (out of memory) ends up as that instead of terminating OBS.
-		R result{};
-		try {
-			result = work();
-		} catch (...) {
-			TRIGGLOW_LOG_WARN(kComponent, "a background call failed unexpectedly");
-		}
-		QMetaObject::invokeMethod(
-			qApp,
-			[done, result = std::move(result), self]() {
-				if (!self)
-					return; // AuthManager was destroyed before this result arrived.
-				done(result);
-			},
-			Qt::QueuedConnection);
-	}).detach();
+	uitasks::RunAsync<R>(tasks_, kComponent, std::move(work), [self, done = std::move(done)](const R &result) {
+		if (self)
+			done(result);
+	});
 }
 
-AuthManager::AuthManager(QObject *parent) : QObject(parent), client_(api::Client::Default(PLUGIN_VERSION)) {}
+AuthManager::AuthManager(QObject *parent)
+	: QObject(parent),
+	  client_(api::Client::Default(PLUGIN_VERSION)),
+	  tasks_(uitasks::Registry())
+{
+}
 
 AuthManager::~AuthManager()
 {
@@ -135,9 +125,11 @@ void AuthManager::Init()
 void AuthManager::Shutdown()
 {
 	StopPolling();
-	// Any call already running in the background delivers to a QPointer, so
-	// it becomes a no-op once this object is gone. Clear the callback anyway,
-	// so nothing can call back into a dock that may already be destroyed.
+	// Aborts the calls in flight; none of their results is delivered any
+	// more (obs_module_unload() already did this for every job, through
+	// uitasks::Shutdown()). Clear the callback too, so nothing can call back
+	// into a dock that may already be destroyed.
+	tasks_.CancelAndWait(tasks::kOwnerLimit);
 	onStatusChanged_ = nullptr;
 }
 
@@ -155,8 +147,11 @@ void AuthManager::CheckSession()
 {
 	const api::Client client = client_;
 	std::shared_ptr<TokenStore> store = store_;
-	RunAsync<auth::MeResult>([client, store]() { return auth::CheckSession(client, *store); },
-				 [this](const auth::MeResult &r) { ApplySessionCheck(r); });
+	RunAsync<auth::MeResult>(
+		[client, store](const tasks::CancelToken &cancel) {
+			return auth::CheckSession(client.WithCancel(&cancel), *store);
+		},
+		[this](const auth::MeResult &r) { ApplySessionCheck(r); });
 }
 
 void AuthManager::ApplySessionCheck(const auth::MeResult &r)
@@ -205,12 +200,13 @@ void AuthManager::MigrateLegacy()
 	const api::Client client = client_;
 	std::shared_ptr<TokenStore> store = store_;
 	RunAsync<Outcome>(
-		[client, store]() {
+		[client, store](const tasks::CancelToken &cancel) {
+			const api::Client cancellable = client.WithCancel(&cancel);
 			Outcome o;
-			o.exchange = auth::ExchangeLegacy(client, *store);
+			o.exchange = auth::ExchangeLegacy(cancellable, *store);
 			if (o.exchange == auth::ExchangeStatus::Migrated ||
 			    o.exchange == auth::ExchangeStatus::AlreadyMigrated)
-				o.me = auth::CheckSession(client, *store);
+				o.me = auth::CheckSession(cancellable, *store);
 			return o;
 		},
 		[this](const Outcome &o) {
@@ -279,7 +275,7 @@ void AuthManager::StartLogin()
 
 	const api::Client client = client_;
 	RunAsync<auth::StartResult>(
-		[client]() { return auth::StartLink(client); },
+		[client](const tasks::CancelToken &cancel) { return auth::StartLink(client.WithCancel(&cancel)); },
 		[this, attempt](const auth::StartResult &r) {
 			if (attempt != loginAttempt_)
 				return; // Cancelled (or restarted) meanwhile.
@@ -359,8 +355,8 @@ void AuthManager::PollOnce()
 	std::shared_ptr<TokenStore> store = store_;
 	const auth::LinkRequest link = *link_;
 	RunAsync<auth::PollResult>(
-		[client, store, link]() {
-			auth::PollResult r = auth::PollLink(client, link);
+		[client, store, link](const tasks::CancelToken &cancel) {
+			auth::PollResult r = auth::PollLink(client.WithCancel(&cancel), link);
 			// The token is handed out once: keep it before anything else.
 			if (r.status == auth::PollStatus::Approved)
 				store->Save(r.token);
@@ -457,17 +453,21 @@ void AuthManager::Logout()
 	trigi_ = auth::TrigiInfo{};
 	lastError_ = LoginError::None;
 	TRIGGLOW_LOG_INFO(kComponent, "signed out");
-	if (!token.empty() && http::Available()) {
+	tasks::Registry *registry = uitasks::Registry();
+	if (!token.empty() && http::Available() && registry) {
 		// Revoke it on the server (short timeouts); only the status is logged.
+		// Owned by no one: it finishes even if this object goes away, and only
+		// OBS closing cancels it.
 		const api::Client client = client_;
-		std::thread([client, token]() mutable {
-			const api::Result r = auth::Logout(client, token);
+		registry->Run([client, token = std::move(token)](const tasks::TaskContext &ctx) mutable {
+			const api::Result r = auth::Logout(client.WithCancel(&ctx.Token()), token);
 			Wipe(token);
-			if (!r.Ok() && !r.Is(401))
+			if (!r.Ok() && !r.Is(401) && !r.Cancelled())
 				TRIGGLOW_LOG_INFO(kComponent, "sign-out: the server didn't confirm (HTTP %d)",
 						  r.status);
-		}).detach();
+		});
 	}
+	Wipe(token);
 	NotifyChanged();
 }
 

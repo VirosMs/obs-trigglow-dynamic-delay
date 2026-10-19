@@ -24,13 +24,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 #include "report-bug-dialog.hpp"
 #include "scene-combo-box.hpp"
+#include "ui-tasks.hpp"
 #include "update-checker.hpp"
 
 #include <plugin-support.h>
 
 #include <algorithm>
 #include <cmath>
-#include <thread>
 
 #include <QAccessible>
 #include <QApplication>
@@ -159,7 +159,8 @@ private:
 TrigglowDelayDock::TrigglowDelayDock(BufferModeController &bufferController, AuthManager &authManager, QWidget *parent)
 	: QWidget(parent),
 	  bufferController_(bufferController),
-	  authManager_(authManager)
+	  authManager_(authManager),
+	  updateTasks_(uitasks::Registry())
 {
 	BuildUi();
 	CheckForUpdateAsync();
@@ -1510,28 +1511,24 @@ void TrigglowDelayDock::OnReportBugClicked()
 
 void TrigglowDelayDock::CheckForUpdateAsync()
 {
-	// Same background-thread + QPointer + QMetaObject::invokeMethod(qApp, ...)
-	// pattern AuthManager::RunHttp and ReportBugDialog's own submit both use
-	// -- CheckForUpdate() is a BLOCKING network call (update-checker.hpp),
-	// must never run on this (the UI) thread.
+	// CheckForUpdate() is a BLOCKING network call (update-checker.hpp): one
+	// of this dock's background jobs (ui-tasks.hpp), aborted when the dock is
+	// destroyed or OBS closes; the result only ever reaches a live dock.
 	QPointer<TrigglowDelayDock> self(this);
-	std::string currentVersion = PLUGIN_VERSION;
-	std::thread([currentVersion, self]() {
-		UpdateCheckResult result = CheckForUpdate(currentVersion);
-		QMetaObject::invokeMethod(
-			qApp,
-			[result, self]() {
-				// Silent on any failure/inconclusive result AND when
-				// already up to date -- see UpdateCheckResult::checked's
-				// comment: this is a nice-to-have notice, never an error
-				// surfaced to the user, and staying quiet when there's
-				// nothing to say is the correct "no news" case, not a bug.
-				if (!self || !result.checked || !result.updateAvailable)
-					return;
-				self->ShowUpdateNotice(result);
-			},
-			Qt::QueuedConnection);
-	}).detach();
+	const std::string currentVersion = PLUGIN_VERSION;
+	uitasks::RunAsync<UpdateCheckResult>(
+		updateTasks_, "update-checker",
+		[currentVersion](const tasks::CancelToken &cancel) { return CheckForUpdate(currentVersion, &cancel); },
+		[self](const UpdateCheckResult &result) {
+			// Silent on any failure/inconclusive result AND when already
+			// up to date -- see UpdateCheckResult::checked's comment: this
+			// is a nice-to-have notice, never an error surfaced to the
+			// user, and staying quiet when there's nothing to say is the
+			// correct "no news" case, not a bug.
+			if (!self || !result.checked || !result.updateAvailable)
+				return;
+			self->ShowUpdateNotice(result);
+		});
 }
 
 void TrigglowDelayDock::ShowUpdateNotice(const UpdateCheckResult &result)
