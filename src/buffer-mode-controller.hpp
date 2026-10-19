@@ -175,6 +175,14 @@ public:
 	// user pressed Disable before the timer fired).
 	void OnFillTimerElapsed();
 
+	// v0.7.0: once a second while Filling/Active (the dock's health timer),
+	// UI thread: reports the frames OBS's encoders' own mixes skipped for
+	// encoding lag to the video filter's storage codec policy, and lets the
+	// buffer's hardware encoder come back once an output that made it yield
+	// has started (3 s after, or 10 s after the yield at the latest). Never
+	// blocks on the graphics thread.
+	void Tick();
+
 	// Persistence, mirroring DelayController::LoadSettings/SaveSettings.
 	// Deliberately never auto-Enable()s on load, same reasoning as
 	// DelayController: this creates/modifies OBS scenes, which should never
@@ -309,6 +317,17 @@ private:
 	// frontend events: all on the UI thread, which is where
 	// ObsFrontendBridge::ListActiveVideoEncoders() must run.
 	void WarnAboutEncodersAboveBuffer();
+
+	// v0.7.0 storage codec: OBS's active video encoders, by family, to the
+	// video filter (Enable, and every output start or stop).
+	void PushObsEncoders();
+	// An output is starting: the filter yields an NVENC session it may hold,
+	// waiting up to 100 ms only near the old session limits (OBS's NVENC
+	// encoders + the starting one + the buffer's >= 4).
+	void YieldForOutputStart();
+	bool yieldPending_ = false;
+	uint64_t yieldSinceNs_ = 0;
+	uint64_t outputStartedNs_ = 0; // An output started since the yield (0 = not yet).
 
 	// The effective delay lives in status_.effectiveDelaySeconds (the one value
 	// audio, video, the dock and the overlay share), not in a member here.

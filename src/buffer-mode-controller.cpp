@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <initializer_list>
 
@@ -34,6 +35,19 @@ constexpr const char *kComponent = "buffer-mode-controller";
 // this file has no Qt (no QString::arg) and isn't worth pulling in a format
 // library for the few status messages that need numbers (Filling's seconds,
 // and the RAM-trimmed variant's two). A "%N" without a value stays as is.
+uint64_t SteadyNowNs()
+{
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+					     std::chrono::steady_clock::now().time_since_epoch())
+					     .count());
+}
+
+// The buffer's hardware encoder gets its engine back this long after an
+// output that made it yield started (design 4.5), or this long after the
+// yield whatever happened.
+constexpr uint64_t kResumeAfterStartNs = 3000000000ULL;
+constexpr uint64_t kResumeAtMostNs = 10000000000ULL;
+
 std::string FormatArgs(const char *tmpl, std::initializer_list<std::string> values)
 {
 	std::string result;
@@ -221,6 +235,64 @@ void BufferModeController::Enable()
 	// the outputs already running right now.
 	warnedEncoders_.clear();
 	WarnAboutEncodersAboveBuffer();
+	// v0.7.0 storage codec: OBS's encoders as they are now, and a fresh
+	// baseline for its mixes' skipped frames.
+	yieldPending_ = false;
+	PushObsEncoders();
+	bridge_.TakeMixSkippedFrames();
+}
+
+void BufferModeController::PushObsEncoders()
+{
+	VideoDelayFilter::ObsEncoderSet set;
+	set.known = true;
+	std::vector<std::string> seen;
+	for (const ActiveVideoEncoder &encoder : bridge_.ListActiveVideoEncoders()) {
+		// One encoder can feed several outputs (stream and replay buffer): one session.
+		if (std::find(seen.begin(), seen.end(), encoder.encoderName) != seen.end())
+			continue;
+		seen.push_back(encoder.encoderName);
+		if (set.count < VideoDelayFilter::ObsEncoderSet::kMax)
+			set.families[set.count++] = storage::FamilyFromObsEncoderId(encoder.encoderId);
+	}
+	bridge_.SetBufferFilterObsEncoders(status_.liveSceneName, set);
+}
+
+void BufferModeController::YieldForOutputStart()
+{
+	if (status_.state != BufferModeState::Filling && status_.state != BufferModeState::Active)
+		return;
+	uint32_t obsNvenc = 0;
+	std::vector<std::string> seen;
+	for (const ActiveVideoEncoder &encoder : bridge_.ListActiveVideoEncoders()) {
+		if (std::find(seen.begin(), seen.end(), encoder.encoderName) != seen.end())
+			continue;
+		seen.push_back(encoder.encoderName);
+		if (storage::FamilyFromObsEncoderId(encoder.encoderId) == storage::EncoderFamily::Nvenc)
+			++obsNvenc;
+	}
+	// OBS's NVENC encoders running, the one starting and the buffer's.
+	const bool wait = obsNvenc + 2 >= 4;
+	bridge_.YieldBufferHwEncoder(status_.liveSceneName, wait);
+	yieldPending_ = true;
+	yieldSinceNs_ = SteadyNowNs();
+	outputStartedNs_ = 0;
+}
+
+void BufferModeController::Tick()
+{
+	if (status_.state != BufferModeState::Filling && status_.state != BufferModeState::Active)
+		return;
+	const uint64_t skipped = bridge_.TakeMixSkippedFrames();
+	if (skipped > 0)
+		bridge_.ReportBufferEncoderLag(status_.liveSceneName, skipped);
+	const uint64_t nowNs = SteadyNowNs();
+	if (yieldPending_ && ((outputStartedNs_ != 0 && nowNs >= outputStartedNs_ + kResumeAfterStartNs) ||
+			      nowNs >= yieldSinceNs_ + kResumeAtMostNs)) {
+		yieldPending_ = false;
+		PushObsEncoders(); // The sessions are recounted before the next setup.
+		bridge_.ResumeBufferHwEncoder(status_.liveSceneName);
+	}
 }
 
 void BufferModeController::OnFillTimerElapsed()
@@ -337,6 +409,7 @@ void BufferModeController::StopDelay(std::string message, bool restoreProgram)
 
 	bridge_.SetDelayOverlay(false, 0);
 	status_.effectiveDelaySeconds = 0;
+	yieldPending_ = false;
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, false);
 	if (restoreProgram) {
@@ -444,10 +517,23 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 		onSceneListRefresh_();
 	if (event == FrontendEvent::ThemeChanged && onThemeChanged_)
 		onThemeChanged_();
+	// v0.7.0: an output about to open its encoder gets the NVENC engine first.
+	if (event == FrontendEvent::StreamingStarting || event == FrontendEvent::RecordingStarting ||
+	    event == FrontendEvent::ReplayBufferStarting)
+		YieldForOutputStart();
+	const bool started = event == FrontendEvent::StreamingStarted || event == FrontendEvent::RecordingStarted ||
+			     event == FrontendEvent::ReplayBufferStarted;
+	const bool stopped = event == FrontendEvent::StreamingStopped || event == FrontendEvent::RecordingStopped ||
+			     event == FrontendEvent::ReplayBufferStopped;
+	const bool busy = status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active;
+	if (started && yieldPending_ && outputStartedNs_ == 0)
+		outputStartedNs_ = SteadyNowNs();
+	if (busy && (started || stopped || event == FrontendEvent::VirtualcamStarted ||
+		     event == FrontendEvent::VirtualcamStopped))
+		PushObsEncoders();
 	// A new output's encoders may encode above the delay buffer. No-op unless
 	// the delay is Filling/Active (see WarnAboutEncodersAboveBuffer).
-	if (event == FrontendEvent::StreamingStarted || event == FrontendEvent::RecordingStarted ||
-	    event == FrontendEvent::ReplayBufferStarted)
+	if (started)
 		WarnAboutEncodersAboveBuffer();
 	if (event == FrontendEvent::BufferRestarted)
 		OnBufferRestarted();

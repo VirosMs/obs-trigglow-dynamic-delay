@@ -806,6 +806,107 @@ bool ObsFrontendBridge::SetBufferFilterCodecWorkers(const std::string &liveScene
 	return true;
 }
 
+bool ObsFrontendBridge::SetBufferFilterObsEncoders(const std::string &liveSceneName,
+						   const VideoDelayFilter::ObsEncoderSet &encoders) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter)
+		return false;
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return false;
+	VideoDelayFilter::ObsEncoderSet copy = encoders;
+	calldata_t cd = {};
+	calldata_set_ptr(&cd, "encoders", &copy);
+	const bool ok = proc_handler_call(procHandler, "set_obs_encoders", &cd);
+	calldata_free(&cd);
+	return ok;
+}
+
+bool ObsFrontendBridge::ReportBufferEncoderLag(const std::string &liveSceneName, uint64_t skippedFrames) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter)
+		return false;
+	return CallIntProc(filter, "report_encoder_lag", "skipped",
+			   static_cast<long long>(std::min<uint64_t>(skippedFrames, INT32_MAX)));
+}
+
+bool ObsFrontendBridge::YieldBufferHwEncoder(const std::string &liveSceneName, bool wait) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter)
+		return false;
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return false;
+	calldata_t cd = {};
+	calldata_set_bool(&cd, "wait", wait);
+	const bool ok = proc_handler_call(procHandler, "yield_hw_encoder", &cd);
+	calldata_free(&cd);
+	return ok;
+}
+
+bool ObsFrontendBridge::ResumeBufferHwEncoder(const std::string &liveSceneName) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter)
+		return false;
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return false;
+	calldata_t cd = {};
+	const bool ok = proc_handler_call(procHandler, "resume_hw_encoder", &cd);
+	calldata_free(&cd);
+	return ok;
+}
+
+uint64_t ObsFrontendBridge::TakeMixSkippedFrames() const
+{
+	struct Ctx {
+		const video_t *mainVideo;
+		std::vector<std::pair<const void *, uint64_t>> mixes;
+	} ctx{obs_get_video(), {}};
+	// Under outputs_mutex: plain reads of active outputs' encoders (an active
+	// output holds its encoders, and they their mixes).
+	obs_enum_outputs(
+		[](void *param, obs_output_t *output) -> bool {
+			auto *c = static_cast<Ctx *>(param);
+			if (!obs_output_active(output))
+				return true;
+			for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS; ++idx) {
+				obs_encoder_t *encoder = obs_output_get_video_encoder2(output, idx);
+				video_t *video = encoder ? obs_encoder_video(encoder) : nullptr;
+				if (!video || video == c->mainVideo)
+					continue;
+				const bool seen = std::any_of(c->mixes.begin(), c->mixes.end(),
+							      [&](const auto &mix) { return mix.first == video; });
+				if (!seen)
+					c->mixes.emplace_back(video, video_output_get_skipped_frames(video));
+			}
+			return true;
+		},
+		&ctx);
+	uint64_t skipped = 0;
+	for (const auto &mix : ctx.mixes) {
+		for (const auto &before : mixSkippedBaselines_) {
+			if (before.first == mix.first && mix.second > before.second)
+				skipped += mix.second - before.second;
+		}
+	}
+	mixSkippedBaselines_ = std::move(ctx.mixes);
+	return skipped;
+}
+
+bool ObsFrontendBridge::HardwareStorageAvailable() const
+{
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	return hwstorage::RegistryHasWorkingEncoder();
+#else
+	return false;
+#endif
+}
+
 bool ObsFrontendBridge::GetBufferPipelineHealth(PipelineHealth &out) const
 {
 	// Through the weak reference only (see the header): no scene walk, no
@@ -1462,6 +1563,7 @@ std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() con
 	struct RawEncoder {
 		std::string outputName;
 		std::string encoderName;
+		std::string encoderId;
 		uint32_t width;
 		uint32_t height;
 		const video_t *parentVideo;
@@ -1482,11 +1584,12 @@ std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() con
 					continue;
 				const char *outputName = obs_output_get_name(output);
 				const char *encoderName = obs_encoder_get_name(encoder);
+				const char *encoderId = obs_encoder_get_id(encoder);
 				// parent_video, not obs_encoder_video(): with an fps divisor the
 				// latter returns a derived video_t, not the mix it renders.
 				list->push_back({outputName ? outputName : "", encoderName ? encoderName : "",
-						 obs_encoder_get_width(encoder), obs_encoder_get_height(encoder),
-						 obs_encoder_parent_video(encoder)});
+						 encoderId ? encoderId : "", obs_encoder_get_width(encoder),
+						 obs_encoder_get_height(encoder), obs_encoder_parent_video(encoder)});
 			}
 			return true;
 		},
@@ -1504,8 +1607,8 @@ std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() con
 			 canvases.others.end())
 			source = encodercheck::VideoSource::OtherCanvasMix;
 		const encodercheck::Size size{r.width, r.height};
-		encoders.push_back({std::move(r.outputName), std::move(r.encoderName), r.width, r.height,
-				    encodercheck::Classify(source, size, mainBase, mainOutput)});
+		encoders.push_back({std::move(r.outputName), std::move(r.encoderName), std::move(r.encoderId), r.width,
+				    r.height, encodercheck::Classify(source, size, mainBase, mainOutput), source});
 	}
 	return encoders;
 }
@@ -1530,11 +1633,29 @@ void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, voi
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
 		mapped = FrontendEvent::StreamingStopped;
 		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STARTING:
+		mapped = FrontendEvent::RecordingStarting;
+		break;
 	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
 		mapped = FrontendEvent::RecordingStarted;
 		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
+		mapped = FrontendEvent::RecordingStopped;
+		break;
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTING:
+		mapped = FrontendEvent::ReplayBufferStarting;
+		break;
 	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED:
 		mapped = FrontendEvent::ReplayBufferStarted;
+		break;
+	case OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED:
+		mapped = FrontendEvent::ReplayBufferStopped;
+		break;
+	case OBS_FRONTEND_EVENT_VIRTUALCAM_STARTED:
+		mapped = FrontendEvent::VirtualcamStarted;
+		break;
+	case OBS_FRONTEND_EVENT_VIRTUALCAM_STOPPED:
+		mapped = FrontendEvent::VirtualcamStopped;
 		break;
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		mapped = FrontendEvent::FinishedLoading;
