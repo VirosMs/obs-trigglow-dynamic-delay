@@ -300,11 +300,21 @@ public:
 	// evacuates to MJPEG if the buffer shares that engine.
 	bool ReportBufferObsEncodeError(const std::string &liveSceneName) const;
 	// Frames OBS skipped for encoding lag, since the last call, in the mixes
-	// of active outputs' video encoders that aren't the main mix (a GPU
-	// rescale, an Enhanced Broadcasting track): video_output_get_skipped_frames()
-	// per mix. The main mix's own count the filter reads itself. A mix seen
-	// for the first time only sets its baseline. Takes outputs_mutex.
+	// of active outputs' video encoders that aren't the main mix (another
+	// canvas, an Enhanced Broadcasting track): video_output_get_skipped_frames()
+	// per mix. The main mix's own count the filter reads itself -- including
+	// for encoders that render it at a lower frame rate (their divisor's
+	// video_t counts the main mix's skipped frames, not frames of its own).
+	// A mix seen for the first time only sets its baseline. Takes outputs_mutex.
 	uint64_t TakeMixSkippedFrames() const;
+	// v0.7.0: every active output with a video encoder has its "stop" signal
+	// watched (weak references; outputs destroyed meanwhile are forgotten): a
+	// stop with OBS_OUTPUT_ENCODE_ERROR becomes FrontendEvent::OutputEncodeError.
+	// The frontend's stream, recording and replay buffer outputs (from their
+	// STARTED events on) and any other plugin's (Aitum Vertical, multi-rtmp,
+	// Source Record), found by BufferModeController's once-a-second Tick().
+	// UI thread; takes outputs_mutex.
+	void WatchOutputStops();
 	// The ceiling OBS's main-canvas encoders put on the buffer
 	// (encodercheck::EncoderCeiling()), 0 x 0 for none.
 	bool SetBufferFilterEncoderCeiling(const std::string &liveSceneName, uint32_t width, uint32_t height) const;
@@ -481,15 +491,10 @@ private:
 	static void BufferRestartedSignal(void *param, calldata_t *data);
 	static void BufferRestartedTask(void *param);
 
-	// v0.7.0: the frontend's stream, recording and replay buffer outputs'
-	// "stop" signals, watched from their STARTED events on (weak references,
-	// reconnected if OBS recreated the output): a stop with
-	// OBS_OUTPUT_ENCODE_ERROR becomes FrontendEvent::OutputEncodeError.
-	void WatchOutputStops();
-	void UnwatchOutputStop(size_t slot);
+	void UnwatchOutputStops(); // Shutdown: disconnects every watched output.
 	static void OutputStopSignal(void *param, calldata_t *data);
 	static void OutputEncodeErrorTask(void *param);
-	obs_weak_output_t *watchedOutputs_[3] = {nullptr, nullptr, nullptr}; // UI thread.
+	std::vector<obs_weak_output_t *> watchedOutputs_; // UI thread.
 
 	// Locates the video-delay filter previously attached to `liveSceneName`'s
 	// source by EnsureBufferWrapperScene, if the wrapper scene, its

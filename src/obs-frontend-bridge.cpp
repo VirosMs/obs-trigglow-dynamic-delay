@@ -87,8 +87,7 @@ void ObsFrontendBridge::Shutdown()
 	// Unguards them too: the "enable" handler must not outlive this bridge.
 	ForgetActiveBufferFilter();
 	ForgetActiveAudioFilters();
-	for (size_t i = 0; i < 3; ++i)
-		UnwatchOutputStop(i);
+	UnwatchOutputStops();
 
 	if (g_eventBridge == this)
 		g_eventBridge = nullptr; // A BufferRestartedTask() still queued finds it gone.
@@ -869,22 +868,29 @@ uint64_t ObsFrontendBridge::TakeMixSkippedFrames() const
 		const video_t *mainVideo;
 		std::vector<std::pair<const void *, uint64_t>> mixes;
 	} ctx{obs_get_video(), {}};
-	// Under outputs_mutex: plain reads of active outputs' encoders (an active
-	// output holds its encoders, and they their mixes).
+	// Under outputs_mutex. Each encoder is held (a reference of our own) while
+	// it's read: the output could be stopping meanwhile, and stopping frees
+	// an encoder's frame-rate divisor video_t. Its mix is the parent video
+	// (obs_encoder_parent_video(), the canvas's own, which the canvas keeps):
+	// never obs_encoder_video(), which for an encoder with a divisor is that
+	// derived video_t -- not the main mix by pointer, yet counting the main
+	// mix's skipped frames, which the filter already reads itself.
 	obs_enum_outputs(
 		[](void *param, obs_output_t *output) -> bool {
 			auto *c = static_cast<Ctx *>(param);
 			if (!obs_output_active(output))
 				return true;
 			for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS; ++idx) {
-				obs_encoder_t *encoder = obs_output_get_video_encoder2(output, idx);
-				video_t *video = encoder ? obs_encoder_video(encoder) : nullptr;
-				if (!video || video == c->mainVideo)
+				obs_encoder_t *encoder =
+					obs_encoder_get_ref(obs_output_get_video_encoder2(output, idx));
+				if (!encoder)
 					continue;
-				const bool seen = std::any_of(c->mixes.begin(), c->mixes.end(),
-							      [&](const auto &mix) { return mix.first == video; });
-				if (!seen)
+				video_t *video = obs_encoder_parent_video(encoder);
+				if (video && video != c->mainVideo &&
+				    std::none_of(c->mixes.begin(), c->mixes.end(),
+						 [&](const auto &mix) { return mix.first == video; }))
 					c->mixes.emplace_back(video, video_output_get_skipped_frames(video));
+				obs_encoder_release(encoder);
 			}
 			return true;
 		},
@@ -916,33 +922,58 @@ bool ObsFrontendBridge::ReportBufferObsEncodeError(const std::string &liveSceneN
 
 void ObsFrontendBridge::WatchOutputStops()
 {
-	obs_output_t *outputs[3] = {obs_frontend_get_streaming_output(), obs_frontend_get_recording_output(),
-				    obs_frontend_get_replay_buffer_output()};
-	for (size_t i = 0; i < 3; ++i) {
-		obs_output_t *output = outputs[i];
-		if (!output)
+	// Outputs destroyed meanwhile: their signal handler went with them.
+	for (auto it = watchedOutputs_.begin(); it != watchedOutputs_.end();) {
+		if (obs_output_t *alive = obs_weak_output_get_output(*it)) {
+			obs_output_release(alive);
+			++it;
 			continue;
-		if (!watchedOutputs_[i] || !obs_weak_output_references_output(watchedOutputs_[i], output)) {
-			UnwatchOutputStop(i);
+		}
+		obs_weak_output_release(*it);
+		it = watchedOutputs_.erase(it);
+	}
+	// Active outputs with a video encoder, each with a reference of our own
+	// (taken under outputs_mutex, connected after it).
+	std::vector<obs_output_t *> active;
+	obs_enum_outputs(
+		[](void *param, obs_output_t *output) -> bool {
+			auto *list = static_cast<std::vector<obs_output_t *> *>(param);
+			if (!obs_output_active(output))
+				return true;
+			for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS; ++idx) {
+				if (obs_output_get_video_encoder2(output, idx)) {
+					if (obs_output_t *ref = obs_output_get_ref(output))
+						list->push_back(ref);
+					break;
+				}
+			}
+			return true;
+		},
+		&active);
+	for (obs_output_t *output : active) {
+		const bool watched =
+			std::any_of(watchedOutputs_.begin(), watchedOutputs_.end(),
+				    [&](obs_weak_output_t *w) { return obs_weak_output_references_output(w, output); });
+		if (!watched) {
 			signal_handler_connect(obs_output_get_signal_handler(output), "stop",
 					       &ObsFrontendBridge::OutputStopSignal, this);
-			watchedOutputs_[i] = obs_output_get_weak_output(output);
+			watchedOutputs_.push_back(obs_output_get_weak_output(output));
 		}
 		obs_output_release(output);
 	}
 }
 
-void ObsFrontendBridge::UnwatchOutputStop(size_t slot)
+void ObsFrontendBridge::UnwatchOutputStops()
 {
-	if (!watchedOutputs_[slot])
-		return;
-	if (obs_output_t *output = obs_weak_output_get_output(watchedOutputs_[slot])) {
-		signal_handler_disconnect(obs_output_get_signal_handler(output), "stop",
-					  &ObsFrontendBridge::OutputStopSignal, this);
-		obs_output_release(output);
+	for (obs_weak_output_t *weak : watchedOutputs_) {
+		if (obs_output_t *output = obs_weak_output_get_output(weak)) {
+			signal_handler_disconnect(obs_output_get_signal_handler(output), "stop",
+						  &ObsFrontendBridge::OutputStopSignal, this);
+			obs_output_release(output);
+		}
+		obs_weak_output_release(weak);
 	}
-	obs_weak_output_release(watchedOutputs_[slot]);
-	watchedOutputs_[slot] = nullptr;
+	watchedOutputs_.clear();
 }
 
 void ObsFrontendBridge::OutputStopSignal(void *param, calldata_t *data)
