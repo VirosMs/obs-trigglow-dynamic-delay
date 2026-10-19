@@ -62,10 +62,10 @@ constexpr const char *kSettingCodecWorkers = "codec_workers";
 constexpr const char *kSettingBufferCodec = "buffer_codec";
 // The default: the hardware codec where it works (the user's decision for v0.7.0).
 constexpr const char *kDefaultBufferCodec = "auto";
-// v0.7.0, written by ObsFrontendBridge::SetBufferFilterStorageClass() on
-// every Enable(): "inter" or "intra" (anything else reads as intra).
+// v0.7.0, written by the set_storage_class proc (ObsFrontendBridge::
+// SetBufferFilterStorageClass(), every Enable()): bufferfit::RingClassName(),
+// "intra", "intra-gop" or "inter" (anything else reads as intra).
 constexpr const char *kSettingStorageClass = "storage_class";
-constexpr const char *kStorageClassInter = "inter";
 // The one entry of the filter's properties: a note that the dock manages it
 // (no delay or quality fields, see GetProperties()). Never a stored setting.
 constexpr const char *kPropertyManagedInfo = "trigglow_managed_info";
@@ -456,14 +456,14 @@ const char *BackendLabel(storage::Backend backend)
 	return "?";
 }
 
-// The storage class a cycle may have (only with FFmpeg: inter-frame codecs need it).
-bool StorageInter(bool requested)
+// The ring class a cycle may have (only with FFmpeg: inter-frame codecs need it).
+bufferfit::RingClass RingClassFor(bufferfit::RingClass requested)
 {
 #ifdef TRIGGLOW_HAVE_FFMPEG
 	return requested;
 #else
 	(void)requested;
-	return false;
+	return bufferfit::RingClass::Intra;
 #endif
 }
 
@@ -516,7 +516,7 @@ VideoDelayFilter::BufferFitEstimate
 VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight, uint32_t sourceWidth,
 				    uint32_t sourceHeight, uint32_t baseWidth, uint32_t baseHeight,
 				    uint32_t outputWidth, uint32_t outputHeight, uint32_t fpsNum, uint32_t fpsDen,
-				    bool capToOutput, bool storageInter)
+				    bool capToOutput, bufferfit::RingClass ringClass)
 {
 	bufferfit::Input in;
 	in.sourceWidth = sourceWidth;
@@ -531,7 +531,7 @@ VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t min
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
 	in.capToOutput = capToOutput;
-	bufferfit::ApplyStorageClass(in, StorageInter(storageInter), kAssumedCompressionRatio);
+	bufferfit::ApplyStorageClass(in, RingClassFor(ringClass), kAssumedCompressionRatio);
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return {};
@@ -1055,9 +1055,11 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
 	in.capToOutput = configuredOutputCap_.load();
-	// v0.7.0 (design 6.4): the cycle's storage class -- the same one
+	// v0.7.0 (design 6.4): the cycle's ring class -- the same one
 	// PlannedEffectiveDelaySeconds() reads, so audio gets this whole-second delay.
-	bufferfit::ApplyStorageClass(in, StorageInter(configuredStorageInter_.load()), kAssumedCompressionRatio);
+	const bufferfit::RingClass ringClass =
+		RingClassFor(static_cast<bufferfit::RingClass>(configuredRingClass_.load()));
+	bufferfit::ApplyStorageClass(in, ringClass, kAssumedCompressionRatio);
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return;
@@ -1218,8 +1220,8 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	char storageClass[96];
 	if (in.keyframeIntervalFrames > 0)
 		std::snprintf(
-			storageClass, sizeof(storageClass), "inter (assumed %.0fx, ring +%llu slots of GOP margin)",
-			in.compressionRatio,
+			storageClass, sizeof(storageClass), "%s (assumed %.0fx, ring +%llu slots of GOP margin)",
+			bufferfit::RingClassName(ringClass), in.compressionRatio,
 			static_cast<unsigned long long>(bufferfit::SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen,
 									       in.keyframeIntervalFrames) -
 							bufferfit::SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen)));
@@ -1864,12 +1866,17 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 				  "\"mjpeg\" forces MJPEG",
 				  kSettingBufferCodec);
 	const bool bufferCodecAuto = bufferCodec.mode == storage::BufferCodecMode::Auto;
-	const bool storageInter =
-		std::strcmp(obs_data_get_string(settings, kSettingStorageClass), kStorageClassInter) == 0;
-	if (storageInter != configuredStorageInter_.load()) {
-		configuredStorageInter_ = storageInter;
-		TRIGGLOW_LOG_INFO(kComponent, "storage class %s for the next delay cycle",
-				  storageInter ? "inter" : "intra");
+	{
+		// Normally applied already by the set_storage_class proc (this
+		// Update() comes a video tick later); the settings say the same.
+		std::lock_guard<std::mutex> lock(managedMutex_);
+		const bufferfit::RingClass ringClass =
+			bufferfit::ParseRingClass(obs_data_get_string(settings, kSettingStorageClass));
+		if (static_cast<uint8_t>(ringClass) != configuredRingClass_.load()) {
+			configuredRingClass_ = static_cast<uint8_t>(ringClass);
+			TRIGGLOW_LOG_INFO(kComponent, "storage class %s for the next delay cycle",
+					  bufferfit::RingClassName(ringClass));
+		}
 	}
 	if (bufferCodecAuto != configuredBufferCodecAuto_.load()) {
 		configuredBufferCodecAuto_ = bufferCodecAuto;
@@ -2313,6 +2320,8 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 				 filter);
 		proc_handler_add(procHandler, "void report_obs_encode_error()",
 				 &VideoDelayFilter::ReportObsEncodeErrorProc, filter);
+		proc_handler_add(procHandler, "void set_storage_class(in int ring_class)",
+				 &VideoDelayFilter::SetStorageClassProc, filter);
 	}
 
 	return filter;
@@ -2403,15 +2412,15 @@ uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
 	if (minResolutionHeight == 0)
 		minResolutionHeight = kDefaultMinResolutionHeight;
 	const bool capToOutput = obs_data_get_bool(settings, kSettingBufferOutputCap);
-	// The same storage class EnsureRingSized() sizes with (invariant I9).
-	const bool storageInter =
-		std::strcmp(obs_data_get_string(settings, kSettingStorageClass), kStorageClassInter) == 0;
+	// The same ring class EnsureRingSized() sizes with (invariant I9).
+	const bufferfit::RingClass ringClass =
+		bufferfit::ParseRingClass(obs_data_get_string(settings, kSettingStorageClass));
 	obs_data_release(settings);
 	if (delaySeconds == 0)
 		return 0;
 	return EstimateBufferFit(delaySeconds, minResolutionHeight, sourceWidth, sourceHeight, ovi.base_width,
 				 ovi.base_height, ovi.output_width, ovi.output_height, ovi.fps_num, ovi.fps_den,
-				 capToOutput, storageInter)
+				 capToOutput, ringClass)
 		.effectiveSeconds;
 }
 
@@ -2506,6 +2515,32 @@ void VideoDelayFilter::YieldHwEncoderProc(void *data, calldata_t *params)
 	TRIGGLOW_LOG_INFO(kComponent,
 			  "storage codec: gave the NVENC session to an OBS output starting (%s after %.0f ms)",
 			  open == 0 ? "closed" : "still closing", static_cast<double>(os_gettime_ns() - startNs) / 1e6);
+}
+
+void VideoDelayFilter::SetStorageClassProc(void *data, calldata_t *params)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(data);
+	const long long value = calldata_int(params, "ring_class");
+	const bufferfit::RingClass ringClass = value == static_cast<long long>(bufferfit::RingClass::Inter)
+						       ? bufferfit::RingClass::Inter
+					       : value == static_cast<long long>(bufferfit::RingClass::IntraWithGop)
+						       ? bufferfit::RingClass::IntraWithGop
+						       : bufferfit::RingClass::Intra;
+	// At once, and into the settings in the same step (what the scene
+	// collection saves, and what PlannedEffectiveDelaySeconds() and the
+	// deferred Update() read): a video filter's obs_source_update() only
+	// reaches Update() on the next video tick, and the first ring could be
+	// sized with the previous cycle's class meanwhile.
+	std::lock_guard<std::mutex> lock(filter->managedMutex_);
+	if (static_cast<uint8_t>(ringClass) != filter->configuredRingClass_.load()) {
+		filter->configuredRingClass_ = static_cast<uint8_t>(ringClass);
+		TRIGGLOW_LOG_INFO(kComponent, "storage class %s for the next delay cycle",
+				  bufferfit::RingClassName(ringClass));
+	}
+	if (obs_data_t *settings = obs_source_get_settings(filter->filterSource_)) {
+		obs_data_set_string(settings, kSettingStorageClass, bufferfit::RingClassName(ringClass));
+		obs_data_release(settings);
+	}
 }
 
 void VideoDelayFilter::ReportObsEncodeErrorProc(void *data, calldata_t * /*params*/)

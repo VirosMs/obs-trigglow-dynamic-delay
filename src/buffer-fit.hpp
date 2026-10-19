@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 // Pure sizing math for VideoDelayFilter's RAM ring: which resolution to buffer
 // at and how many frames fit the RAM budget. Deliberately free of any libobs
@@ -88,11 +89,24 @@ struct Input {
 constexpr double kInterCompressionRatio = 12.0;
 // The inter codec's keyframe interval: half a second of frames, ceil(fps / 2).
 uint32_t KeyframeIntervalFrames(uint32_t fpsNum, uint32_t fpsDen);
-// What the storage class sets in an Input: the ratio (intraRatio for intra:
+
+// What a delay cycle's ring is sized for, fixed for the cycle:
+//   Intra         MJPEG all the way: the intra ratio, a quarter second of slack.
+//   IntraWithGop  MJPEG's ratio, but a GOP of slack: a hardware inter-frame
+//                 codec may take over during the cycle -- the first one of a
+//                 session, before any encoder passed a probe -- and a
+//                 restarted decoder must still find its key in the ring.
+//   Inter         a hardware codec worked this session: 12x, a GOP of slack.
+enum class RingClass : uint8_t { Intra, IntraWithGop, Inter };
+// "intra", "intra-gop", "inter": the filter's "storage_class" setting.
+const char *RingClassName(RingClass ringClass);
+// The reverse; anything else (missing, misspelled) is Intra, the conservative one.
+RingClass ParseRingClass(std::string_view name);
+// What the class sets in an Input: the ratio (intraRatio for the intra ones:
 // 5 with FFmpeg, 1 without) and the GOP margin. EnsureRingSized() and
 // EstimateBufferFit() both go through it, so the dock, the audio delay and the
 // ring get the same whole-second delay.
-void ApplyStorageClass(Input &in, bool inter, double intraRatio);
+void ApplyStorageClass(Input &in, RingClass ringClass, double intraRatio);
 
 // Buffer widths are multiples of this (see the header comment).
 constexpr uint32_t kWidthAlignment = 8;

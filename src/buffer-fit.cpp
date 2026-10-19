@@ -59,10 +59,32 @@ uint32_t KeyframeIntervalFrames(uint32_t fpsNum, uint32_t fpsDen)
 	return static_cast<uint32_t>((static_cast<uint64_t>(fpsNum) + 2ULL * fpsDen - 1) / (2ULL * fpsDen));
 }
 
-void ApplyStorageClass(Input &in, bool inter, double intraRatio)
+const char *RingClassName(RingClass ringClass)
 {
-	in.compressionRatio = inter ? kInterCompressionRatio : intraRatio;
-	in.keyframeIntervalFrames = inter ? KeyframeIntervalFrames(in.fpsNum, in.fpsDen) : 0;
+	switch (ringClass) {
+	case RingClass::Intra:
+		return "intra";
+	case RingClass::IntraWithGop:
+		return "intra-gop";
+	case RingClass::Inter:
+		return "inter";
+	}
+	return "intra";
+}
+
+RingClass ParseRingClass(std::string_view name)
+{
+	if (name == "inter")
+		return RingClass::Inter;
+	if (name == "intra-gop")
+		return RingClass::IntraWithGop;
+	return RingClass::Intra;
+}
+
+void ApplyStorageClass(Input &in, RingClass ringClass, double intraRatio)
+{
+	in.compressionRatio = ringClass == RingClass::Inter ? kInterCompressionRatio : intraRatio;
+	in.keyframeIntervalFrames = ringClass == RingClass::Intra ? 0 : KeyframeIntervalFrames(in.fpsNum, in.fpsDen);
 }
 
 uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen)

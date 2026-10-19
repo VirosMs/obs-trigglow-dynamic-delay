@@ -30,6 +30,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 using trigglow::bufferfit::AlignedWidth;
 using trigglow::bufferfit::ApplyStorageClass;
+using trigglow::bufferfit::ParseRingClass;
+using trigglow::bufferfit::RingClass;
+using trigglow::bufferfit::RingClassName;
 using trigglow::bufferfit::Compute;
 using trigglow::bufferfit::DesiredFrames;
 using trigglow::bufferfit::EvenDim;
@@ -704,22 +707,37 @@ void TestStorageClass()
 
 	Input intra = MakeInput(2560, 1440, 2560, 1440, 1440);
 	Input inter = intra;
-	ApplyStorageClass(intra, false, 5.0);
-	ApplyStorageClass(inter, true, 5.0);
+	Input intraGop = intra;
+	ApplyStorageClass(intra, RingClass::Intra, 5.0);
+	ApplyStorageClass(inter, RingClass::Inter, 5.0);
+	ApplyStorageClass(intraGop, RingClass::IntraWithGop, 5.0);
 	CHECK_NEAR(intra.compressionRatio, 5.0, 1e-9);
 	CHECK_EQ(intra.keyframeIntervalFrames, 0u);
 	CHECK_NEAR(inter.compressionRatio, 12.0, 1e-9);
 	CHECK_EQ(inter.keyframeIntervalFrames, 30u);
+	// The first cycle of a session, hardware possible but not probed yet:
+	// MJPEG's ratio with the GOP margin a restarted decoder needs.
+	CHECK_NEAR(intraGop.compressionRatio, 5.0, 1e-9);
+	CHECK_EQ(intraGop.keyframeIntervalFrames, 30u);
 	Input noFfmpeg = intra;
-	ApplyStorageClass(noFfmpeg, false, 1.0);
+	ApplyStorageClass(noFfmpeg, RingClass::Intra, 1.0);
 	CHECK_NEAR(noFfmpeg.compressionRatio, 1.0, 1e-9);
+	// The filter's "storage_class" setting, both ways; anything else is intra.
+	for (RingClass c : {RingClass::Intra, RingClass::IntraWithGop, RingClass::Inter})
+		CHECK(ParseRingClass(RingClassName(c)) == c);
+	CHECK(ParseRingClass("") == RingClass::Intra);
+	CHECK(ParseRingClass("INTER") == RingClass::Intra);
+	CHECK(ParseRingClass("intra-gop ") == RingClass::Intra);
 
 	// Room to spare: the same buffer and delay, the GOP margin in slots.
 	const Result a = Compute(intra);
 	const Result b = Compute(inter);
-	CHECK(a.fitsFullDuration && b.fitsFullDuration);
+	const Result g = Compute(intraGop);
+	CHECK(a.fitsFullDuration && b.fitsFullDuration && g.fitsFullDuration);
 	CHECK_EQ(a.actualFrames, 1816u);
 	CHECK_EQ(b.actualFrames, 1831u);
+	CHECK_EQ(g.actualFrames, 1831u); // The GOP margin, at intra's ratio.
+	CHECK_EQ(g.effectiveDelaySeconds, 30u);
 	CHECK_EQ(a.bufferWidth, b.bufferWidth);
 	CHECK_EQ(a.bufferHeight, b.bufferHeight);
 	CHECK_EQ(a.effectiveDelaySeconds, 30u);
@@ -731,8 +749,8 @@ void TestStorageClass()
 	k4.delaySeconds = 60;
 	k4.budgetBytes = 8 * kGiB;
 	Input k4Inter = k4;
-	ApplyStorageClass(k4, false, 5.0);
-	ApplyStorageClass(k4Inter, true, 5.0);
+	ApplyStorageClass(k4, RingClass::Intra, 5.0);
+	ApplyStorageClass(k4Inter, RingClass::Inter, 5.0);
 	const Result k4a = Compute(k4);
 	const Result k4b = Compute(k4Inter);
 	CHECK(k4a.reducedByRam);
@@ -745,15 +763,21 @@ void TestStorageClass()
 	Input tight = MakeInput(2560, 1440, 1920, 1080, 720);
 	tight.budgetBytes = 100 * kMiB;
 	Input tightInter = tight;
-	ApplyStorageClass(tight, false, 5.0);
-	ApplyStorageClass(tightInter, true, 5.0);
+	Input tightGop = tight;
+	ApplyStorageClass(tight, RingClass::Intra, 5.0);
+	ApplyStorageClass(tightInter, RingClass::Inter, 5.0);
+	ApplyStorageClass(tightGop, RingClass::IntraWithGop, 5.0);
 	const Result ta = Compute(tight);
 	const Result tb = Compute(tightInter);
+	const Result tg = Compute(tightGop);
 	CHECK_EQ(ta.actualFrames, 379u);
 	CHECK_EQ(tb.actualFrames, 910u); // 104857600 / (1280 * 720 * 1.5 / 12).
+	CHECK_EQ(tg.actualFrames, 379u); // Intra's frames in the same budget...
 	CHECK_EQ(ta.bufferHeight, tb.bufferHeight);
 	CHECK_EQ(ta.effectiveDelaySeconds, 6u);
 	CHECK_EQ(tb.effectiveDelaySeconds, 14u); // (909 - 30) / 60.
+	CHECK_EQ(tg.effectiveDelaySeconds, 5u);  // ...minus the GOP: (378 - 30) / 60.
+	CHECK(WithinBudget(tightGop, tg));
 	CHECK(WithinBudget(tightInter, tb));
 
 	// Sweeps: monotonic in the budget, within it, never past the request.
@@ -766,7 +790,7 @@ void TestStorageClass()
 				sweep.delaySeconds = delay;
 				sweep.fpsNum = fps;
 				sweep.budgetBytes = budgetMiB * kMiB;
-				ApplyStorageClass(sweep, true, 5.0);
+				ApplyStorageClass(sweep, RingClass::Inter, 5.0);
 				const Result r = Compute(sweep);
 				bool ok = WithinBudget(sweep, r) && r.effectiveDelaySeconds <= delay &&
 					  r.actualFrames <= r.desiredFrames;

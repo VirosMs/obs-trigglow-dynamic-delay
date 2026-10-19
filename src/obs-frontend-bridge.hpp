@@ -177,12 +177,12 @@ public:
 	// capToOutput must be what SetBufferFilterOutputCap() pushes (the hidden
 	// buffer_output_cap setting). Returns a zeroed estimate if liveSceneName
 	// doesn't resolve.
-	// storageInter (v0.7.0): the storage class the ring is (or would be)
-	// sized for, as SetBufferFilterStorageClass() pushes it.
+	// ringClass (v0.7.0): what the ring is (or would be) sized for, as
+	// SetBufferFilterStorageClass() pushes it.
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(const std::string &liveSceneName,
 							      uint32_t requestedDelaySeconds,
 							      uint32_t minResolutionHeight, bool capToOutput,
-							      bool storageInter) const;
+							      bufferfit::RingClass ringClass) const;
 
 	// Every video encoder (all MAX_OUTPUT_VIDEO_ENCODERS slots, so Enhanced
 	// Broadcasting's extra tracks too) of every ACTIVE output, each with its
@@ -271,11 +271,13 @@ public:
 	// thread, no worker threads. Same rules as SetBufferFilterOutputCap().
 	bool SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const;
 
-	// v0.7.0: the cycle's storage class (design 6.4, invariant I9) into the
-	// filter: "inter" sizes its ring for a hardware inter-frame codec (12x,
-	// a GOP of slack), "intra" for MJPEG. Pushed on every Enable(), fixed for
-	// the cycle. Same rules as SetBufferFilterOutputCap().
-	bool SetBufferFilterStorageClass(const std::string &liveSceneName, bool inter) const;
+	// v0.7.0: the cycle's ring class (design 6.4, invariant I9) into the
+	// filter (bufferfit::RingClass): "inter" sizes its ring for a hardware
+	// inter-frame codec (12x, a GOP of slack), "intra-gop" for MJPEG with a
+	// GOP of slack (hardware may take over), "intra" for MJPEG. Pushed on
+	// every Enable() through the filter's set_storage_class proc (applied at
+	// once), fixed for the cycle. No-op (false) without the filter.
+	bool SetBufferFilterStorageClass(const std::string &liveSceneName, bufferfit::RingClass ringClass) const;
 
 	// v0.7.0: the hidden buffer_codec setting into the filter ("auto" or
 	// "mjpeg"), on every Enable(). Same rules as SetBufferFilterOutputCap().
@@ -326,6 +328,9 @@ public:
 	// Whether a hardware storage codec passed its probe this session (and
 	// isn't blacklisted): the next Enable sizes the ring for the inter class.
 	bool HardwareStorageAvailable() const;
+	// Whether this build and machine can try one at all (Windows, a GPU):
+	// before any probe, the ring keeps a GOP of slack for it.
+	bool HardwareStoragePossible() const;
 
 	// Copies the pipeline health (degradation rung, buffered size, encode
 	// threads, drop/repeat rates -- see pipeline-health.hpp) of the video

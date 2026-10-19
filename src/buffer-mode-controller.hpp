@@ -160,7 +160,7 @@ public:
 							      uint32_t minResolutionHeight) const
 	{
 		return bridge_.EstimateBufferFit(status_.liveSceneName, requestedDelaySeconds, minResolutionHeight,
-						 bufferOutputCap_, PlannedStorageInter());
+						 bufferOutputCap_, PlannedRingClass());
 	}
 
 	// Health of the video buffer's pipeline (v0.6.0, design B.8): the
@@ -339,14 +339,15 @@ private:
 	void PushEncoderCeiling(const std::vector<ActiveVideoEncoder> &active);
 	uint32_t lastCeilingWidth_ = UINT32_MAX; // What was pushed (UINT32_MAX: nothing yet this cycle).
 	uint32_t lastCeilingHeight_ = UINT32_MAX;
-	// The storage class of the cycle running, or (Inactive) of the next one:
+	// The ring class of the cycle running, or (Inactive) of the next one:
 	// inter only with buffer_codec auto, the codec workers, and a hardware
-	// codec that passed its probe this session (the first Enable of a session
-	// is always intra, the conservative one). Design 6.4, invariant I9.
-	bool PlannedStorageInter() const;
-	bool NextCycleStorageInter() const;
-	bool cycleStorageInter_ = false; // Fixed at Enable(), pushed to the filter.
-	bool bufferCodecAuto_ = true;    // Hidden buffer_codec setting, see LoadSettings().
+	// codec that passed its probe this session; before that (the first Enable
+	// of a session) intra with a GOP of slack, in case the hardware takes
+	// over during the cycle; plain intra when it can't. Design 6.4, I9.
+	bufferfit::RingClass PlannedRingClass() const;
+	bufferfit::RingClass NextCycleRingClass() const;
+	bufferfit::RingClass cycleRingClass_ = bufferfit::RingClass::Intra; // Fixed at Enable(), pushed to the filter.
+	bool bufferCodecAuto_ = true; // Hidden buffer_codec setting, see LoadSettings().
 	// An output is starting: the filter yields an NVENC session it may hold,
 	// waiting up to 100 ms only near the old session limits (OBS's NVENC
 	// encoders + the starting one + the buffer's >= 4).

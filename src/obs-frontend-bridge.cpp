@@ -1049,6 +1049,18 @@ bool ObsFrontendBridge::HardwareStorageAvailable() const
 #endif
 }
 
+bool ObsFrontendBridge::HardwareStoragePossible() const
+{
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	// Once per session: the GPUs don't change under a running OBS, and the
+	// dock asks on every change of its delay or quality controls.
+	static const bool anyGpu = !QueryGpuAdapters().empty();
+	return anyGpu;
+#else
+	return false;
+#endif
+}
+
 bool ObsFrontendBridge::SetBufferFilterCodec(const std::string &liveSceneName, bool autoCodec) const
 {
 	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
@@ -1064,16 +1076,24 @@ bool ObsFrontendBridge::SetBufferFilterCodec(const std::string &liveSceneName, b
 	return true;
 }
 
-bool ObsFrontendBridge::SetBufferFilterStorageClass(const std::string &liveSceneName, bool inter) const
+bool ObsFrontendBridge::SetBufferFilterStorageClass(const std::string &liveSceneName,
+						    bufferfit::RingClass ringClass) const
 {
 	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
 	if (!filter) {
 		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterStorageClass(%s): FindBufferFilter returned null, no-op",
-				  inter ? "inter" : "intra");
+				  bufferfit::RingClassName(ringClass));
 		return false;
 	}
+	// The proc applies it at once and writes it into the filter's settings:
+	// an obs_source_update() would only reach the filter's Update() on the
+	// next video tick, and its first ring could be sized with the previous
+	// cycle's class meanwhile. The update is the fallback for a filter
+	// without the proc.
+	if (CallIntProc(filter, "set_storage_class", "ring_class", static_cast<long long>(ringClass)))
+		return true;
 	obs_data_t *settings = obs_data_create();
-	obs_data_set_string(settings, "storage_class", inter ? "inter" : "intra");
+	obs_data_set_string(settings, "storage_class", bufferfit::RingClassName(ringClass));
 	obs_source_update(filter, settings);
 	obs_data_release(settings);
 	return true;
@@ -1674,7 +1694,7 @@ uint64_t ObsFrontendBridge::GetBufferBudgetBytes() const
 VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const std::string &liveSceneName,
 									 uint32_t requestedDelaySeconds,
 									 uint32_t minResolutionHeight, bool capToOutput,
-									 bool storageInter) const
+									 bufferfit::RingClass ringClass) const
 {
 	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
 	if (!liveSource)
@@ -1705,7 +1725,7 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 
 	return VideoDelayFilter::EstimateBufferFit(requestedDelaySeconds, minResolutionHeight, width, height, baseWidth,
 						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen, capToOutput,
-						   storageInter);
+						   ringClass);
 }
 
 std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() const

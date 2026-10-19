@@ -171,13 +171,14 @@ public:
 		// in whole seconds (the requested delay when it fits).
 		uint32_t effectiveSeconds = 0;
 	};
-	// storageInter (v0.7.0): the cycle's storage class (design 6.4, I9) --
-	// the inter class assumes 12x and keeps a GOP of slack.
+	// ringClass (v0.7.0): what the cycle's ring is sized for (design 6.4, I9)
+	// -- inter assumes 12x and keeps a GOP of slack, intra-gop keeps intra's
+	// 5x with a GOP of slack.
 	static BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight,
 						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t baseWidth,
 						   uint32_t baseHeight, uint32_t outputWidth, uint32_t outputHeight,
 						   uint32_t fpsNum, uint32_t fpsDen, bool capToOutput,
-						   bool storageInter);
+						   bufferfit::RingClass ringClass);
 
 	// v0.7.0: what the "set_obs_encoders(in ptr encoders)" proc takes (the UI
 	// thread, through ObsFrontendBridge): the families of OBS's active video
@@ -417,6 +418,10 @@ private:
 	//   "report_obs_encode_error()": an OBS output stopped on an encoder
 	//     error -- with the engine shared, the codec policy evacuates.
 	static void ReportObsEncodeErrorProc(void *data, calldata_t *params);
+	//   "set_storage_class(in int ring_class)": the next cycle's ring class
+	//     (bufferfit::RingClass), applied at once and written into the
+	//     settings, like the set_managed_* procs.
+	static void SetStorageClassProc(void *data, calldata_t *params);
 
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	// Written by Update() (UI thread), read by Render() (graphics thread).
@@ -442,11 +447,14 @@ private:
 	// codec where it works), false = "mjpeg". Read strictly in Update().
 	std::atomic<bool> configuredBufferCodecAuto_{false};
 	// "storage_class" (v0.7.0, design 6.4 and invariant I9): what sizes the
-	// ring -- "inter" (assumed 12x, a GOP of slack) or "intra" (5x, a quarter
-	// second). BufferModeController writes it at every Enable, fixed for the
-	// cycle, so EnsureRingSized() and PlannedEffectiveDelaySeconds() read the
-	// same value and video and audio get the same whole-second delay.
-	std::atomic<bool> configuredStorageInter_{false};
+	// ring, a bufferfit::RingClass -- "inter" (assumed 12x, a GOP of slack),
+	// "intra-gop" (5x, a GOP of slack: hardware may take over this cycle) or
+	// "intra" (5x, a quarter second). BufferModeController pushes it at every
+	// Enable through the set_storage_class proc, fixed for the cycle, so
+	// EnsureRingSized() and PlannedEffectiveDelaySeconds() read the same value
+	// and video and audio get the same whole-second delay. Written under
+	// managedMutex_ (with the settings).
+	std::atomic<uint8_t> configuredRingClass_{0};
 	// Managed by the dock (set_managed_* procs, see SetManagedSetting()):
 	// Update() keeps configuredDelaySeconds_ and configuredMinResolutionHeight_
 	// instead of applying the settings' values, and logs one WARN per push if
