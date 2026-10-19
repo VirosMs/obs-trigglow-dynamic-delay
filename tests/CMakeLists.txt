@@ -98,6 +98,7 @@ add_executable(
   "${_src}/frame-ring.hpp"
   "${_src}/frame-arena.cpp"
   "${_src}/frame-arena.hpp"
+  "${_src}/storage-codec.hpp"
 )
 target_include_directories(frame_ring_tests PRIVATE "${_src}")
 set_target_properties(frame_ring_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)

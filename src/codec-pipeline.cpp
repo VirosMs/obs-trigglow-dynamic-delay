@@ -462,7 +462,9 @@ void CodecPipeline::EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t 
 		payload.bytes = static_cast<uint32_t>(storedBytes);
 		payload.width = view.width;
 		payload.height = view.height;
-		payload.compressed = !storeRaw;
+		// MJPEG is the only codec that compresses until the storage codecs
+		// (storage-codec.hpp) replace VideoCodec: every payload is a key.
+		payload.codec = storeRaw ? storage::CodecId::Raw : storage::CodecId::Mjpeg;
 		published = ring.Publish(reservation.index, reservation.generation, payload);
 		if (!published)
 			ring.Arena().Free(allocation);
@@ -497,8 +499,9 @@ void CodecPipeline::EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t 
 bool CodecPipeline::DecodePinned(FrameRing &ring, const FrameRing::ReadView &view, VideoCodec &codec,
 				 std::vector<uint8_t> &scratch, DecodedImage &out)
 {
+	const bool compressed = view.codec != storage::CodecId::Raw;
 	bool ok = view.data != nullptr && view.bytes > 0;
-	if (ok && view.compressed) {
+	if (ok && compressed) {
 		// Copy the packet and let go of the slot before decoding: the pin only
 		// lasts a memcpy (tens of microseconds), not the whole decode.
 		if (scratch.size() < view.bytes)
@@ -525,7 +528,7 @@ bool CodecPipeline::DecodePinned(FrameRing &ring, const FrameRing::ReadView &vie
 		}
 	}
 	ring.Unpin(view);
-	if (ok && view.compressed) {
+	if (ok && compressed) {
 		ok = codec.Decode(scratch.data(), view.bytes, out) && out.width == view.width &&
 		     out.height == view.height;
 		if (!ok)
