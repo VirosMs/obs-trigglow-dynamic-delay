@@ -130,17 +130,21 @@
 
 ## Sending a report
 - **Signed in (Windows)**: the ticket is created from your account, so you only write what happened
-  (the subject is optional). Leave **Attach OBS's log** ticked so the team gets the log, and check it
-  first with **See what is sent**: paths with your Windows user name, URLs, keys, emails and IPs are
-  hidden, but scene and source names may remain. "Ticket sent" offers **View ticket on
+  (the subject is optional). To send the team OBS's log, open **See what is sent**, check it, and
+  then tick **Attach OBS's log** (it starts unticked and can't be ticked before you've seen it):
+  paths with your Windows user name, URLs, keys, emails and IPs are hidden, but names of scenes,
+  sources, audio devices and windows may remain. "Ticket sent" offers **View ticket on
   trigglow.com**; replies arrive by email and in your support panel.
-- **"The ticket was created, but the log couldn't be attached."**: the ticket exists. Press **Save log
-  (no personal data)…** and add that file to the ticket on trigglow.com.
+- **"OBS log not found. The ticket will be sent without it."**: the plugin only attaches the log of
+  the OBS it runs in, and couldn't find it among that OBS's logs (for example, after deleting the log
+  files while OBS was open). Send the report without it, or restart OBS and try again.
+- **"The ticket was created, but the log couldn't be attached."**: the ticket exists. Press **Save
+  redacted log…** and add that file to the ticket on trigglow.com.
 - **Signed out**: the guest form asks for a name and an email to reply to. If the dialog says "To
   send the report from OBS, sign in. You can also use the web form.", trigglow.com is asking guests
   for a human check (captcha), which OBS can't show: sign in, or press **Open web support** and send
-  it from your browser. **Save log (no personal data)…** saves the redacted log so you can attach it
-  there.
+  it from your browser. **Save redacted log…** saves the redacted log so you can attach it there
+  (check it first: names of scenes, sources, audio devices and windows may remain).
 - **"Too many reports in a row. Try again in a few minutes."**: wait and send it again.
 - **"Your Trigglow session has expired. Sign in again from the dock."**: sign in again and send it.
 - **macOS and Linux**: in v0.6.0 the form is shown disabled. Use
@@ -181,8 +185,9 @@ encoding lag) or rendering lag (frames missed).
   decompressed only once however many views are open, but every open view is still extra rendering
   work for OBS.
 - Still stuck: use the dock's **Report a problem** button after having the delay on for at least
-  30 seconds in the same OBS session. It attaches the current OBS log automatically, including the
-  `perf check` and `pipeline check` lines described below.
+  30 seconds in the same OBS session, and attach the current OBS log (check it with **See what is
+  sent**, then tick **Attach OBS's log**): it includes the `perf check` and `pipeline check` lines
+  described below.
 
 ## The dock says "Buffer quality lowered" (amber notice)
 

@@ -23,9 +23,9 @@ sale aquí.
   plugin guarda su propio inicio de sesión, cifrado para tu usuario de Windows, y **Cerrar sesión**
   también lo desconecta en trigglow.com. Tu inicio de sesión de la v0.5.x se pasa solo.
 - **Los reportes desde OBS van a tu cuenta si tienes la sesión iniciada**: sin nombre ni email que
-  escribir, y sigues el ticket en tu panel de soporte de trigglow.com. El log de OBS solo va si dejas
-  marcada su casilla, con tu usuario de Windows, URLs, claves, emails e IPs ocultos, y puedes ver
-  antes qué se envía.
+  escribir, y sigues el ticket en tu panel de soporte de trigglow.com. El log de OBS solo va si marcas
+  su casilla, cosa que puedes hacer después de verlo en **Ver qué se envía**: tu usuario de Windows,
+  URLs, claves, emails e IPs van ocultos, y el diálogo te dice qué puede seguir apareciendo.
 - **Se acabó el "Encoding overloaded" (sobrecarga al codificar) al activar el delay con un lienzo
   mayor que la salida.** Reportado en directo con un lienzo 2560x1440 y una salida 1920x1080 a
   60 fps. El buffer del delay se guarda ahora como mucho a la resolución de salida de OBS (Ajustes →
@@ -437,8 +437,14 @@ sale aquí.
   Sesiones activas → Apps conectadas.
 - **Los inicios de sesión de la v0.5.x se pasan solos** en el primer arranque de la 0.6.0: el inicio
   de sesión antiguo se cambia una vez por el nuevo, y el fichero antiguo en texto plano se sobrescribe
-  y se borra. Si no se puede conectar con trigglow.com, se vuelve a intentar en el siguiente arranque
-  y mientras tanto el delay sigue funcionando.
+  y se borra (también si ya existe un inicio de sesión nuevo). Si no se puede conectar con
+  trigglow.com, se vuelve a intentar en el siguiente arranque y mientras tanto el delay sigue
+  funcionando.
+- **Cerrar sesión siempre se mantiene.** Cerrar sesión mientras el plugin renueva su token, cambia
+  un inicio de sesión de la v0.5.x o espera al navegador nunca hace que la sesión vuelva en el
+  siguiente arranque: un token que el servidor entregue después del cierre no se guarda, y además se
+  revoca. Cerrar "Reportar un problema" mientras renueva el token ya no pone en riesgo la sesión: la
+  renovación termina en segundo plano y su token se guarda.
 - **Una comprobación en cada arranque de OBS** (más una renovación cuando toca). Sin conexión sigues
   con la sesión iniciada y el delay funciona; si tu cuenta está suspendida o no está activa, **Activar
   delay** queda bloqueado con "Tu cuenta de Trigglow no está activa." y **Abrir trigglow.com**.
@@ -452,22 +458,27 @@ sale aquí.
   email que escribir), con un asunto opcional y un pie con las versiones del plugin, de OBS y de
   Windows que ves y puedes editar. "Ticket enviado" ofrece **Ver ticket en trigglow.com**; las
   respuestas llegan por email y a tu panel de soporte.
-- **El log de OBS, redactado y con tu consentimiento.** **Adjuntar el registro (log) de OBS** (marcada
-  si se encuentra el log) con **Ver qué se envía**, que muestra el log ya redactado (sus primeras y
-  últimas 200 líneas; se envía completo). La redacción (`src/log-redact.*`, línea a línea, con tests)
-  oculta el nombre de usuario en rutas de Windows, macOS y Linux, las URLs de stream, las URLs web
-  (solo se conserva el host), los enlaces de overlay, emails, claves, tokens y contraseñas, las
-  direcciones IPv4 e IPv6 y las cadenas largas con forma de token, y conserva las marcas de tiempo,
-  las versiones y los atajos. Puede seguir incluyendo nombres de escenas y fuentes, y el diálogo lo
-  avisa. Si después de redactar pasa de 4,5 MB, se conservan el principio y el final.
+- **El log de OBS, redactado y con tu consentimiento.** **Adjuntar el registro (log) de OBS** empieza
+  desmarcada y solo se puede marcar después de abrir **Ver qué se envía**, que muestra el log ya
+  redactado (sus primeras y últimas 200 líneas; se envía completo). La redacción (`src/log-redact.*`,
+  línea a línea, con tests) oculta el nombre de usuario en rutas de Windows, macOS y Linux (también
+  perfiles movidos, recursos de red y carpetas de OneDrive de empresa), las URLs de stream, cualquier
+  otra URL (solo se conserva el host), los enlaces de overlay, emails, claves, tokens, contraseñas,
+  cookies y cabeceras de credenciales, JWT, las direcciones IPv4 e IPv6 y las cadenas largas con forma
+  de token, y conserva las marcas de tiempo, las versiones y los atajos. Pueden seguir apareciendo
+  nombres de escenas, fuentes, dispositivos de audio y ventanas, y el diálogo lo avisa. Si después de
+  redactar pasa de 4,5 MB, se conservan el principio y el final.
+- **Solo el log de este OBS.** El plugin marca el log de su propio OBS al cargar y solo adjunta el
+  fichero con esa marca, nunca el log más reciente de otro OBS (uno portable o una segunda
+  instancia).
 - **Se acabaron las copias en `%TEMP%`.** El log se lee y se redacta en memoria, y las copias que
   dejaron versiones anteriores en `%TEMP%\Trigglow` se borran al cargar el plugin.
 - Si el ticket se crea pero no se puede adjuntar el log, el diálogo lo dice y ofrece **Guardar log
-  (sin datos personales)…** para que lo añadas desde la web.
+  redactado…** para que lo añadas desde la web.
 - **Sin sesión**, se mantiene el formulario de invitado (nombre, email, mensaje). Si trigglow.com
   pide a los invitados una comprobación humana (captcha), que OBS no puede mostrar, el diálogo dice
   "Para enviar el reporte desde OBS, inicia sesión. También puedes usar el formulario web." con
-  **Iniciar sesión**, **Abrir soporte web** y **Guardar log (sin datos personales)…**, y nunca
+  **Iniciar sesión**, **Abrir soporte web** y **Guardar log redactado…**, y nunca
   reintenta solo. La clave de acceso del ticket de invitado va en una cabecera, no en la URL, y nunca
   se escribe en el log.
 - En macOS y Linux el formulario aparece desactivado con un enlace al formulario web (allí todavía no
@@ -482,7 +493,8 @@ sale aquí.
   versión real del plugin y el sistema. Nada que cree algo (una conversación, una pregunta, un
   ticket, un adjunto) se reintenta solo.
 - **El plugin solo abre sus propias páginas fijas**: las de inicio de sesión, soporte, privacidad y
-  la del plugin en www.trigglow.com y este repositorio en GitHub, comprobadas por prefijo. Cualquier
+  la del plugin en www.trigglow.com y este repositorio en GitHub, comprobadas por prefijo, leyendo los
+  puntos y barras codificados como lo haría un navegador (sin salida por `..` ni `%2e%2e`). Cualquier
   otra cosa, por ejemplo un enlace dentro de una respuesta, no se abre.
 - **Menos datos personales en el log de OBS.** El enlace, los códigos y el secreto del inicio de
   sesión, los tokens, los IDs de tickets y de conversaciones, y el texto de las preguntas y las
@@ -623,8 +635,9 @@ sale aquí.
 - **macOS y Linux todavía no tienen cliente HTTP en el plugin**, así que allí no hay inicio de
   sesión (y sin él no funciona Activar delay), ni Trigi, ni reportes desde OBS; el diálogo de
   reporte enlaza al formulario web. Previsto para la v0.6.1.
-- El log redactado puede seguir conteniendo nombres de escenas y fuentes: no se pueden distinguir
-  de forma fiable, y la vista previa lo avisa. Revísalo con **Ver qué se envía** antes de enviarlo.
+- El log redactado puede seguir conteniendo nombres de escenas, fuentes, dispositivos de audio y
+  ventanas: no se pueden distinguir de forma fiable, y la vista previa lo avisa. Revísalo con **Ver
+  qué se envía** antes de marcar la casilla.
 - La conversación con Trigi en OBS no se conserva al cerrar el diálogo. En trigglow.com se guarda
   hasta 12 meses y puedes borrarla antes (Ajustes → Privacidad y datos → Conversaciones con Trigi);
   lo que se copió a un ticket se queda en ese ticket.

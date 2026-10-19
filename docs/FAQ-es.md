@@ -183,8 +183,10 @@ incluyen nombres de escenas, fuentes ni filtros, rutas, URLs, claves ni datos de
 nombre de usuario o tu email, el nombre de tu GPU, IDs de hardware ni IPs. Trigglow y un proveedor
 de IA indicado en la [Política de Privacidad](https://www.trigglow.com/legal/privacy) procesan tus
 mensajes y los datos técnicos. No escribas contraseñas, claves de stream, URLs de overlay ni datos
-de pago. El log de OBS solo va con un ticket, con los datos personales ocultos, si dejas marcada su
-casilla, y puedes verlo antes.
+de pago. El log de OBS solo va con un ticket si marcas su casilla, cosa que puedes hacer después de
+verlo en **Ver qué se envía**. Las rutas con tu usuario de Windows, URLs, claves, emails e IPs van
+ocultas; aun así, pueden seguir apareciendo nombres de escenas, fuentes, dispositivos de audio y
+ventanas, así que revísalo ahí antes.
 
 **¿Cuánto tiempo se guardan mis conversaciones con Trigi y cómo las borro?**
 Las conversaciones con Trigi y los datos técnicos que elijas enviar se guardan hasta 12 meses y

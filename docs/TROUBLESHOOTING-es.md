@@ -142,18 +142,24 @@
 
 ## Enviar un reporte
 - **Con la sesión iniciada (Windows)**: el ticket se crea desde tu cuenta, así que solo escribes qué
-  ha pasado (el asunto es opcional). Deja marcada **Adjuntar el registro (log) de OBS** para que el
-  equipo reciba el log, y revísalo antes con **Ver qué se envía**: las rutas con tu usuario de
-  Windows, URLs, claves, emails e IPs van ocultas, pero pueden quedar nombres de escenas y fuentes.
+  ha pasado (el asunto es opcional). Para enviar al equipo el log de OBS, abre **Ver qué se envía**,
+  revísalo y después marca **Adjuntar el registro (log) de OBS** (empieza desmarcada y no se puede
+  marcar antes de haberlo visto): las rutas con tu usuario de Windows, URLs, claves, emails e IPs van
+  ocultas, pero pueden quedar nombres de escenas, fuentes, dispositivos de audio y ventanas.
   "Ticket enviado" ofrece **Ver ticket en trigglow.com**; las respuestas llegan por email y a tu panel
   de soporte.
+- **"No encontramos el log de OBS. El ticket se enviará sin él."**: el plugin solo adjunta el log del
+  OBS en el que se ejecuta, y no lo ha encontrado entre los logs de ese OBS (por ejemplo, si borraste
+  los ficheros de log con OBS abierto). Envía el reporte sin él, o reinicia OBS y vuelve a
+  intentarlo.
 - **"El ticket se creó, pero no se pudo adjuntar el log."**: el ticket existe. Pulsa **Guardar log
-  (sin datos personales)…** y añade ese fichero al ticket en trigglow.com.
+  redactado…** y añade ese fichero al ticket en trigglow.com.
 - **Sin sesión**: el formulario de invitado pide un nombre y un email para responderte. Si el diálogo
   dice "Para enviar el reporte desde OBS, inicia sesión. También puedes usar el formulario web.",
   trigglow.com está pidiendo a los invitados una comprobación humana (captcha), que OBS no puede
   mostrar: inicia sesión, o pulsa **Abrir soporte web** y envíalo desde el navegador. **Guardar log
-  (sin datos personales)…** guarda el log redactado para que lo adjuntes allí.
+  redactado…** guarda el log redactado para que lo adjuntes allí (revísalo antes: pueden quedar
+  nombres de escenas, fuentes, dispositivos de audio y ventanas).
 - **"Has enviado muchos reportes seguidos. Vuelve a intentarlo en unos minutos."**: espera y vuelve a
   enviarlo.
 - **"Tu sesión de Trigglow ha caducado. Vuelve a conectar desde el dock."**: vuelve a iniciar sesión
@@ -199,8 +205,9 @@ nueva).
   retrasado se descomprime una sola vez aunque haya varias vistas abiertas, pero cada vista abierta
   sigue siendo trabajo de renderizado extra para OBS.
 - Si sigues atascado: usa el botón **Reportar un problema** del dock después de tener el delay
-  activo al menos 30 segundos en la misma sesión de OBS. Adjunta automáticamente el log actual de
-  OBS, incluidas las líneas `perf check` y `pipeline check` que se explican más abajo.
+  activo al menos 30 segundos en la misma sesión de OBS, y adjunta el log actual de OBS (revísalo con
+  **Ver qué se envía** y después marca **Adjuntar el registro (log) de OBS**): incluye las líneas
+  `perf check` y `pipeline check` que se explican más abajo.
 
 ## El dock dice "Calidad del buffer reducida" (aviso ámbar)
 

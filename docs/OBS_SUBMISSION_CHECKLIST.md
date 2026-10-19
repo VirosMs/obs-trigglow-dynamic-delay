@@ -96,8 +96,11 @@ relevant additions from these releases.
      [Privacy Policy](https://www.trigglow.com/legal/privacy), which lists the AI provider and the
      retention (up to 12 months, deletable earlier).
   3. **Reports**: signed-in tickets go to the user's account; the OBS log is attached only if the
-     user leaves its box ticked, redacted on the user's machine first (user names in paths, URLs,
-     keys, emails, IPs) and previewable. No copy is left in `%TEMP%` any more.
+     user ticks its box, which starts unticked and can only be ticked after seeing the log in the
+     preview. It is redacted on the user's machine first (user names in paths, URLs, keys, emails,
+     IPs); names of scenes, sources, audio devices and windows can remain, and the dialog says so.
+     Only the log of the OBS the plugin runs in is ever attached. No copy is left in `%TEMP%` any
+     more.
   4. **Hardening worth stating**: HTTPS only, redirects never followed, the token only sent to
      `api.trigglow.com`, the plugin only opens its own fixed pages, nothing sensitive in the OBS log.
   5. **macOS/Linux**: no HTTP client in v0.6.0, so no sign-in (and no Enable), Trigi or reports from

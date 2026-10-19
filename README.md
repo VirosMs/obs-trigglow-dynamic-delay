@@ -111,9 +111,11 @@ and Linux don't have the plugin's HTTP client yet (planned for v0.6.1). See
   codes, IDs and what you write to Trigi.
 - **Trigi** receives what you type and, only if you tick it, a small set of OBS technical numbers
   and states (never names, paths, URLs or keys), shown before you send it. **Your OBS log is never
-  sent to the AI**; it's attached to a ticket only if you leave its box ticked, with your Windows
-  user name, URLs, keys, emails and IPs hidden. Conversations are kept for up to 12 months and
-  can be deleted earlier on trigglow.com. Details in `docs/FAQ.md` and the
+  sent to the AI**; it's attached to a ticket only if you tick its box, which you can do once
+  you've seen it in **See what is sent**. Your Windows user name, URLs, keys, emails and IPs are
+  hidden in it, but names of scenes, sources, audio devices and windows can still show up.
+  Conversations are kept for up to 12 months and can be deleted earlier on trigglow.com. Details
+  in `docs/FAQ.md` and the
   [Privacy Policy](https://www.trigglow.com/legal/privacy).
 
 ## Build requirements
@@ -263,7 +265,7 @@ src/
                                      their migration from the v0.5.x "(no tocar)" names, unit-tested
   report-bug-dialog.{hpp,cpp}      → "Report a problem" dialog: Trigi first when available, then
                                      the ticket form (signed-in or guest), with the redacted OBS
-                                     log only if the user leaves it ticked
+                                     log only if the user ticks it after seeing it
   trigi-page.{hpp,cpp}             → Trigi's page in that dialog: notice, technical data,
                                      conversation, states and the hand-off to a ticket
   trigi-widgets.{hpp,cpp}          → the conversation view (never loads anything) and its bubbles
@@ -276,7 +278,8 @@ src/
   support-diagnostics.{hpp,cpp}    → the optional OBS technical data (numbers, booleans and
                                      fixed values only, within 1 KB), unit-tested
   diagnostics-collector.{hpp,cpp}  → fills that snapshot from OBS and the plugin
-  bug-report.{hpp,cpp}             → finds OBS's current log (Windows only for now), reads and
+  bug-report.{hpp,cpp}             → finds this OBS's current log (Windows only for now: the one
+                                     holding a marker the plugin writes at load), reads and
                                      redacts it in memory, and deletes old copies in %TEMP%
   log-redact.{hpp,cpp}             → pure, line-by-line redaction of the OBS log, unit-tested
   update-checker.{hpp,cpp}         → checks this repo's latest GitHub release against the running

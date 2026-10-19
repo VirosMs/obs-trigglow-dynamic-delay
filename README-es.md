@@ -119,9 +119,11 @@ de sesión solo funciona en Windows: macOS y Linux todavía no tienen el cliente
   OBS, igual que los códigos de inicio de sesión, los IDs y lo que escribes a Trigi.
 - **Trigi** recibe lo que escribes y, solo si lo marcas, un pequeño conjunto de cifras y estados
   técnicos de OBS (nunca nombres, rutas, URLs ni claves), que ves antes de enviarlo. **El log de
-  OBS nunca se envía a la IA**; solo se adjunta a un ticket si dejas marcada su casilla, con tu
-  usuario de Windows, URLs, claves, emails e IPs ocultos. Las conversaciones se guardan hasta 12
-  meses y puedes borrarlas antes en trigglow.com. Detalles en `docs/FAQ-es.md` y en la
+  OBS nunca se envía a la IA**; solo se adjunta a un ticket si marcas su casilla, cosa que puedes
+  hacer después de verlo en **Ver qué se envía**. Tu usuario de Windows, URLs, claves, emails e IPs
+  van ocultos, pero pueden seguir apareciendo nombres de escenas, fuentes, dispositivos de audio y
+  ventanas. Las conversaciones se guardan hasta 12 meses y puedes borrarlas antes en trigglow.com.
+  Detalles en `docs/FAQ-es.md` y en la
   [Política de Privacidad](https://www.trigglow.com/legal/privacy).
 
 ## Requisitos de compilación
@@ -281,7 +283,7 @@ src/
   report-bug-dialog.{hpp,cpp}      → diálogo "Reportar un problema": primero Trigi si está
                                      disponible, después el formulario de ticket (con cuenta o
                                      de invitado), con el log de OBS redactado solo si el usuario
-                                     lo deja marcado
+                                     lo marca después de verlo
   trigi-page.{hpp,cpp}             → la página de Trigi en ese diálogo: aviso, datos técnicos,
                                      conversación, estados y el paso a un ticket
   trigi-widgets.{hpp,cpp}          → la vista de la conversación (nunca carga nada) y sus burbujas
@@ -294,7 +296,8 @@ src/
   support-diagnostics.{hpp,cpp}    → los datos técnicos opcionales de OBS (solo números, booleanos
                                      y valores fijos, en menos de 1 KB), con tests
   diagnostics-collector.{hpp,cpp}  → rellena esa instantánea desde OBS y el plugin
-  bug-report.{hpp,cpp}             → localiza el log actual de OBS (solo Windows por ahora), lo
+  bug-report.{hpp,cpp}             → localiza el log actual de este OBS (solo Windows por ahora:
+                                     el que lleva una marca que el plugin escribe al cargar), lo
                                      lee y lo redacta en memoria, y borra las copias antiguas de
                                      %TEMP%
   log-redact.{hpp,cpp}             → redacción pura, línea a línea, del log de OBS, con tests

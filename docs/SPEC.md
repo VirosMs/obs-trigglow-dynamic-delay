@@ -533,15 +533,23 @@ A local test build can point at another host only with the CMake option
 4. On every load: one account check, and a renewal before any other signed-in call when it's due
    (the new token is stored before it's used). `401 token_rotated` re-reads the stored token or
    renews, then retries once; any other 401 ends the session (storage deleted; Trigi keeps the text
-   being typed); `403 suspended` or `account_inactive` keeps the token but blocks Enable; network
-   errors, 5xx or an older server keep the plugin signed in, and Enable works offline. The local
-   expiry never blocks Enable: the server decides when it answers.
+   being typed) unless a newer token is stored by then; `403 suspended` or `account_inactive` keeps
+   the token but blocks Enable; network errors, 5xx or an older server keep the plugin signed in, and
+   Enable works offline. The local expiry never blocks Enable: the server decides when it answers.
+   A renewal that a "Report a problem" call needs runs on a job of `AuthManager` that only unloading
+   the plugin cancels, and its token is stored whenever the server answers: closing the dialog
+   midway can't lose the new token (the old one, used again, would look stolen to the server, which
+   then ends the sign-in).
 5. Sign out sends the revocation in the background with a short timeout and deletes the local
-   storage whatever the result.
+   storage whatever the result. It wins over anything still waiting for the server (a renewal, the
+   v0.5.x exchange, a sign-in wait): the token store counts sign-outs, a token obtained across one is
+   never stored, and it's revoked too. So a sign-out never comes undone at the next start.
 6. v0.5.x migration: when only the old plain-text sign-in exists, it's exchanged once for a plugin
    token; on success the old file is overwritten with zeros and deleted; a 401 deletes it and ends
    the session; network errors, 5xx, an older server or a rate limit keep it for the next start (Enable
-   keeps working meanwhile, but Trigi and signed-in tickets don't use the old sign-in).
+   keeps working meanwhile, but Trigi and signed-in tickets don't use the old sign-in). If an
+   encrypted sign-in (or an unreadable one) is already there, a leftover old file is overwritten and
+   deleted at load.
 
 The dock and the log never show the link, the codes, the secret or the token.
 
@@ -594,13 +602,21 @@ The dock and the log never show the link, the codes, the secret or the token.
   (or a guest ticket is refused for that reason), it doesn't show the guest form but "sign in or use
   the web form", without retrying. The guest attachment sends its access key in a header, never in
   the URL, and the ticket then opens in the browser.
-- The log: OBS's current log (located on Windows only) is read and redacted in memory, line by line,
-  with linear scanners instead of `std::regex`: stream URLs, web URLs (host kept), user names in
-  Windows/macOS/Linux paths, overlay links, emails, keyed secrets and Bearer values, IPv4/IPv6
-  addresses and long tokens with letters and digits; timestamps, versions and hotkeys survive. Above
-  4.5 MB after redaction it keeps the first 256 KB, a marker and the end. The preview shows the
-  first and last 200 lines. No copy is written any more, and copies older versions left in
-  `%TEMP%\Trigglow` are deleted at load.
+- The log: only the current log of the OBS the plugin runs in (located on Windows only). No libobs
+  or frontend call names that file, and the newest file in a logs folder may be another OBS's (a
+  portable one, a second instance), so at load the plugin writes a line with a random marker and
+  later reads only the file, among this OBS's log folders, that holds it; without it, nothing is
+  attached. The log is read and redacted in memory, line by line, with linear scanners instead of
+  `std::regex` (`src/log-redact.hpp` lists the rules): stream URLs, any other URL (host kept), user
+  names in Windows/macOS/Linux paths (moved profiles, network shares and work OneDrive folders
+  too), overlay links, emails (accents and a URL-encoded '@' too), values after key-like names
+  (`client_secret`, `x_api_key`, JSON keys), credential headers, JWTs, IPv4/IPv6 addresses, long
+  tokens, stream-key-shaped groups and base64, plus, best effort, quoted device names and window
+  titles; timestamps, versions and hotkeys survive. Above 4.5 MB after redaction it keeps the first
+  256 KB, a marker and the end. The "Attach OBS's log" box starts unticked and can only be ticked
+  once the preview (the first and last 200 lines) has been seen; it says that names of scenes,
+  sources, audio devices and windows can remain. No copy is written any more, and copies older
+  versions left in `%TEMP%\Trigglow` are deleted at load.
 
 **What the OBS log gets.** `[auth-manager]` signed in, signed out, session ended, token renewed,
 migrated legacy login; `[trigi]` session started, message sent (length, technical data on or off),

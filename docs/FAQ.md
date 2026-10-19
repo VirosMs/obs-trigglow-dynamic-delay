@@ -172,8 +172,10 @@ never includes scene, source or filter names, paths, URLs, stream keys or stream
 name or email, your GPU's name, hardware IDs or IPs. Your messages and the technical data are
 processed by Trigglow and an AI provider listed in the
 [Privacy Policy](https://www.trigglow.com/legal/privacy). Don't type passwords, stream keys, overlay
-URLs or payment details. The OBS log only goes with a ticket, with personal data hidden, if you
-leave its box ticked, and you can see it first.
+URLs or payment details. The OBS log only goes with a ticket if you tick its box, which you can do
+once you've seen it in **See what is sent**. Paths with your Windows user name, URLs, keys, emails
+and IPs are hidden in it; names of scenes, sources, audio devices and windows can still show up, so
+check it there first.
 
 **How long are my conversations with Trigi kept, and how do I delete them?**
 Conversations with Trigi and the technical data you choose to send are kept for up to 12 months and

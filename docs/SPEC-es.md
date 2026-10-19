@@ -581,17 +581,25 @@ opción de CMake `TRIGGLOW_ALLOW_API_HOST_OVERRIDE`, que CI rechaza.
 4. En cada carga: una comprobación de la cuenta, y una renovación antes de cualquier otra llamada con
    sesión cuando toca (el token nuevo se guarda antes de usarlo). `401 token_rotated` vuelve a leer el
    token guardado o renueva, y reintenta una vez; cualquier otro 401 termina la sesión (se borra el
-   almacenamiento; Trigi conserva el texto que se estaba escribiendo); `403 suspended` o
-   `account_inactive` conserva el token pero bloquea Enable; los errores de red, los 5xx o un servidor
-   antiguo mantienen la sesión, y Enable funciona sin conexión. La caducidad local nunca bloquea
-   Enable: decide el servidor cuando responde.
+   almacenamiento; Trigi conserva el texto que se estaba escribiendo) salvo que para entonces haya
+   guardado un token más nuevo; `403 suspended` o `account_inactive` conserva el token pero bloquea
+   Enable; los errores de red, los 5xx o un servidor antiguo mantienen la sesión, y Enable funciona
+   sin conexión. La caducidad local nunca bloquea Enable: decide el servidor cuando responde. Una
+   renovación que necesita una llamada de "Reportar un problema" se hace en una tarea de
+   `AuthManager` que solo cancela la descarga del plugin, y su token se guarda en cuanto el servidor
+   responde: cerrar el diálogo a mitad no puede perder el token nuevo (el antiguo, usado otra vez,
+   parecería robado al servidor, que entonces termina la sesión).
 5. Cerrar sesión envía la revocación en segundo plano con un timeout corto y borra el almacenamiento
-   local sea cual sea el resultado.
+   local sea cual sea el resultado. Gana a todo lo que siga esperando al servidor (una renovación, el
+   cambio de la v0.5.x, una espera de inicio de sesión): el almacén cuenta los cierres de sesión, un
+   token conseguido a través de uno nunca se guarda, y además se revoca. Así un cierre de sesión
+   nunca se deshace en el siguiente arranque.
 6. Migración desde la v0.5.x: cuando solo existe el inicio de sesión antiguo en texto plano, se cambia
    una vez por un token del plugin; si sale bien, el fichero antiguo se sobrescribe con ceros y se
    borra; un 401 lo borra y termina la sesión; los errores de red, los 5xx, un servidor antiguo o un
    límite lo conservan para el siguiente arranque (Enable sigue funcionando mientras tanto, pero Trigi
-   y los tickets con sesión no usan el inicio de sesión antiguo).
+   y los tickets con sesión no usan el inicio de sesión antiguo). Si ya hay un inicio de sesión
+   cifrado (o uno ilegible), un fichero antiguo que haya quedado se sobrescribe y se borra al cargar.
 
 Ni el dock ni el log muestran nunca el enlace, los códigos, el secreto ni el token.
 
@@ -649,14 +657,24 @@ Ni el dock ni el log muestran nunca el enlace, los códigos, el secreto ni el to
   formulario de invitado sino "inicia sesión o usa el formulario web", sin reintentar. El adjunto de
   invitado envía su clave de acceso en una cabecera, nunca en la URL, y después el ticket se abre en
   el navegador.
-- El log: el log actual de OBS (que solo se localiza en Windows) se lee y se redacta en memoria,
-  línea a línea, con escáneres lineales en vez de `std::regex`: URLs de stream, URLs web (se conserva
-  el host), nombres de usuario en rutas de Windows/macOS/Linux, enlaces de overlay, emails, secretos
-  con clave y valores Bearer, direcciones IPv4/IPv6 y tokens largos con letras y dígitos; las marcas
-  de tiempo, las versiones y los atajos se mantienen. Si pasa de 4,5 MB después de redactar, se
-  quedan los primeros 256 KB, una marca y el final. La vista previa muestra las primeras y las últimas
-  200 líneas. Ya no se escribe ninguna copia, y las que dejaron versiones anteriores en
-  `%TEMP%\Trigglow` se borran al cargar.
+- El log: solo el log actual del OBS en el que corre el plugin (que solo se localiza en Windows).
+  Ninguna llamada de libobs ni del frontend da ese fichero, y el más reciente de una carpeta de logs
+  puede ser de otro OBS (uno portable, una segunda instancia), así que al cargar el plugin escribe
+  una línea con una marca aleatoria y después solo lee el fichero, entre las carpetas de logs de este
+  OBS, que la contiene; si no aparece, no se adjunta nada. El log se lee y se redacta en memoria,
+  línea a línea, con escáneres lineales en vez de `std::regex` (`src/log-redact.hpp` enumera las
+  reglas): URLs de stream, cualquier otra URL (se conserva el host), nombres de usuario en rutas de
+  Windows/macOS/Linux (también perfiles movidos, recursos de red y carpetas de OneDrive de empresa),
+  enlaces de overlay, emails (también con acentos y con la '@' codificada), valores tras nombres con
+  forma de clave (`client_secret`, `x_api_key`, claves JSON), cabeceras de credenciales, JWT,
+  direcciones IPv4/IPv6, tokens largos, grupos con forma de clave de stream y base64, y además, en lo
+  posible, nombres de dispositivos y títulos de ventanas entre comillas; las marcas de tiempo, las
+  versiones y los atajos se mantienen. Si pasa de 4,5 MB después de redactar, se quedan los primeros
+  256 KB, una marca y el final. La casilla "Adjuntar el registro (log) de OBS" empieza desmarcada y
+  solo se puede marcar después de ver la vista previa (las primeras y las últimas 200 líneas), que
+  avisa de que pueden quedar nombres de escenas, fuentes, dispositivos de audio y ventanas. Ya no se
+  escribe ninguna copia, y las que dejaron versiones anteriores en `%TEMP%\Trigglow` se borran al
+  cargar.
 
 **Qué llega al log de OBS.** `[auth-manager]` signed in, signed out, session ended, token renewed,
 migrated legacy login; `[trigi]` session started, message sent (longitud, datos técnicos sí o no),
