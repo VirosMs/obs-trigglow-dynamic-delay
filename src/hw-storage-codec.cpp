@@ -1062,14 +1062,38 @@ bool RegistryHasWorkingEncoder()
 Provider::Provider(ProviderSettings settings) : settings_(std::move(settings))
 {
 	adapters_ = settings_.adapters.empty() ? QueryGpuAdapters() : settings_.adapters;
-	keyframeInterval_ =
-		std::max<uint32_t>(1, bufferfit::KeyframeIntervalFrames(settings_.fpsNum, settings_.fpsDen));
+	fpsNum_ = std::max<uint32_t>(1, settings_.fpsNum);
+	fpsDen_ = std::max<uint32_t>(1, settings_.fpsDen);
 	for (const GpuAdapterInfo &adapter : adapters_) {
 		if (adapter.index == settings_.obsAdapterIndex)
 			decodeAdapterName_ = adapter.name;
 	}
 	if (!settings_.clockNs)
 		settings_.clockNs = &SteadyNs;
+}
+
+void Provider::SetFrameRate(uint32_t fpsNum, uint32_t fpsDen)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (fpsNum > 0 && fpsDen > 0) {
+		fpsNum_ = fpsNum;
+		fpsDen_ = fpsDen;
+	}
+}
+
+uint32_t Provider::KeyframeInterval() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	return std::max<uint32_t>(1, bufferfit::KeyframeIntervalFrames(fpsNum_, fpsDen_));
+}
+
+bool Provider::HasVendor(storage::GpuVendor vendor) const
+{
+	for (const GpuAdapterInfo &adapter : adapters_) {
+		if (storage::VendorFromPciId(adapter.vendorId) == vendor)
+			return true;
+	}
+	return false;
 }
 
 storage::GpuVendor Provider::DecodeVendor() const
@@ -1138,6 +1162,13 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 	rank.blacklist = Blacklisted();
 	const std::vector<storage::HwCandidate> candidates = storage::RankCandidates(rank);
 	const uint32_t obsNvenc = storage::CountFamily(rank.obsEncoders, storage::EncoderFamily::Nvenc);
+	uint32_t fpsNum = 60, fpsDen = 1;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		fpsNum = fpsNum_;
+		fpsDen = fpsDen_;
+	}
+	const uint32_t keyframeInterval = std::max<uint32_t>(1, bufferfit::KeyframeIntervalFrames(fpsNum, fpsDen));
 
 	std::string tried;
 	auto note = [&](const char *encoder, const std::string &why) {
@@ -1163,9 +1194,9 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 		storage::EncoderConfig config;
 		config.width = frame.width;
 		config.height = frame.height;
-		config.fpsNum = settings_.fpsNum;
-		config.fpsDen = settings_.fpsDen;
-		config.keyframeInterval = keyframeInterval_;
+		config.fpsNum = fpsNum;
+		config.fpsDen = fpsDen;
+		config.keyframeInterval = keyframeInterval;
 		config.quality = QpFor(candidate.codec);
 		const uint64_t candidateNs = SteadyNs();
 		Opened opened = OpenEncoder(candidate, config, adapterIndex, settings_);
@@ -1206,8 +1237,8 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 		std::string shared = candidate.sharesEngine ? "yes" : "no";
 		if (!rank.obsEncodersKnown)
 			shared = "unknown";
-		const double gopSeconds = static_cast<double>(keyframeInterval_) * settings_.fpsDen /
-					  std::max<uint32_t>(1, settings_.fpsNum);
+		const double gopSeconds =
+			static_cast<double>(keyframeInterval) * fpsDen / std::max<uint32_t>(1, fpsNum);
 		if (quick) {
 			Logf(settings_.log, PipelineLogLevel::Info,
 			     "storage codec: %s reopened at %ux%u in %.0f ms (open %.0f ms, %u/%u packets, key in band ok)",
@@ -1218,7 +1249,7 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 			     "storage codec: auto -> %s (%s, QP %d, GOP %u = %.2f s, no B-frames, decode d3d11va on \"%s\") "
 			     "at %ux%u; probe %.0f ms (open %.0f ms%s, %u/%u packets, IDR in-band %s, fresh-decoder start "
 			     "ok, psnr %.1f dB)%s%s; tried: %s; engine shared with OBS: %s; NVENC sessions by OBS: %u",
-			     candidate.encoder, BackendName(candidate.backend), config.quality, keyframeInterval_,
+			     candidate.encoder, BackendName(candidate.backend), config.quality, keyframeInterval,
 			     gopSeconds, decodeAdapterName_.empty() ? "?" : decodeAdapterName_.c_str(), frame.width,
 			     frame.height, probeMs, opened.openMs, opened.encoder->OnDevice() ? " on its adapter" : "",
 			     probe.packets, kProbeFrames,

@@ -881,10 +881,19 @@ void CodecPipeline::EncodeOne(EncodeContext &ctx, const EncodeJob &job, uint32_t
 	// frame size (until it has one the intra codec bridges); without it
 	// wanted, an inter encoder still open hands over and goes.
 	const storage::Encoder *before = ctx.encoder.get();
-	if (interWanted)
+	if (interWanted) {
 		ChooseInterEncoder(ctx, view.width, view.height, tally, released);
-	else if (ctx.fromSetup)
-		RetireInter(ctx, options_.interControl && options_.interControl->yielded.load(), tally, released);
+	} else {
+		if (ctx.fromSetup)
+			RetireInter(ctx, options_.interControl && options_.interControl->yielded.load(), tally,
+				    released);
+		if (stage == 0 && options_.interSetup) {
+			// One set up meanwhile (it finished as a yield began): no session held for nothing.
+			std::vector<std::shared_ptr<void>> fallback; // Stays empty: workers only run with a reaper.
+			std::lock_guard<std::mutex> lock(mutex_);
+			ReapOwnedLocked(std::move(setup_.result), fallback);
+		}
+	}
 	const bool adopted = ctx.fromSetup && ctx.encoder.get() != before;
 
 	storage::EncoderConfig config;
@@ -1504,8 +1513,9 @@ void CodecPipeline::SetupLoop()
 		lock.lock();
 		s.busy = false;
 		std::vector<std::shared_ptr<void>> fallback;
-		if (stop_ || generation != s.generation) {
-			// No longer wanted (an intra target, Disable): closed on the reaper.
+		if (stop_ || generation != s.generation || !InterWantedLocked()) {
+			// No longer wanted (an intra target, a yield, Disable): closed on
+			// the reaper, so it holds no hardware session.
 			ReapOwnedLocked(std::move(session.encoder), fallback);
 			ReapOwnedLocked(std::move(session.decoder), fallback);
 		} else if (session.encoder) {

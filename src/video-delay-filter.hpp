@@ -24,6 +24,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "frame-ring.hpp"
 #include "perf-stats.hpp"
 #include "pipeline-health.hpp"
+#include "storage-codec-policy.hpp"
+#include "storage-codec-select.hpp"
+
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+#include "hw-storage-codec.hpp"
+#endif
 
 #include <atomic>
 #include <cstddef>
@@ -86,6 +92,17 @@ extern "C" {
 // it also never buffers above OBS's output resolution (src/buffer-fit.hpp).
 // Since v0.6.0 a shortened delay is a whole number of seconds that video and
 // audio both use (bufferfit::Result::effectiveDelaySeconds, design A.4).
+//
+// v0.7.0 (RAM design): on Windows the frames can be stored with a hardware
+// inter-frame codec instead (HEVC or H.264 on NVENC, AMF or Quick Sync,
+// decoded with D3D11VA: hw-storage-codec.hpp), 50-70% less RAM for a better
+// final picture, set up off every hot thread while MJPEG bridges. A storage
+// codec policy (storage-codec-policy.hpp) watches that it never costs OBS's
+// own encoders their engine: early latency warnings lower a rung, OBS
+// skipping frames for encoding lag (or any hard error) sends the buffer back
+// to MJPEG for the rest of the cycle, in place, without touching the delay;
+// an OBS output starting gets the engine first (yield_hw_encoder). The hidden
+// "buffer_codec" setting ("mjpeg") keeps it on MJPEG.
 //
 // FilterAudio()/EnsureAudioRingSized() below are a COMPLETE, implemented
 // audio ring buffer (same delay-window logic as video, in sample-space) --
@@ -159,6 +176,17 @@ public:
 						   uint32_t baseHeight, uint32_t outputWidth, uint32_t outputHeight,
 						   uint32_t fpsNum, uint32_t fpsDen, bool capToOutput);
 
+	// v0.7.0: what the "set_obs_encoders(in ptr encoders)" proc takes (the UI
+	// thread, through ObsFrontendBridge): the families of OBS's active video
+	// encoders, for the setup's ranking (NVENC sessions, engines OBS doesn't
+	// use first) and the codec policy's engine sharing.
+	struct ObsEncoderSet {
+		static constexpr uint32_t kMax = 16;
+		bool known = false;
+		uint32_t count = 0;
+		storage::EncoderFamily families[kMax] = {};
+	};
+
 private:
 	// One in-flight (or just-finished) async GPU->CPU readback: the three
 	// planes of one capture, staged and harvested together. Sized per slot,
@@ -187,7 +215,9 @@ private:
 		uint64_t holds = 0;             // A new frame was due but the previous one was redrawn...
 		uint64_t holdsLateDecode = 0;   // ...because it was encoded but not decoded in time,
 		uint64_t holdsDropped = 0;      // ...because it was dropped,
-		uint64_t holdsEncoding = 0;     // ...because it was still being encoded.
+		uint64_t holdsEncoding = 0;     // ...because it was still being encoded,
+		uint64_t holdsCatchUp = 0;      // ...because the decoder was catching up from a key (v0.7.0),
+		uint64_t holdsNoKey = 0;        // ...because it waited for the next key (v0.7.0).
 		uint64_t reserveFailures = 0;   // Captures lost: the next ring slot was busy.
 		uint64_t backpressureDrops = 0; // Captures lost: no free RawFrame (encoders behind).
 		uint64_t captureFailures = 0;   // Captures lost: render/staging failed.
@@ -257,6 +287,13 @@ private:
 	// trailing-window metrics to policy_ and applies its decision.
 	void MaybeEvaluateDegradation(uint64_t nowNs);
 	void ApplyDegradation(const degradation::Decision &decision, const degradation::Sample &sample);
+	// v0.7.0: the storage codec policy's evaluation (from MaybeEvaluateDegradation()):
+	// the codec's parallelism steps, OBS's skipped frames, and its decision.
+	// True if it changed the rung or the steps (the degradation policy then
+	// waits for the next evaluation).
+	bool EvaluateCodecPolicy(uint64_t nowNs);
+	// Whether the buffer's hardware codec shares an engine with OBS's encoders.
+	storage::EngineShare CurrentEngineShare(const CodecPipeline::CodecStatus &status);
 	void ApplyCurrentRung();
 	void ClearPolicyWindows();
 	// Copies the current state into health_ (under healthMutex_).
@@ -349,6 +386,22 @@ private:
 	static void SetManagedDelaySecondsProc(void *data, calldata_t *params);
 	static void SetManagedMinResolutionHeightProc(void *data, calldata_t *params);
 
+	// v0.7.0 storage codec procs, all on the caller's thread (the UI), O(1):
+	//   "set_obs_encoders(in ptr encoders)": an ObsEncoderSet (Enable and
+	//     every output start/stop);
+	//   "report_encoder_lag(in int skipped)": frames OBS skipped for encoding
+	//     lag in the mixes of its encoders other than the main one, since the
+	//     last report (the main mix's own count the filter reads on G);
+	//   "yield_hw_encoder(in bool wait)": an OBS output is starting -- the
+	//     buffer closes its NVENC session (if it may hold one) and, with wait,
+	//     the call waits up to 100 ms for it to be gone;
+	//   "resume_hw_encoder()": that output started (or never will): the
+	//     buffer may set up hardware again.
+	static void SetObsEncodersProc(void *data, calldata_t *params);
+	static void ReportEncoderLagProc(void *data, calldata_t *params);
+	static void YieldHwEncoderProc(void *data, calldata_t *params);
+	static void ResumeHwEncoderProc(void *data, calldata_t *params);
+
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	// Written by Update() (UI thread), read by Render() (graphics thread).
 	std::atomic<uint32_t> configuredDelaySeconds_{0};
@@ -369,6 +422,9 @@ private:
 	// decode on the graphics thread (no codec threads), like v0.5.1. Only
 	// ever set from the plugin settings file, through ObsFrontendBridge.
 	std::atomic<bool> configuredCodecWorkers_{true};
+	// Hidden "buffer_codec" setting (v0.7.0): true = "auto" (the hardware
+	// codec where it works), false = "mjpeg". Read strictly in Update().
+	std::atomic<bool> configuredBufferCodecAuto_{false};
 	// Managed by the dock (set_managed_* procs, see SetManagedSetting()):
 	// Update() keeps configuredDelaySeconds_ and configuredMinResolutionHeight_
 	// instead of applying the settings' values, and logs one WARN per push if
@@ -419,6 +475,28 @@ private:
 	// What the current ring was sized from and to, for the perf check line.
 	bufferfit::Input lastFitInput_;
 	bufferfit::Result lastFit_;
+	uint32_t obsAdapterIndex_ = 0; // obs_video_info::adapter (where a hardware decoder runs).
+
+	// --- v0.7.0 storage codec (graphics thread unless noted) ---
+	// Shared with the pipeline's encode worker and the UI's yield procs.
+	std::shared_ptr<storage::InterControl> interControl_ = std::make_shared<storage::InterControl>();
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	std::shared_ptr<hwstorage::Provider> hwProvider_; // With the pipeline; thread-safe on its own.
+#endif
+	storagepolicy::Policy codecPolicy_;
+	bool codecCycleFresh_ = true; // The next ring starts a codec cycle (the first one, or after Disable).
+	bool interSteps_ = false;     // policy_ runs on the hardware encoder's parallelism steps.
+	CodecPipeline::CodecStatus lastCodecStatus_;  // Its counters at the previous evaluation.
+	RollingWindow skippedEvents_;                 // OBS encoding-lag skipped frames (value = frames).
+	uint64_t lastObsSkippedFrames_ = UINT64_MAX;  // The main mix's counter (UINT64_MAX = not read yet).
+	std::atomic<uint64_t> reportedMixSkipped_{0}; // report_encoder_lag, summed (UI thread).
+	uint64_t lastMixSkipped_ = 0;
+	uint64_t codecChanges_ = 0;
+	// May hold an NVENC session (or be about to): what yield_hw_encoder acts on. Written on G.
+	std::atomic<bool> mayUseNvenc_{false};
+	// OBS's active video encoders (set_obs_encoders, UI thread).
+	mutable std::mutex obsEncodersMutex_;
+	ObsEncoderSet obsEncoders_;
 
 	// --- Adaptive degradation (B.8), graphics thread ---
 	degradation::Policy policy_;

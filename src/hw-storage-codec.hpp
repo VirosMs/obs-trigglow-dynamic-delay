@@ -94,13 +94,17 @@ public:
 
 	// UI thread: the families of OBS's active video encoders (set_obs_encoders).
 	void SetObsEncoders(bool known, std::vector<storage::EncoderFamily> families);
+	// Graphics thread: OBS's frame rate (the encoders' time base and GOP), at
+	// every new ring; the next setup uses it.
+	void SetFrameRate(uint32_t fpsNum, uint32_t fpsDen);
 	// Graphics thread: an encoder that failed hard is not probed again this session.
 	void Blacklist(const std::string &encoder, const char *reason);
 
 	bool AnyHardware() const { return !adapters_.empty(); }
+	bool HasVendor(storage::GpuVendor vendor) const;
 	storage::GpuVendor DecodeVendor() const;
 	const std::string &DecodeAdapterName() const { return decodeAdapterName_; }
-	uint32_t KeyframeInterval() const { return keyframeInterval_; }
+	uint32_t KeyframeInterval() const;
 	int QpFor(storage::CodecId codec) const;
 	// OBS's encoders as last reported: whether known, and the families.
 	void ObsEncoders(bool &known, std::vector<storage::EncoderFamily> &families) const;
@@ -109,8 +113,9 @@ private:
 	ProviderSettings settings_;
 	std::vector<GpuAdapterInfo> adapters_;
 	std::string decodeAdapterName_;
-	uint32_t keyframeInterval_ = 30;
-	mutable std::mutex mutex_; // Guards the OBS encoders snapshot.
+	mutable std::mutex mutex_; // Guards the OBS encoders snapshot and the frame rate.
+	uint32_t fpsNum_ = 60;
+	uint32_t fpsDen_ = 1;
 	bool obsKnown_ = false;
 	std::vector<storage::EncoderFamily> obsFamilies_;
 };
