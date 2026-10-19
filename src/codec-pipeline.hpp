@@ -265,7 +265,8 @@ public:
 	// Ends the cycle: drops queued jobs and decoded frames and hands the ring
 	// to the reaper. With releaseCodecs (Disable) every worker closes its codec
 	// contexts and the RawFrame pool's storage is freed too (the next Attach()
-	// allocates it again); a setup under way is thrown away when it finishes.
+	// allocates it again); a setup under way stops at its next step and
+	// closes what it opened.
 	// Pass the caller's own reference to the ring as `retiredRing` instead of
 	// dropping it: then no reference the caller held can be the last one, and
 	// the ring is always freed on the reaper. Never waits for a worker.
@@ -328,10 +329,11 @@ public:
 	uint32_t SlicesPerContext() const;
 
 	// Stops and joins every worker (each closes its own codec), the setup
-	// thread (a setup under way finishes first) and the reaper (after it frees
-	// what's queued). Destruction thread only, never the graphics thread: a
-	// join can wait for one frame's encode or decode, a hardware encoder being
-	// opened, or a ring being freed. Idempotent.
+	// thread (a setup under way stops at its next step) and the reaper (after
+	// it frees what's queued). Destruction thread only, never the graphics
+	// thread: a join can wait for one frame's encode or decode, one step of a
+	// setup (a hardware encoder being opened), or a ring being freed.
+	// Idempotent.
 	void Shutdown();
 
 private:

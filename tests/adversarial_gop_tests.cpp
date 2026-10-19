@@ -260,15 +260,26 @@ struct Harness {
 		options.lookaheadFrames = 3;
 		options.interControl = control;
 		if (hardware) {
-			options.interSetup = [this](const storage::EncoderConfig &requested) -> storage::InterSession {
+			// Behaves like hwstorage::Provider::Setup() as far as the pipeline
+			// can tell: the encoder counts as open from before its "open" (the
+			// setupMinMs-setupMaxMs sleep), and `cancelled` is asked before
+			// and after it, and while blocked on the gate; what was opened is
+			// closed right here and the session comes back cancelled.
+			options.interSetup = [this](const storage::EncoderConfig &requested,
+						    const storage::SetupCancelled &cancelled) -> storage::InterSession {
 				const uint32_t n = setups++;
 				std::mt19937 local(n + 99);
-				if (hw.setupMaxMs > 0)
-					std::this_thread::sleep_for(std::chrono::milliseconds(
-						hw.setupMinMs + local() % (hw.setupMaxMs - hw.setupMinMs + 1)));
+				storage::InterSession stopped;
+				stopped.cancelled = true;
+				if (cancelled())
+					return stopped;
 				if (hw.setupBlocksOnGate) {
 					std::unique_lock<std::mutex> lock(gateMutex);
-					gateCv.wait(lock, [&] { return gateOpen; });
+					while (!gateCv.wait_for(lock, std::chrono::milliseconds(2),
+								[&] { return gateOpen; })) {
+						if (cancelled())
+							return stopped;
+					}
 				}
 				fakegop::EncoderOptions o;
 				o.inter = true;
@@ -285,7 +296,12 @@ struct Harness {
 				storage::EncoderConfig config = requested;
 				config.keyframeInterval = o.gop;
 				auto inner = std::make_unique<fakegop::FakeGopEncoder>(config, o);
-				auto enc = std::make_unique<HwFake>(std::move(inner), control);
+				auto enc = std::make_unique<HwFake>(std::move(inner), control); // Counted from here...
+				if (hw.setupMaxMs > 0)                                          // ...through the open.
+					std::this_thread::sleep_for(std::chrono::milliseconds(
+						hw.setupMinMs + local() % (hw.setupMaxMs - hw.setupMinMs + 1)));
+				if (cancelled())
+					return stopped; // `enc` closes here, on the setup thread.
 				{
 					std::lock_guard<std::mutex> lock(lastMutex);
 					lastHw = enc.get();
@@ -601,7 +617,8 @@ void TestDisableDuringSetup()
 	h.gateCv.notify_all();
 	CHECK(h.WaitInter(3000000000ULL)); // It still gets there.
 	h.RunFor(h.delayNs + 200000000ULL);
-	// Now block again and shut down mid-setup: Shutdown waits for that setup.
+	// Now block again and shut down mid-setup: the setup is cancelled, Shutdown
+	// doesn't wait for the gate (opened 300 ms later).
 	{
 		std::lock_guard<std::mutex> lock(h.gateMutex);
 		h.gateOpen = false;
@@ -626,6 +643,7 @@ void TestDisableDuringSetup()
 		"  [T3] setups %u, shutdown with a blocked setup took %.0f ms, live hw encoders after %d, max live %d, "
 		"live hw decoders %d\n",
 		h.setups.load(), shutdownMs, g_liveHw.load(), g_maxLiveHw.load(), g_liveHwDec.load());
+	CHECK(shutdownMs < (OnCi() ? 280.0 : 200.0));
 	CHECK_EQ(g_liveHw.load(), 0);
 	CHECK_EQ(g_liveHwDec.load(), 0);
 }
@@ -724,6 +742,7 @@ void TestYieldLatency()
 		// Pause now: the setup finishes ~40 ms later into the mailbox, no job adopts it.
 		std::this_thread::sleep_for(std::chrono::milliseconds(150));
 		const int left = yieldWait("render paused, setup result waiting in the mailbox");
+		CHECK_EQ(left, 0); // Worker 0 closes it: no job comes to adopt or drop it.
 		std::printf("  [T5c] -> %s\n", left == 0 ? "closed" : "STILL OPEN after 100 ms (session held)");
 		h.control->yielded = false;
 		h.control->Wake();
@@ -871,6 +890,60 @@ void TestHardwareDecoderFailure()
 	h.Finish();
 }
 
+// T11: a yield while the setup thread is opening an encoder (an open of 150
+// ms): the encoder counts from before its open, so the yield sees it, and the
+// setup closes it the moment its open returns -- never handed over, and no
+// setup failure (which would keep the hardware off for the cycle). Once the
+// yield is over, the hardware comes back.
+void TestYieldDuringSetupOpen()
+{
+	testcheck::g_currentTest = "T11 yield during a setup's open";
+	Harness h;
+	h.hw.latencyFrames = 1;
+	h.Build(true);
+	CHECK(h.WaitInter(2000000000ULL));
+	h.RunFor(300000000ULL);
+	h.hw.setupMinMs = 150;
+	h.hw.setupMaxMs = 150;
+	const uint32_t setupsBefore = h.setups.load();
+	h.width = 48;
+	h.height = 24; // A new size: the old encoder retires, a setup starts opening the next one.
+	h.RunFor(60000000ULL);
+	CHECK(h.setups.load() > setupsBefore);
+	CHECK(h.control->openEncoders.load() >= 1); // The encoder being opened counts already.
+	std::atomic<int64_t> closedUs{-1};
+	std::thread ui([&] {
+		const uint64_t t0 = NowNs();
+		h.control->yielded = true;
+		h.control->Wake();
+		while (h.control->openEncoders.load() > 0 && NowNs() - t0 < 1000000000ULL)
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		if (h.control->openEncoders.load() == 0)
+			closedUs = static_cast<int64_t>((NowNs() - t0) / 1000);
+	});
+	h.RunFor(400000000ULL); // G keeps rendering through the yield.
+	ui.join();
+	const CodecPipeline::CodecStatus st = h.pipeline->GetCodecStatus();
+	std::printf("  [T11] yield during a 150 ms open: no session left after %.1f ms, interActive %d, setup failures "
+		    "%llu\n",
+		    static_cast<double>(closedUs.load()) / 1000.0, st.interActive ? 1 : 0,
+		    static_cast<unsigned long long>(st.setupFailures));
+	CHECK(closedUs.load() >= 0);                         // Closed...
+	CHECK(closedUs.load() < (OnCi() ? 400000 : 150000)); // ...right after its open (~90 ms left).
+	CHECK(!st.interActive);                              // Never adopted while yielded.
+	CHECK_EQ(st.setupFailures, 0u);                      // A cancelled setup is no failure.
+	CHECK_EQ(st.hardErrors, 0u);
+	h.hw.setupMinMs = 0;
+	h.hw.setupMaxMs = 0;
+	h.control->yielded = false;
+	h.control->Wake();
+	CHECK(h.WaitInter(2000000000ULL)); // Set up again at the new size.
+	h.RunFor(h.delayNs + 200000000ULL);
+	h.CheckCommon("T11");
+	h.Finish();
+	CHECK_EQ(g_liveHw.load(), 0);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -903,6 +976,7 @@ int main(int argc, char **argv)
 	run("T8", &TestEvacuateSoftwareDecode);
 	run("T9", &TestTightArena);
 	run("T10", &TestHardwareDecoderFailure);
+	run("T11", &TestYieldDuringSetupOpen);
 	done = true;
 	watchdog.join();
 	return testcheck::Finish("adversarial_gop_tests");

@@ -22,7 +22,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // created (a TDR, out of memory) or whose context won't open leaves nothing
 // half-open behind -- before, Flush() right after the failed Decode() (what
 // CodecPipeline::DecodePinned() does) crashed in avcodec_flush_buffers() on
-// the allocated but unopened context.
+// the allocated but unopened context. A setup whose every encoder fails to
+// open hands back nothing and leaves no hardware session counted, and a
+// setup cancelled before it starts opens nothing.
 //
 // Built only where the plugin's FFmpeg is already in .deps (tests/CMakeLists.txt).
 
@@ -124,6 +126,70 @@ void TestSoftwareDecoderGarbage()
 	CHECK(provider.MakeHardwareDecoder(storage::CodecId::Raw) == nullptr);
 }
 
+// One adapter of every vendor, so the ranking has a candidate of each family.
+std::vector<GpuAdapterInfo> EveryVendor()
+{
+	std::vector<GpuAdapterInfo> adapters(3);
+	adapters[0].vendorId = 0x10DE;
+	adapters[0].name = "test NVIDIA";
+	adapters[1].index = 1;
+	adapters[1].vendorId = 0x1002;
+	adapters[1].name = "test AMD";
+	adapters[2].index = 2;
+	adapters[2].vendorId = 0x8086;
+	adapters[2].name = "test Intel";
+	return adapters;
+}
+
+// Every encoder fails to open: no session handed back, none left counted
+// (the count goes up before avcodec_open2(), so a yield sees a session being
+// opened, and back down when the encoder goes).
+void TestSetupEveryOpenFails()
+{
+	testcheck::g_currentTest = "setup, every open fails";
+	std::set<std::string> failing{"encoder-open"};
+	hwstorage::ProviderSettings settings = Settings(&failing);
+	settings.adapters = EveryVendor();
+	settings.control = std::make_shared<storage::InterControl>();
+	std::shared_ptr<storage::InterControl> control = settings.control;
+	hwstorage::Provider provider(settings);
+	storage::EncoderConfig frame;
+	frame.width = 640;
+	frame.height = 360;
+	storage::InterSession session = provider.Setup(frame);
+	CHECK(session.encoder == nullptr);
+	CHECK(session.decoder == nullptr);
+	CHECK(!session.cancelled);
+	CHECK_EQ(control->openEncoders.load(), 0);
+	// Not retried at this size (the registry), and still nothing counted.
+	session = provider.Setup(frame);
+	CHECK(session.encoder == nullptr);
+	CHECK_EQ(control->openEncoders.load(), 0);
+}
+
+// A setup cancelled from the start (Disable, shutdown, a yield) opens nothing.
+void TestSetupCancelled()
+{
+	testcheck::g_currentTest = "setup cancelled";
+	std::set<std::string> asked;
+	hwstorage::ProviderSettings settings;
+	settings.adapters = EveryVendor();
+	settings.control = std::make_shared<storage::InterControl>();
+	settings.injectFailure = [&asked](const char *step) {
+		asked.insert(step);
+		return true; // Never open anything for real here, whatever happens.
+	};
+	hwstorage::Provider provider(settings);
+	storage::EncoderConfig frame;
+	frame.width = 1280;
+	frame.height = 720;
+	storage::InterSession session = provider.Setup(frame, [] { return true; });
+	CHECK(session.encoder == nullptr);
+	CHECK(session.cancelled);
+	CHECK(asked.empty()); // Not one encoder was opened.
+	CHECK_EQ(settings.control->openEncoders.load(), 0);
+}
+
 } // namespace
 
 int main()
@@ -133,5 +199,7 @@ int main()
 		TestDecoderOpenFailure(codec, "decoder-open");
 	}
 	TestSoftwareDecoderGarbage();
+	TestSetupEveryOpenFails();
+	TestSetupCancelled();
 	return testcheck::Finish("hw_storage_codec_tests");
 }

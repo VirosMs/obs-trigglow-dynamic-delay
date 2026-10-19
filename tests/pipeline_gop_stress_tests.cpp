@@ -268,7 +268,8 @@ RunStats RunScenario(const Scenario &s)
 	options.lookaheadFrames = 3;
 	if (s.hardware) {
 		options.interControl = control;
-		options.interSetup = [&](const storage::EncoderConfig &requested) -> storage::InterSession {
+		options.interSetup = [&](const storage::EncoderConfig &requested,
+					 const storage::SetupCancelled &) -> storage::InterSession {
 			// The setup thread: whatever it decides comes from n.
 			const uint32_t n = setups++;
 			std::mt19937 local(n + 77);

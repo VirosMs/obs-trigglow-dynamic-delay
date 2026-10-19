@@ -306,23 +306,35 @@ using DecoderFactory = std::function<std::unique_ptr<Decoder>(CodecId codec)>;
 
 // What a setup hands back: an open, checked encoder for the requested frame
 // size (nullptr: no hardware encoder works for it), and optionally the
-// decoder the probe used, flushed (the decode worker adopts it).
+// decoder the probe used, flushed (the decode worker adopts it). cancelled:
+// the setup stopped because it was no longer wanted (see InterSetupFn), not
+// because nothing works -- no encoder, and not a failure.
 struct InterSession {
 	std::unique_ptr<Encoder> encoder;
 	std::unique_ptr<Decoder> decoder;
+	bool cancelled = false;
 };
+
+// True once the setup under way is no longer wanted: Disable, shutdown, an
+// intra target, or a yield to an OBS output starting. Cheap, any thread.
+using SetupCancelled = std::function<bool()>;
 
 // Runs on the pipeline's setup thread (it may block). config: the frame size
 // (the rest is the provider's choice: codec, quality, keyframe interval).
-using InterSetupFn = std::function<InterSession(const EncoderConfig &config)>;
+// It asks `cancelled` between its steps (each encoder it tries, before and
+// after opening one, during the probe) and stops at the first true, closing
+// on its own thread whatever it opened, so a yield frees the engine within
+// one step and Disable or shutdown never wait for a whole setup.
+using InterSetupFn = std::function<InterSession(const EncoderConfig &config, const SetupCancelled &cancelled)>;
 
 // State shared between the UI thread and the pipeline's encode worker, for
 // what can't wait for the graphics thread's next policy evaluation (design
 // 4.5): while `yielded`, the worker closes its hardware encoder and stores
 // with the intra codec, so OBS can open an encoder of its own on that engine
 // (the NVENC session limit); clearing it lets the worker set up hardware
-// again. openEncoders: hardware encoders alive (the UI waits for 0 after a
-// yield).
+// again. openEncoders: hardware encoders alive, counted from before their
+// session is opened (the UI waits for 0 after a yield; a setup opening one
+// then closes it as soon as it's open).
 struct InterControl {
 	std::atomic<bool> yielded{false};
 	std::atomic<int> openEncoders{0};

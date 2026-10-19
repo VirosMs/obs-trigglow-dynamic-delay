@@ -340,6 +340,14 @@ bool HwEncoder::Open(AVBufferRef *device, AVDictionary **options, std::string &e
 		device_ = av_buffer_ref(device);
 		ctx_->hw_device_ctx = av_buffer_ref(device);
 	}
+	// Counted from before avcodec_open2(), which takes the hardware session
+	// (an NVENC one, of a limited number): a yield waiting for no session
+	// open sees this one while it's being opened, and the setup closes it as
+	// soon as it's open. The destructor uncounts it, failed open or not.
+	if (control_) {
+		control_->openEncoders.fetch_add(1);
+		counted_ = true;
+	}
 	const int ret = Injected(inject_, "encoder-open") ? AVERROR(EINVAL) : avcodec_open2(ctx_, codec, options);
 	if (ret < 0) {
 		error = "open failed: " + AvError(ret);
@@ -355,10 +363,6 @@ bool HwEncoder::Open(AVBufferRef *device, AVDictionary **options, std::string &e
 	if (!pool_) {
 		error = "out of memory";
 		return false;
-	}
-	if (control_) {
-		control_->openEncoders.fetch_add(1);
-		counted_ = true;
 	}
 	return true;
 }
@@ -924,21 +928,32 @@ struct ProbeOutcome {
 	bool freshStart = false;
 	double psnr = 0.0;
 	std::unique_ptr<HwDecoder> decoder;
+	bool cancelled = false; // Stopped because the setup is no longer wanted, not a failure.
 };
+
+// Whether the setup under way should stop: no longer wanted (Disable,
+// shutdown, an intra target) or an OBS output starting took the engine.
+using StopFn = std::function<bool()>;
 
 // Sends `frames` synthetic frames (keys forced at 0 and kProbeSecondKey),
 // plus one more, and collects the first `frames` packets, in order, within
 // kProbePacketTimeoutNs of the last send (an encoder may only hand a packet
 // out once the next frame is in: the extra one's is thrown away later).
 // Copies kept: an encoder's packet is only valid until its next call.
+// False with reason "cancelled" as soon as `stop` says so.
 bool ProbeEncode(HwEncoder &encoder, uint32_t frames, std::vector<std::vector<uint8_t>> &source,
-		 std::vector<std::vector<uint8_t>> &packets, std::vector<bool> &keys, std::string &reason)
+		 std::vector<std::vector<uint8_t>> &packets, std::vector<bool> &keys, std::string &reason,
+		 const StopFn &stop)
 {
 	const storage::EncoderConfig &config = encoder.Config();
 	source.resize(frames + 1);
 	auto collect = [&](uint64_t untilNs, size_t want) {
 		storage::Packet packet;
 		while (packets.size() < want) {
+			if (stop()) {
+				reason = "cancelled";
+				return false;
+			}
 			if (encoder.Receive(packet)) {
 				if (packet.seq != packets.size()) {
 					reason = "packet out of order";
@@ -987,7 +1002,7 @@ bool ProbeEncode(HwEncoder &encoder, uint32_t frames, std::vector<std::vector<ui
 	return true;
 }
 
-ProbeOutcome Probe(HwEncoder &encoder, bool quick, const ProviderSettings &settings)
+ProbeOutcome Probe(HwEncoder &encoder, bool quick, const ProviderSettings &settings, const StopFn &stop)
 {
 	ProbeOutcome outcome;
 	const storage::EncoderConfig &config = encoder.Config();
@@ -995,8 +1010,10 @@ ProbeOutcome Probe(HwEncoder &encoder, bool quick, const ProviderSettings &setti
 	const uint32_t frames = quick ? kQuickProbeFrames : kProbeFrames;
 	std::vector<std::vector<uint8_t>> source, packets;
 	std::vector<bool> keys;
-	if (!ProbeEncode(encoder, frames, source, packets, keys, outcome.reason))
+	if (!ProbeEncode(encoder, frames, source, packets, keys, outcome.reason, stop)) {
+		outcome.cancelled = stop();
 		return outcome;
+	}
 	outcome.packets = static_cast<uint32_t>(packets.size());
 	if (!keys[0]) {
 		outcome.reason = "the first frame, forced, is no key";
@@ -1025,6 +1042,10 @@ ProbeOutcome Probe(HwEncoder &encoder, bool quick, const ProviderSettings &setti
 	}
 
 	// The decoder: 0-7 in order, then from the second key on a flushed decoder.
+	if (stop()) {
+		outcome.cancelled = true;
+		return outcome;
+	}
 	auto decoder = std::make_unique<HwDecoder>(codec, true, settings.obsAdapterIndex, settings.log,
 						   settings.injectFailure);
 	std::string error;
@@ -1177,9 +1198,24 @@ std::unique_ptr<storage::Decoder> Provider::MakeSoftwareDecoder(CodecId codec) c
 	return std::make_unique<HwDecoder>(codec, false, 0, settings_.log, settings_.injectFailure);
 }
 
-storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
+storage::InterSession Provider::Setup(const storage::EncoderConfig &frame, const storage::SetupCancelled &cancelled)
 {
 	const uint64_t startNs = SteadyNs();
+	// Asked between every step. A yield is checked here too, not only
+	// through `cancelled`: a caller without one (a benchmark) still gives the
+	// engine back.
+	const std::shared_ptr<storage::InterControl> control = settings_.control;
+	const StopFn stop = [&cancelled, control] {
+		return (cancelled && cancelled()) || (control && control->yielded.load());
+	};
+	auto cancelledSession = [&](const char *when) {
+		Logf(settings_.log, PipelineLogLevel::Info,
+		     "storage codec: setup at %ux%u stopped %s (no longer wanted, or an OBS output took the engine)",
+		     frame.width, frame.height, when);
+		storage::InterSession session;
+		session.cancelled = true;
+		return session;
+	};
 	storage::RankInput rank;
 	rank.mode = storage::BufferCodecMode::Auto;
 	rank.workers = true;
@@ -1209,6 +1245,8 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 		tried += " (" + why + ")";
 	};
 	for (const storage::HwCandidate &candidate : candidates) {
+		if (stop())
+			return cancelledSession("before trying an encoder");
 		const RegistryEntry entry = Lookup(candidate.encoder);
 		if (!entry.ok && entry.failedWidth == frame.width && entry.failedHeight == frame.height) {
 			note(candidate.encoder, "failed here before: " + entry.reason);
@@ -1231,6 +1269,12 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 		config.quality = QpFor(candidate.codec);
 		const uint64_t candidateNs = SteadyNs();
 		Opened opened = OpenEncoder(candidate, config, adapterIndex, settings_);
+		if (stop()) {
+			// Its session is closed right here, on this thread: a yield waits
+			// for it (openEncoders), and OBS's output opens its own next.
+			opened.encoder.reset();
+			return cancelledSession("right after opening an encoder");
+		}
 		if (!opened.encoder) {
 			note(candidate.encoder, opened.error);
 			std::lock_guard<std::mutex> lock(g_registryMutex);
@@ -1244,8 +1288,13 @@ storage::InterSession Provider::Setup(const storage::EncoderConfig &frame)
 		const bool quick = entry.ok;
 		if (entry.copyParameterSets)
 			opened.encoder->CopyParameterSets();
-		ProbeOutcome probe = Probe(*opened.encoder, quick, settings_);
+		ProbeOutcome probe = Probe(*opened.encoder, quick, settings_, stop);
 		const double probeMs = static_cast<double>(SteadyNs() - candidateNs) / 1e6;
+		if (probe.cancelled || stop()) {
+			probe.decoder.reset();
+			opened.encoder.reset();
+			return cancelledSession("while checking an encoder");
+		}
 		if (!probe.ok) {
 			note(candidate.encoder, probe.reason);
 			std::lock_guard<std::mutex> lock(g_registryMutex);

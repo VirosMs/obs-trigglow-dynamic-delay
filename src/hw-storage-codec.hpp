@@ -91,8 +91,11 @@ public:
 
 	// Setup thread (CodecPipeline::Options::interSetup): the first candidate
 	// that passes the probe at this frame size, open, with the decoder the
-	// probe warmed up; an empty session if none does.
-	storage::InterSession Setup(const storage::EncoderConfig &frame);
+	// probe warmed up; an empty session if none does. Stops at the first step
+	// where `cancelled` (or a yield on settings' control) says so, closing
+	// what it opened: a session marked cancelled, nothing recorded against
+	// the encoders.
+	storage::InterSession Setup(const storage::EncoderConfig &frame, const storage::SetupCancelled &cancelled = {});
 	// Decode worker (CodecPipeline::Options::decoderFactory and
 	// softwareDecoderFactory): opened lazily on first use, on that thread.
 	std::unique_ptr<storage::Decoder> MakeHardwareDecoder(storage::CodecId codec) const;

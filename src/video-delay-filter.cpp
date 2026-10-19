@@ -400,8 +400,9 @@ CodecPipeline::Options MakePipelineOptions(bool threaded, uint32_t fpsNum, uint3
 		// v0.7.0: the hardware inter-frame codec, set up on the pipeline's
 		// setup thread (only with the codec workers: it needs them).
 		if (threaded && provider && provider->AnyHardware()) {
-			options.interSetup = [provider](const storage::EncoderConfig &frame) {
-				return provider->Setup(frame);
+			options.interSetup = [provider](const storage::EncoderConfig &frame,
+							const storage::SetupCancelled &cancelled) {
+				return provider->Setup(frame, cancelled);
 			};
 			options.softwareDecoderFactory = [provider](storage::CodecId codec) {
 				return provider->MakeSoftwareDecoder(codec);

@@ -313,8 +313,9 @@ void CodecPipeline::Detach(bool releaseCodecs, std::shared_ptr<FrameRing> retire
 				if (frame->storage)
 					ReapLocked(TakeStorage(*frame), fallback);
 			}
-			// A setup under way is thrown away when it finishes; one ready
-			// (an open hardware encoder, a warmed-up decoder) goes now.
+			// A setup under way stops at its next step (the new generation
+			// cancels it); one ready (an open hardware encoder, a warmed-up
+			// decoder) goes now.
 			++setup_.generation;
 			setup_.requested = false;
 			setup_.failedWidth = 0;
@@ -1423,10 +1424,16 @@ void CodecPipeline::EncodeLoop(uint32_t worker)
 	auto interUnwanted = [&] {
 		return worker == 0 && ctx.fromSetup && !InterWantedLocked();
 	};
+	// An encoder the setup thread left in the mailbox that's no longer wanted
+	// (a yield while rendering is paused, so no job comes to adopt or drop
+	// it): worker 0 closes it, so its session is free within the yield's wait.
+	auto resultUnwanted = [&] {
+		return worker == 0 && setup_.result && !InterWantedLocked();
+	};
 	auto ready = [&] {
 		const uint32_t active = ActiveContextsLocked();
 		return stop_ || releaseSerial_ != handledRelease || (worker < active && !queue_.empty()) ||
-		       (worker >= active && ctx.encoder != nullptr) || interUnwanted();
+		       (worker >= active && ctx.encoder != nullptr) || interUnwanted() || resultUnwanted();
 	};
 	auto yielded = [&] {
 		return options_.interControl && options_.interControl->yielded.load();
@@ -1478,6 +1485,13 @@ void CodecPipeline::EncodeLoop(uint32_t worker)
 			settle();
 			continue;
 		}
+		if (resultUnwanted()) {
+			std::unique_ptr<storage::Encoder> unwanted = std::move(setup_.result);
+			lock.unlock();
+			unwanted.reset(); // Closed on this thread, now (handed over under the lock).
+			lock.lock();
+			continue;
+		}
 		if (worker >= ActiveContextsLocked() || queue_.empty())
 			continue;
 		EncodeJob job = std::move(queue_.front());
@@ -1518,20 +1532,32 @@ void CodecPipeline::SetupLoop()
 		config.width = s.busyWidth;
 		config.height = s.busyHeight;
 		lock.unlock();
+		// The setup asks this between its steps: Disable (a new generation),
+		// shutdown, an intra target or a yield stop it within one step instead
+		// of after a whole probe (up to about a second per encoder tried).
+		const storage::SetupCancelled cancelled = [this, generation] {
+			std::lock_guard<std::mutex> guard(mutex_);
+			return stop_ || generation != setup_.generation || !InterWantedLocked();
+		};
 		storage::InterSession session;
 		try {
-			session = options_.interSetup(config);
+			session = options_.interSetup(config, cancelled);
 		} catch (...) {
 			session = storage::InterSession{}; // Treated as no encoder working.
 		}
 		lock.lock();
 		s.busy = false;
 		std::vector<std::shared_ptr<void>> fallback;
-		if (stop_ || generation != s.generation || !InterWantedLocked()) {
-			// No longer wanted (an intra target, a yield, Disable): closed on
-			// the reaper, so it holds no hardware session.
-			ReapOwnedLocked(std::move(session.encoder), fallback);
-			ReapOwnedLocked(std::move(session.decoder), fallback);
+		if (session.cancelled || stop_ || generation != s.generation || !InterWantedLocked()) {
+			// No longer wanted (an intra target, a yield, Disable, shutdown):
+			// closed right here, so its hardware session is gone at once (a
+			// yield waits for that), and never counted as a failure. A setup
+			// cancelled by a yield that is over by now is asked for again by
+			// the next frame.
+			lock.unlock();
+			session.encoder.reset();
+			session.decoder.reset();
+			lock.lock();
 		} else if (session.encoder) {
 			ReapOwnedLocked(std::move(s.result), fallback);
 			s.result = std::move(session.encoder);
@@ -1868,8 +1894,8 @@ void CodecPipeline::Shutdown()
 	encodeThreads_.clear();
 	if (decodeThread_.joinable())
 		decodeThread_.join();
-	// A setup under way finishes first (a hardware encoder being opened);
-	// what it hands back goes to the reaper, joined after it.
+	// A setup under way stops at its next step (stop_ cancels it) and closes
+	// what it opened on its own thread.
 	if (setupThread_.joinable())
 		setupThread_.join();
 	// Last: it frees whatever the workers handed it on their way out.
