@@ -175,6 +175,29 @@ void TestObsSkipped()
 	CHECK(Run(z, 4 * kSecond, 60 * kSecond, [](uint64_t t) { return Fine(t); }).empty());
 }
 
+void TestObsEncodeError()
+{
+	testcheck::g_currentTest = "obs encode error";
+	// An OBS output stopped on an encoder error, the engine shared: at once,
+	// inside the cooldown too.
+	Policy p = OnHardware();
+	Sample s = Fine(kSecond + 1);
+	s.obsEncodeError = true;
+	const Decision d = p.Evaluate(s);
+	CHECK(d.action == Action::Evacuate && d.reason == Reason::ObsEncodeError);
+	CHECK(p.GetState() == State::Evacuated);
+	// Not shared: not the buffer's doing.
+	Policy q = OnHardware();
+	Sample n = Fine(5 * kSecond);
+	n.obsEncodeError = true;
+	n.engineShared = false;
+	CHECK(q.Evaluate(n).action == Action::None);
+	CHECK(q.GetState() == State::Hw);
+	// Already on MJPEG (never on hardware): nothing to do.
+	Policy none;
+	CHECK(none.Evaluate(s).action == Action::None);
+}
+
 void TestEarlyWarning()
 {
 	testcheck::g_currentTest = "early warning";
@@ -326,6 +349,7 @@ int main()
 	TestStates();
 	TestHardErrors();
 	TestObsSkipped();
+	TestObsEncodeError();
 	TestEarlyWarning();
 	TestVeto();
 	TestYield();

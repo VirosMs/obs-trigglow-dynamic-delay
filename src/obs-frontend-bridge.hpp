@@ -90,6 +90,9 @@ enum class FrontendEvent {
 	ReplayBufferStopped,
 	VirtualcamStarted,
 	VirtualcamStopped,
+	// Not an obs_frontend_event: the stream, recording or replay buffer output
+	// stopped with OBS_OUTPUT_ENCODE_ERROR (its "stop" signal), on the UI thread.
+	OutputEncodeError,
 	FinishedLoading,
 	// OBS is about to switch scene collection (switch, new, remove): the
 	// current one is still loaded and is saved right after this event.
@@ -293,6 +296,9 @@ public:
 	bool YieldBufferHwEncoder(const std::string &liveSceneName, bool wait) const;
 	// That output started (or never will): the filter may set hardware up again.
 	bool ResumeBufferHwEncoder(const std::string &liveSceneName) const;
+	// An OBS output stopped on an encoder error: the filter's codec policy
+	// evacuates to MJPEG if the buffer shares that engine.
+	bool ReportBufferObsEncodeError(const std::string &liveSceneName) const;
 	// Frames OBS skipped for encoding lag, since the last call, in the mixes
 	// of active outputs' video encoders that aren't the main mix (a GPU
 	// rescale, an Enhanced Broadcasting track): video_output_get_skipped_frames()
@@ -474,6 +480,16 @@ private:
 	// FrontendEvent::BufferRestarted -- unless this bridge shut down meanwhile.
 	static void BufferRestartedSignal(void *param, calldata_t *data);
 	static void BufferRestartedTask(void *param);
+
+	// v0.7.0: the frontend's stream, recording and replay buffer outputs'
+	// "stop" signals, watched from their STARTED events on (weak references,
+	// reconnected if OBS recreated the output): a stop with
+	// OBS_OUTPUT_ENCODE_ERROR becomes FrontendEvent::OutputEncodeError.
+	void WatchOutputStops();
+	void UnwatchOutputStop(size_t slot);
+	static void OutputStopSignal(void *param, calldata_t *data);
+	static void OutputEncodeErrorTask(void *param);
+	obs_weak_output_t *watchedOutputs_[3] = {nullptr, nullptr, nullptr}; // UI thread.
 
 	// Locates the video-delay filter previously attached to `liveSceneName`'s
 	// source by EnsureBufferWrapperScene, if the wrapper scene, its

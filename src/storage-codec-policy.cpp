@@ -79,6 +79,8 @@ const char *ReasonText(Reason reason)
 		return "the buffer encoder's engine warned at the lowest resolution allowed";
 	case Reason::NoEncoder:
 		return "no hardware encoder works for this frame size";
+	case Reason::ObsEncodeError:
+		return "an OBS output stopped on an encoder error, on an engine the buffer shares";
 	}
 	return "?";
 }
@@ -129,6 +131,11 @@ Decision Policy::Evaluate(const Sample &s)
 		return {};
 	}
 
+	// OBS's own encoder failed on an engine the buffer shares: at once, like a hard error.
+	if (s.obsEncodeError && s.engineShared) {
+		vetoUntilNs_ = 0;
+		return Go(State::Evacuated, Action::Evacuate, Reason::ObsEncodeError, 0.0, s.nowNs);
+	}
 	if (s.yielded)
 		return Go(State::Yielded, Action::Yield, Reason::None, 0.0, s.nowNs);
 	if (s.setupFailed) {

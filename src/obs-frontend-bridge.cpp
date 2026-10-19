@@ -87,6 +87,8 @@ void ObsFrontendBridge::Shutdown()
 	// Unguards them too: the "enable" handler must not outlive this bridge.
 	ForgetActiveBufferFilter();
 	ForgetActiveAudioFilters();
+	for (size_t i = 0; i < 3; ++i)
+		UnwatchOutputStop(i);
 
 	if (g_eventBridge == this)
 		g_eventBridge = nullptr; // A BufferRestartedTask() still queued finds it gone.
@@ -896,6 +898,67 @@ uint64_t ObsFrontendBridge::TakeMixSkippedFrames() const
 	}
 	mixSkippedBaselines_ = std::move(ctx.mixes);
 	return skipped;
+}
+
+bool ObsFrontendBridge::ReportBufferObsEncodeError(const std::string &liveSceneName) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter)
+		return false;
+	proc_handler_t *procHandler = obs_source_get_proc_handler(filter);
+	if (!procHandler)
+		return false;
+	calldata_t cd = {};
+	const bool ok = proc_handler_call(procHandler, "report_obs_encode_error", &cd);
+	calldata_free(&cd);
+	return ok;
+}
+
+void ObsFrontendBridge::WatchOutputStops()
+{
+	obs_output_t *outputs[3] = {obs_frontend_get_streaming_output(), obs_frontend_get_recording_output(),
+				    obs_frontend_get_replay_buffer_output()};
+	for (size_t i = 0; i < 3; ++i) {
+		obs_output_t *output = outputs[i];
+		if (!output)
+			continue;
+		if (!watchedOutputs_[i] || !obs_weak_output_references_output(watchedOutputs_[i], output)) {
+			UnwatchOutputStop(i);
+			signal_handler_connect(obs_output_get_signal_handler(output), "stop",
+					       &ObsFrontendBridge::OutputStopSignal, this);
+			watchedOutputs_[i] = obs_output_get_weak_output(output);
+		}
+		obs_output_release(output);
+	}
+}
+
+void ObsFrontendBridge::UnwatchOutputStop(size_t slot)
+{
+	if (!watchedOutputs_[slot])
+		return;
+	if (obs_output_t *output = obs_weak_output_get_output(watchedOutputs_[slot])) {
+		signal_handler_disconnect(obs_output_get_signal_handler(output), "stop",
+					  &ObsFrontendBridge::OutputStopSignal, this);
+		obs_output_release(output);
+	}
+	obs_weak_output_release(watchedOutputs_[slot]);
+	watchedOutputs_[slot] = nullptr;
+}
+
+void ObsFrontendBridge::OutputStopSignal(void *param, calldata_t *data)
+{
+	// The output's own thread: only an encoder error matters here (a network
+	// drop or a user stop doesn't); never waits on the UI.
+	if (calldata_int(data, "code") == OBS_OUTPUT_ENCODE_ERROR)
+		obs_queue_task(OBS_TASK_UI, &ObsFrontendBridge::OutputEncodeErrorTask, param, false);
+}
+
+void ObsFrontendBridge::OutputEncodeErrorTask(void *param)
+{
+	auto *self = static_cast<ObsFrontendBridge *>(param);
+	if (self != g_eventBridge || !self->handler_)
+		return; // Shut down after the signal was queued.
+	self->handler_(FrontendEvent::OutputEncodeError);
 }
 
 bool ObsFrontendBridge::SetBufferFilterEncoderCeiling(const std::string &liveSceneName, uint32_t width,
@@ -1752,6 +1815,10 @@ void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, voi
 		return; // Don't spam the handler with events we don't act on.
 	}
 
+	// v0.7.0: an output that just started is watched for an encoder error.
+	if (mapped == FrontendEvent::StreamingStarted || mapped == FrontendEvent::RecordingStarted ||
+	    mapped == FrontendEvent::ReplayBufferStarted)
+		self->WatchOutputStops();
 	self->handler_(mapped);
 }
 

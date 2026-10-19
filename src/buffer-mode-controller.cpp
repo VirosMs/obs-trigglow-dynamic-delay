@@ -568,6 +568,12 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 		onSceneListRefresh_();
 	if (event == FrontendEvent::ThemeChanged && onThemeChanged_)
 		onThemeChanged_();
+	// v0.7.0: OBS's own encoder failed: the buffer leaves a shared engine.
+	if (event == FrontendEvent::OutputEncodeError &&
+	    (status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active)) {
+		TRIGGLOW_LOG_WARN(kComponent, "an OBS output stopped on an encoder error: telling the delay buffer");
+		bridge_.ReportBufferObsEncodeError(status_.liveSceneName);
+	}
 	// v0.7.0: an output about to open its encoder gets the NVENC engine first.
 	if (event == FrontendEvent::StreamingStarting || event == FrontendEvent::RecordingStarting ||
 	    event == FrontendEvent::ReplayBufferStarting)

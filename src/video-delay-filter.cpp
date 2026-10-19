@@ -1199,6 +1199,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 		skippedEvents_.Clear();
 		lastObsSkippedFrames_ = UINT64_MAX;
 		lastMixSkipped_ = reportedMixSkipped_.load();
+		lastObsEncodeErrors_ = obsEncodeErrors_.load();
 		TRIGGLOW_LOG_INFO(kComponent, "storage codec: %s (buffer_codec=%s%s)",
 				  hardware ? "hardware inter-frame where it works, MJPEG bridging meanwhile" : "MJPEG",
 				  configuredBufferCodecAuto_.load() ? "auto" : "mjpeg",
@@ -1503,6 +1504,9 @@ bool VideoDelayFilter::EvaluateCodecPolicy(uint64_t nowNs)
 					     (status.decoderFailures - lastCodecStatus_.decoderFailures));
 	s.yielded = interControl_->yielded.load();
 	s.engineShared = share.Any();
+	const uint64_t encodeErrors = obsEncodeErrors_.load();
+	s.obsEncodeError = encodeErrors != lastObsEncodeErrors_;
+	lastObsEncodeErrors_ = encodeErrors;
 	s.obsSkipped = static_cast<uint32_t>(
 		std::min<uint64_t>(skippedEvents_.Summarize(nowNs, kPolicyWindowNs).sumNs, UINT32_MAX));
 	s.latencySamples = inter.latency.samples;
@@ -2299,6 +2303,8 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 				 &VideoDelayFilter::YieldHwEncoderProc, filter);
 		proc_handler_add(procHandler, "void resume_hw_encoder()", &VideoDelayFilter::ResumeHwEncoderProc,
 				 filter);
+		proc_handler_add(procHandler, "void report_obs_encode_error()",
+				 &VideoDelayFilter::ReportObsEncodeErrorProc, filter);
 	}
 
 	return filter;
@@ -2492,6 +2498,11 @@ void VideoDelayFilter::YieldHwEncoderProc(void *data, calldata_t *params)
 	TRIGGLOW_LOG_INFO(kComponent,
 			  "storage codec: gave the NVENC session to an OBS output starting (%s after %.0f ms)",
 			  open == 0 ? "closed" : "still closing", static_cast<double>(os_gettime_ns() - startNs) / 1e6);
+}
+
+void VideoDelayFilter::ReportObsEncodeErrorProc(void *data, calldata_t * /*params*/)
+{
+	static_cast<VideoDelayFilter *>(data)->obsEncodeErrors_.fetch_add(1);
 }
 
 void VideoDelayFilter::ResumeHwEncoderProc(void *data, calldata_t * /*params*/)

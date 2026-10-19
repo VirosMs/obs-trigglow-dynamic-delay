@@ -38,10 +38,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // Two speeds (design 4.2): with no visible symptom yet -- the encoder's
 // latency or its queue growing on an engine OBS also encodes on -- one rung
 // down (fewer pixels: -31% of the engine per rung) and on with hardware; with
-// a symptom -- OBS skipped frames for encoding lag, with the engine shared --
-// or a warning at the last rung, or any hard error, MJPEG, which never touches
-// the engine. Hard errors act at once; everything else waits 2 s after the
-// previous transition, and a warning must hold for 1 s with enough samples.
+// a symptom -- OBS skipped frames for encoding lag, or one of its outputs
+// stopped on an encoder error, with the engine shared -- or a warning at the
+// last rung, or any hard error, MJPEG, which never touches the engine. Hard
+// errors (ours, or OBS's encoder's) act at once; everything else waits 2 s
+// after the previous transition, and a warning must hold for 1 s with enough
+// samples.
 namespace trigglow::storagepolicy {
 
 enum class State : uint8_t { Mjpeg, Probing, Hw, HwGuarded, Yielded, Evacuated };
@@ -65,6 +67,7 @@ enum class Reason : uint8_t {
 	InFlight,       // Frames queued in the encoder.
 	LatencyAtFloor, // A warning with no resolution rung left to lower.
 	NoEncoder,      // The setup found no encoder (for this frame size).
+	ObsEncodeError, // An OBS output stopped on an encoder error, the engine shared.
 };
 
 const char *StateName(State state);
@@ -91,6 +94,7 @@ struct Sample {
 	bool yielded = false;        // The UI yielded the engine (InterControl::yielded).
 	bool engineShared = true;    // storage::EngineShare::Any(): shared, or unknown.
 	uint32_t obsSkipped = 0;     // Encoding-lag frames OBS skipped (main mix + its encoders' mixes), last 2 s.
+	bool obsEncodeError = false; // Since the last sample: an OBS output stopped on an encoder error.
 	uint32_t latencySamples = 0; // Packets in the latency window (the last second).
 	double latencyP95Ms = 0.0;
 	uint32_t inFlightMax = 0;  // Most frames in flight at a send, last second.

@@ -414,6 +414,9 @@ private:
 	static void ReportEncoderLagProc(void *data, calldata_t *params);
 	static void YieldHwEncoderProc(void *data, calldata_t *params);
 	static void ResumeHwEncoderProc(void *data, calldata_t *params);
+	//   "report_obs_encode_error()": an OBS output stopped on an encoder
+	//     error -- with the engine shared, the codec policy evacuates.
+	static void ReportObsEncodeErrorProc(void *data, calldata_t *params);
 
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	// Written by Update() (UI thread), read by Render() (graphics thread).
@@ -509,6 +512,8 @@ private:
 	RollingWindow skippedEvents_;                 // OBS encoding-lag skipped frames (value = frames).
 	uint64_t lastObsSkippedFrames_ = UINT64_MAX;  // The main mix's counter (UINT64_MAX = not read yet).
 	std::atomic<uint64_t> reportedMixSkipped_{0}; // report_encoder_lag, summed (UI thread).
+	std::atomic<uint64_t> obsEncodeErrors_{0};    // report_obs_encode_error, counted (UI thread).
+	uint64_t lastObsEncodeErrors_ = 0;
 	uint64_t lastMixSkipped_ = 0;
 	uint64_t codecChanges_ = 0;
 	uint64_t perfMixSkippedStart_ = 0; // reportedMixSkipped_ when the telemetry window began.
