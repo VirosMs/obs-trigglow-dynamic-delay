@@ -66,8 +66,9 @@ trigglow.com can't be reached, the plugin stays signed in and Enable keeps worki
 says the account is suspended or not active, Enable is blocked and the dock says why. Outside of an
 active `StartLogin()` wait, the plugin makes no other network calls related to this feature.
 
-Sign-in (and with it Enable and Trigi) works only on Windows in 0.6.0: macOS and Linux get an HTTP
-client, with the sign-in kept in the system's keychain or secret store, in 0.6.1 (planned).
+Sign-in (and with it Enable and Trigi) works only on Windows in 0.6.0 and 0.7.0: macOS and Linux
+get an HTTP client, with the sign-in kept in the system's keychain or secret store, next (planned
+as 0.6.1, which wasn't published; see `docs/ROADMAP.md`).
 
 ## Enforcement point
 

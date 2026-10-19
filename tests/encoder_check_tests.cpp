@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstdint>
 #include <cstdio>
 #include <initializer_list>
+#include <string>
 
 using trigglow::encodercheck::CapLimitsBuffer;
 using trigglow::encodercheck::Classify;
@@ -273,6 +274,86 @@ void TestInvalidInput()
 	CHECK(ShouldWarn(Scope::MainCanvasByAspect, {1920, 1080}, {1280, 720}, {1920, 1080}, true));
 }
 
+// v0.7.0: the ceiling the main canvas's encoders put on the buffer.
+void TestEncoderCeiling()
+{
+	g_currentTest = "encoder ceiling";
+	using trigglow::encodercheck::Ceiling;
+	using trigglow::encodercheck::CeilingEncoder;
+	using trigglow::encodercheck::CeilingWhy;
+	using trigglow::encodercheck::EncoderCeiling;
+	const Size canvas{2560, 1440};
+	auto byAspect = [&](Size size) {
+		return CeilingEncoder{VideoSource::UnlistedMix,
+				      Classify(VideoSource::UnlistedMix, size, canvas, canvas), size};
+	};
+	auto mainMix = [](Size size) {
+		return CeilingEncoder{VideoSource::MainMix, Scope::MainCanvas, size};
+	};
+
+	// The user's case: everything at the output -- nothing changes.
+	Ceiling c = EncoderCeiling({mainMix({2560, 1440})}, canvas, canvas, true, false);
+	CHECK(!c.applies && c.why == CeilingWhy::NotBelowOutput);
+	// The stream rescaled to 1080p on the GPU: the buffer needn't go above it.
+	c = EncoderCeiling({byAspect({1920, 1080})}, canvas, canvas, true, false);
+	CHECK(c.applies && c.why == CeilingWhy::Applied && SameSize(c.size, {1920, 1080}));
+	// Plus a recording at the canvas: the output cap stands.
+	c = EncoderCeiling({byAspect({1920, 1080}), mainMix({2560, 1440})}, canvas, canvas, true, false);
+	CHECK(!c.applies && c.why == CeilingWhy::NotBelowOutput);
+	// A recording below the stream: the largest of them rules.
+	c = EncoderCeiling({byAspect({1920, 1080}), byAspect({1280, 720})}, canvas, canvas, true, false);
+	CHECK(c.applies && SameSize(c.size, {1920, 1080}));
+	// An encoder above the output (output 1080p, a track at the canvas): the output.
+	c = EncoderCeiling({byAspect({2560, 1440})}, canvas, {1920, 1080}, true, false);
+	CHECK(!c.applies && c.why == CeilingWhy::NotBelowOutput);
+	// Enhanced Broadcasting: tracks at 1080p, 720p and 480p with a 1440p output.
+	c = EncoderCeiling({byAspect({1920, 1080}), byAspect({1280, 720}), byAspect({852, 480})}, canvas, canvas, true,
+			   false);
+	CHECK(c.applies && SameSize(c.size, {1920, 1080}));
+	// ...and with a 1080p output whose largest track is 1080p: nothing changes.
+	c = EncoderCeiling({byAspect({1920, 1080}), byAspect({1280, 720})}, canvas, {1920, 1080}, true, false);
+	CHECK(!c.applies && c.why == CeilingWhy::NotBelowOutput);
+	// A raw output on the main mix (virtual camera, NDI): it takes the output as is.
+	c = EncoderCeiling({byAspect({1920, 1080})}, canvas, canvas, true, true);
+	CHECK(!c.applies && c.why == CeilingWhy::RawOutput);
+	// An unlisted mix of another aspect ratio (maybe the canvas, stretched): no ceiling.
+	c = EncoderCeiling({byAspect({1920, 1080}), byAspect({1080, 1920})}, canvas, canvas, true, false);
+	CHECK(!c.applies && c.why == CeilingWhy::UnknownMix);
+	// Another canvas, listed (a vertical canvas through the canvas API): ignored.
+	c = EncoderCeiling({byAspect({1920, 1080}), {VideoSource::OtherCanvasMix, Scope::OtherCanvas, {1080, 1920}}},
+			   canvas, canvas, true, false);
+	CHECK(c.applies && SameSize(c.size, {1920, 1080}));
+	c = EncoderCeiling({{VideoSource::OtherCanvasMix, Scope::OtherCanvas, {1080, 1920}}}, canvas, canvas, true,
+			   false);
+	CHECK(!c.applies && c.why == CeilingWhy::NoEncoders);
+	CHECK(EncoderCeiling({}, canvas, canvas, true, false).why == CeilingWhy::NoEncoders);
+	// The hidden switch off: no ceiling of any kind.
+	c = EncoderCeiling({byAspect({1920, 1080})}, canvas, canvas, false, false);
+	CHECK(!c.applies && c.why == CeilingWhy::CapOff);
+	// bufferfit's rules on the size: width a multiple of 8, height even,
+	// within 4 px of the encoder (1366x768 on a 1080p canvas: 1368x768).
+	const Size hd{1920, 1080};
+	c = EncoderCeiling(
+		{{VideoSource::UnlistedMix, Classify(VideoSource::UnlistedMix, {1366, 768}, hd, hd), {1366, 768}}}, hd,
+		hd, true, false);
+	CHECK(c.applies && c.size.width % 8 == 0 && c.size.height % 2 == 0);
+	CHECK(SameSize(c.size, {1368, 768}));
+	// Sweep: never above the output, never more than 4 px narrower than the largest encoder.
+	int bad = 0;
+	for (uint32_t h = 480; h <= 1440; h += 2) {
+		const uint32_t w = (h * 16 / 9) & ~1u;
+		const Ceiling s = EncoderCeiling({byAspect({w, h})}, canvas, canvas, true, false);
+		if (s.applies &&
+		    (s.size.width > canvas.width || s.size.height > canvas.height || s.size.width % 8 != 0 ||
+		     s.size.height % 2 != 0 || s.size.height + 2 < h || s.size.width + 4 < w))
+			++bad;
+		if (!s.applies && h < 1440 && s.why != CeilingWhy::NotBelowOutput)
+			++bad;
+	}
+	CHECK(bad == 0);
+	CHECK(std::string(trigglow::encodercheck::CeilingWhyText(CeilingWhy::RawOutput)).size() > 0);
+}
+
 } // namespace
 
 int main()
@@ -286,6 +367,7 @@ int main()
 	TestVerticalCanvas();
 	TestBufferNotCapped();
 	TestInvalidInput();
+	TestEncoderCeiling();
 
 	std::printf("encoder_check_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

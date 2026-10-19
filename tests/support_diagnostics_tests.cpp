@@ -18,15 +18,20 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Tests for src/support-diagnostics.*: the optional technical data sent with
 // a Trigi conversation holds only the schema's fields, with the schema's
-// types and ranges, and stays within 1 KB.
+// types and ranges, and stays within 1 KB. And the pipeline health it reads
+// (src/pipeline-health.hpp) is copied no further than the caller's struct.
 
 #include "support-diagnostics.hpp"
 #include "test-support.hpp"
 
 #include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 using namespace trigglow;
 using namespace trigglow::diag;
@@ -334,6 +339,53 @@ void TestMappings()
 	CHECK(CurrentArch() == Arch::X64 || CurrentArch() == Arch::Arm64 || CurrentArch() == Arch::Other);
 }
 
+// get_pipeline_state copies no more than the caller's struct holds.
+void TestPipelineHealthCopy()
+{
+	PipelineHealth health;
+	health.running = true;
+	health.level = 3;
+	health.changes = 77;
+	health.codec = 3;
+	std::snprintf(health.encoder, sizeof(health.encoder), "hevc_amf");
+	health.codecChanges = 9;
+
+	// A version 1 caller (v0.6.0): no size given, only its fields are written.
+	CHECK(kPipelineHealthV1Size == offsetof(PipelineHealth, changes) + sizeof(uint64_t));
+	CHECK(kPipelineHealthV1Size < sizeof(PipelineHealth));
+	CHECK(PipelineHealthCopySize(false, 0) == kPipelineHealthV1Size);
+	std::vector<uint8_t> v1(kPipelineHealthV1Size + 64, 0xAB);
+	CopyPipelineHealth(health, v1.data(), PipelineHealthCopySize(false, 0));
+	PipelineHealth seen;
+	std::memcpy(&seen, v1.data(), kPipelineHealthV1Size);
+	CHECK(seen.version == 1 && seen.running && seen.level == 3 && seen.changes == 77);
+	bool untouched = true;
+	for (size_t i = kPipelineHealthV1Size; i < v1.size(); ++i)
+		untouched = untouched && v1[i] == 0xAB;
+	CHECK(untouched); // Nothing past the caller's struct.
+
+	// This version's caller: everything, version 2.
+	CHECK(PipelineHealthCopySize(true, static_cast<long long>(sizeof(PipelineHealth))) == sizeof(PipelineHealth));
+	PipelineHealth full;
+	CopyPipelineHealth(health, &full, sizeof(full));
+	CHECK(full.version == 2 && full.codec == 3 && full.codecChanges == 9);
+	CHECK(std::string(full.encoder) == "hevc_amf");
+
+	// A bigger (newer) caller: no more than this struct; a smaller one or a
+	// nonsense size: what it declared, or nothing.
+	CHECK(PipelineHealthCopySize(true, 4096) == sizeof(PipelineHealth));
+	CHECK(PipelineHealthCopySize(true, 40) == 40u);
+	CHECK(PipelineHealthCopySize(true, 3) == 0u);
+	CHECK(PipelineHealthCopySize(true, -8) == 0u);
+	std::vector<uint8_t> small(48, 0xCD);
+	CopyPipelineHealth(health, small.data(), 40);
+	uint32_t version = 0;
+	std::memcpy(&version, small.data(), sizeof(version));
+	CHECK(version == 1);
+	CHECK(small[40] == 0xCD && small[47] == 0xCD);
+	CopyPipelineHealth(health, nullptr, 40); // No buffer: nothing.
+}
+
 } // namespace
 
 int main()
@@ -342,5 +394,6 @@ int main()
 	TestClampingAndLimits();
 	TestWorstCaseSize();
 	TestMappings();
+	TestPipelineHealthCopy();
 	return testcheck::Finish("support_diagnostics_tests");
 }

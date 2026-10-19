@@ -23,16 +23,20 @@ enteros también en ese caso (antes podían quedar hasta ~1 s separados), y el d
 directo muestran esa misma cifra. Ver `docs/SPEC-es.md` §3.2/§3.3.
 
 **¿Cómo interactúan los ajustes "Delay (segundos)" y "Calidad mínima"?**
-De forma independiente, por diseño — eliges ambos libremente. La calidad mínima (de 480p a 2160p (4K))
-marca hasta dónde puede bajar el plugin la resolución del buffer para ahorrar RAM: nunca baja de
-ahí, y en su lugar acorta el tiempo real de buffer si los segundos pedidos no caben en el
+De forma independiente, por diseño — eliges ambos libremente. La calidad mínima (de 480p a 2160p
+(4K)) marca hasta dónde puede bajar el plugin la resolución del buffer para ahorrar RAM: nunca baja
+de ahí, y en su lugar acorta el tiempo real de buffer si los segundos pedidos no caben en el
 presupuesto de RAM detectado en tu máquina a esa calidad. Eso sí, desde la v0.6.0 nunca eleva el
 buffer por encima de la resolución de salida de OBS (Ajustes → Vídeo → Resolución de salida
 (escalada)): con una salida de 720p el buffer es 720p aunque elijas 1080p, porque OBS no tiene nada
-por encima de su salida que emitir. También es el suelo de la reducción automática de calidad cuando
-tu equipo no llega (ver más abajo). El dock muestra una estimación en vivo, no bloqueante, de lo que
-una combinación concreta va a lograr realmente (segundos y resolución) mientras ajustas cualquiera
-de los dos, antes incluso de pulsar Enable. Ver `docs/SPEC-es.md` §3.5.
+por encima de su salida que emitir. Desde la v0.7.0, cuando todos los encoders que ven tu lienzo
+(emisión, grabación, pistas de Enhanced Broadcasting) codifican por debajo de la salida, el buffer
+se guarda al tamaño del mayor de ellos: una salida 1440p que se emite con un encoder reescalado a
+1080p, sin grabar nada por encima de 1080p, guarda el buffer a 1080p. También es el suelo de la
+reducción automática de calidad cuando tu equipo no llega (ver más abajo). El dock muestra una
+estimación en vivo, no bloqueante, de lo que una combinación concreta va a lograr realmente
+(segundos y resolución) mientras ajustas cualquiera de los dos, antes incluso de pulsar Enable. Ver
+`docs/SPEC-es.md` §3.5.
 
 **¿Qué pasa si el delay + calidad que pido no caben en RAM?**
 Recibes un aviso claro en el dock *antes* de activarlo — nunca falla en silencio ni crashea. El
@@ -53,16 +57,70 @@ calidad elegida no caben, la estimación en vivo del dock te lo dirá antes de a
 guardará tantos segundos como quepan de verdad en su lugar.
 
 **¿Comprime el buffer? ¿Eso baja la calidad?**
-Sí, desde la v0.3.0 — en Windows y Linux, cada frame almacenado se comprime con MJPEG en RAM y se
-descomprime de vuelta al reproducirlo, con un fallback automático y seguro a almacenamiento sin
-comprimir si el códec no está disponible por cualquier motivo. La compresión es visualmente casi sin
-pérdidas, y la calidad mínima que elijas (de 480p a 2160p (4K)) funciona exactamente igual que antes:
-esto solo cambia cómo se almacenan en memoria los frames del buffer. El gameplay real comprime unas
-11–15x (medido en directo desde la v0.4.0), aunque depende de lo que haya en pantalla. Desde la
-v0.6.0 la compresión se ejecuta en hilos propios del plugin, no en el hilo gráfico de OBS, y la
-memoria sigue lo que de verdad pesan los frames: unos 0,6–0,8 GB para 30 s a 1440p60 en nuestra
-simulación fuera de OBS. Ver `docs/SPEC-es.md` §4. macOS todavía no forma parte de esto y guarda el
-buffer sin comprimir.
+Sí. Solo cambia cómo se guardan en memoria los frames del buffer: la calidad mínima que elijas (de
+480p a 2160p (4K)) funciona exactamente igual.
+- **Windows con encoder de vídeo por hardware (v0.7.0):** los frames se guardan como vídeo HEVC (o
+  H.264 en una GPU sin HEVC) con el encoder de tu GPU (NVENC de NVIDIA, AMF de AMD o Quick Sync de
+  Intel), y se decodifican en la GPU. Un keyframe cada medio segundo y los frames intermedios
+  guardados como diferencias: por eso ocupa más o menos la mitad de RAM que MJPEG. Además la imagen
+  se parece más a la original: en nuestras mediciones los frames guardados vuelven con un PSNR-Y de
+  ~45 dB, frente a ~40 dB con MJPEG.
+- **Windows sin encoder por hardware, y Linux:** cada frame se comprime por separado con MJPEG, como
+  desde la v0.3.0, visualmente casi sin pérdidas. El gameplay real comprime unas 11–15x, aunque
+  depende de lo que haya en pantalla.
+- **macOS:** el buffer se guarda sin comprimir.
+
+La compresión y la descompresión se ejecutan en hilos propios del plugin (y en el motor de vídeo de
+la GPU con el encoder por hardware), no en el hilo gráfico de OBS, y si un frame no se puede
+comprimir se guarda sin comprimir. Ver `docs/SPEC-es.md` §4 y §4.8.
+
+**¿Cuánta RAM ocupa el buffer del delay?**
+Depende de la resolución de salida, del delay, de lo que haya en pantalla y de cómo se guarde.
+Medido fuera de OBS con contenido tipo gameplay a 60 fps, solo el buffer:
+
+| Salida | 30 s, HEVC por hardware (Windows, v0.7.0) | 30 s, MJPEG | 60 s, HEVC por hardware | 60 s, MJPEG |
+|---|---|---|---|---|
+| 1080p60 | ~190 MB | ~400 MB | ~290 MB | ~750 MB |
+| 1440p60 | ~325 MB | ~640 MB | ~520 MB | ~1200 MB |
+| 2160p60 | ~590 MB | ~1250 MB | ~920 MB | ~2300 MB |
+
+- La columna por hardware se midió con una GPU AMD (AMF). **NVENC de NVIDIA aún no está medido**;
+  sus bytes por frame, y con ellos la RAM, pueden variar algo.
+- Frente a MJPEG, el códec por hardware ocupa entre un 49 % y un 62 % menos según la resolución y el
+  delay. La v0.6.0 ocupaba algo más que la columna de MJPEG: unos 675 MB a 1440p60 con 30 s, ~1,2 GB
+  con 60 s.
+- Suma unos 11 MB por fuente de audio con sonido para 30 s de delay (22 MB para 60 s).
+- El contenido que cambia mucho en cada frame comprime peor, con los dos códecs.
+- Para ver lo que ocupa de verdad tu buffer, busca `arena=…MB committed` en las líneas `pipeline
+  check` del log de OBS: son los frames guardados, la mayor parte (los códecs y las reservas de
+  frames suman unos 50 MB con MJPEG y 110 MB con el códec por hardware a 1440p). `codec=`, en la
+  misma línea, dice cómo se guarda (`docs/TROUBLESHOOTING-es.md`, "Cómo leer las líneas del log").
+
+**¿El buffer usa el encoder de vídeo de mi GPU? ¿Puede provocar "Encoding overloaded"?**
+En Windows, sí: desde la v0.7.0 el buffer usa el encoder por hardware de la GPU cuando lo hay, y
+también su decoder. Está hecho para que el encoder de tu stream vaya siempre primero. Cuando el
+buffer codifica en el mismo motor que alguno de los encoders de OBS (los dos en NVENC, por ejemplo):
+- si ese motor empieza a saturarse (sube la latencia del encoder del buffer), el buffer baja un
+  peldaño de resolución, nunca por debajo de tu calidad mínima, y no vuelve a subir en 5 minutos; el
+  dock muestra su aviso ámbar "Calidad del buffer reducida";
+- si OBS se salta aunque sea un frame por retraso de codificación, o una de sus salidas se para por
+  un error del encoder, el buffer vuelve a MJPEG al momento, que no usa el motor para nada. El delay
+  no se corta ni se mueve; el buffer solo ocupa más RAM hasta que desactivas el delay;
+- cuando OBS empieza a emitir, a grabar o a usar el Replay Buffer, el buffer le cede antes su sesión
+  NVENC a esa salida y la recupera unos segundos después.
+
+Si el buffer codifica en otro motor (una iGPU mientras emites con la gráfica dedicada, o un stream
+con x264), no puede provocar retraso de codificación y nada de esto tiene que actuar. Esta
+protección se probó con una GPU AMD; **NVENC aún no se ha validado dentro de un OBS real**. Si
+sospechas del buffer, fuerza MJPEG (siguiente pregunta) y compara.
+
+**¿Puedo hacer que el buffer use MJPEG, como antes de la v0.7.0?**
+Sí, con el ajuste oculto `buffer_codec`: `"buffer_codec": "mjpeg"` en el `buffer-mode-settings.json`
+del plugin, editado con OBS cerrado. Tiene que ser exactamente ese texto en minúsculas; cualquier
+otro valor mantiene el de por defecto, `"auto"` (hardware donde funcione, MJPEG si no), y el log
+dice por qué. Está pensado para soporte o para descartar el códec por hardware en un problema: MJPEG
+ocupa más o menos el doble de RAM y gasta más CPU. Pasos en `docs/TROUBLESHOOTING-es.md`, "Ajustes
+ocultos para soporte".
 
 **OBS muestra "Encoding overloaded" (sobrecarga al codificar) en cuanto activo el delay. ¿Por qué?**
 Hasta la v0.5.0, la compresión y descompresión de los frames del buffer se ejecutaba dentro del hilo
@@ -71,8 +129,10 @@ lienzo: con un lienzo mayor que la salida (por ejemplo lienzo 2560x1440, salida 
 trabajo se comía la mayor parte del frame y OBS se quedaba atrás. **La v0.6.0 lo corrige**: el buffer
 nunca se guarda por encima de la resolución de salida de OBS, y la compresión se ejecuta en hilos
 propios del plugin, así que lo que queda en el hilo gráfico de OBS es uno o dos milisegundos por
-frame. Actualiza a la v0.6.0; si bajaste el lienzo para esquivarlo, puedes volver a subirlo. Si aun
-así sigue pasando, mira la sección "Encoding overloaded" de `docs/TROUBLESHOOTING-es.md`.
+frame. Actualiza a la última versión; si bajaste el lienzo para esquivarlo, puedes volver a subirlo.
+Desde la v0.7.0 el buffer también puede usar el encoder de vídeo de la GPU, pero le cede el paso al
+encoder de OBS (preguntas anteriores). Si aun así sigue pasando, mira la sección "Encoding
+overloaded" de `docs/TROUBLESHOOTING-es.md`.
 
 **¿Solo funciona a 1080p? ¿Y a 2K (1440p)?**
 Funciona a cualquier resolución — el buffer sigue la resolución de salida de OBS. Para el
@@ -89,8 +149,11 @@ rendimiento lo que cuenta es la resolución y los fps de *salida*, no el lienzo:
   caben en la RAM, el delay se acorta, igual que con 1080p. Por encima de tu salida no cambia nada:
   con una salida 1080p el buffer sigue a 1080p. Para ver la RAM que ocupa de verdad el buffer, busca
   `arena=…MB committed` en las líneas `pipeline check` del log de OBS (cada 10 s con el delay en
-  marcha): a 1440p60 con 30 s espera unos 600–900 MB con gameplay (`ratio=` de unas 11–15x). El
-  plugin reserva margen para hasta ~1,9 GB (5x), y el dock avisa antes de activarlo si eso no cabe.
+  marcha): a 1440p60 con 30 s y gameplay, espera unos 200–250 MB con el códec por hardware (`ratio=`
+  de unas 40–60x) y 600–900 MB con MJPEG (unas 11–15x); los códecs y las reservas de frames suman
+  encima unos 50 MB (MJPEG) a 110 MB (hardware). El plugin reserva margen para hasta ~1,9 GB con el
+  5x que supone para MJPEG, o ~0,8 GB con el 12x del códec por hardware una vez que ha funcionado en
+  esta sesión de OBS, y el dock avisa antes de activarlo si eso no cabe.
 - **Si tu equipo no llega** con tus ajustes, el plugin baja la resolución del buffer (nunca por
   debajo de tu calidad mínima) y, como último paso, sus fps de captura, en vez de dejar que OBS se
   quede atrás o de cortar el delay. El dock te lo dice con un aviso ámbar (siguiente pregunta).
@@ -99,10 +162,12 @@ rendimiento lo que cuenta es la resolución y los fps de *salida*, no el lienzo:
 Tu equipo no daba para el buffer del delay a calidad completa, así que el plugin lo aligeró: primero
 añade hilos de compresión (eso no muestra aviso), después guarda el buffer a menos resolución, nunca
 por debajo de tu calidad mínima, y como último paso captura un frame de cada dos (solo con una salida
-a 48 fps o más). El aviso dice qué se redujo y por qué. Los segundos de delay no cambian nunca y el
-directo no se corta; los frames repetidos, si los hay, se ven como un tirón breve. Cuando baja la
-carga, vuelve a subir solo tras 30 s con margen de sobra, y el aviso desaparece. Qué hacer, si hace
-falta algo: `docs/TROUBLESHOOTING-es.md`.
+a 48 fps o más). Desde la v0.7.0 también baja un peldaño cuando el motor de vídeo de la GPU que el
+buffer comparte con el encoder de OBS se satura (el aviso da entonces como causa comprimir los
+fotogramas, y no vuelve a subir en 5 minutos). El aviso dice qué se redujo y por qué. Los segundos
+de delay no cambian nunca y el directo no se corta; los frames repetidos, si los hay, se ven como un
+tirón breve. Cuando baja la carga, vuelve a subir solo tras 30 s con margen de sobra, y el aviso
+desaparece. Qué hacer, si hace falta algo: `docs/TROUBLESHOOTING-es.md`.
 
 **¿Afecta a la grabación local o al Replay Buffer?**
 Indirectamente sí, y merece la pena entenderlo bien: el modo buffer funciona cambiando lo que
@@ -142,9 +207,10 @@ independientemente de a dónde emitas.
 **¿Necesito un panel web o una cuenta de Trigglow para usarlo?**
 Panel web no: todo el control vive dentro de OBS. Desde la v0.3.3 sí necesitas iniciar sesión una
 vez con una cuenta gratuita de trigglow.com para que Enable funcione (el inicio de sesión se hace en
-tu navegador, y el plugin sigue siendo 100% gratis) — ver `docs/ACCOUNT_GATE.md`. **En la v0.6.0, el
-inicio de sesión (y con él Activar delay y Trigi) solo funciona en Windows.** macOS y Linux todavía
-no tienen el cliente HTTP del plugin; está previsto para la v0.6.1.
+tu navegador, y el plugin sigue siendo 100% gratis) — ver `docs/ACCOUNT_GATE.md`. **Por ahora, el
+inicio de sesión (y con él Activar delay y Trigi) solo funciona en Windows**, también en la v0.7.0.
+macOS y Linux todavía no tienen el cliente HTTP del plugin; está previsto a continuación
+(`docs/ROADMAP-es.md`).
 
 **¿Cómo funciona el inicio de sesión y qué guarda el plugin?**
 El inicio de sesión siempre se hace en trigglow.com, en tu navegador: el plugin nunca te pide la
@@ -161,10 +227,10 @@ web: Ajustes → Sesiones activas → Apps conectadas.
 Sí. El inicio de sesión de la v0.5.x y anteriores se apaga cuando se publica la v0.6.0: desde ese
 momento esas versiones ya no pueden iniciar sesión en Trigglow, y las sesiones que ya tienen dejan
 de funcionar tras un periodo de transición, así que el delay deja de funcionar en ellas. Instala la
-v0.6.0 encima de tu versión, con OBS cerrado. En el primer arranque tu inicio de sesión pasa solo al
-formato nuevo; si el dock te pide iniciar sesión, hazlo una vez. Tus escenas y ajustes se conservan.
-En macOS y Linux el plugin todavía no tiene inicio de sesión, ni en la v0.5.x ni en la v0.6.0; llega
-con la v0.6.1.
+última versión encima de la tuya, con OBS cerrado. En el primer arranque tu inicio de sesión pasa
+solo al formato nuevo; si el dock te pide iniciar sesión, hazlo una vez. Tus escenas y ajustes se
+conservan. En macOS y Linux el plugin todavía no tiene inicio de sesión (tampoco en la v0.7.0);
+llega con el cliente HTTP previsto a continuación.
 
 **El dock o "Reportar un problema" me dice que actualice el plugin. ¿Qué hago?**
 "Esta versión del plugin ya no puede iniciar sesión. Actualiza el plugin." en el dock, "Actualiza el

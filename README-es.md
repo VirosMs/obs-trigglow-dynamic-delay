@@ -6,7 +6,7 @@ Plugin nativo de OBS Studio que retrasa el **vídeo y el audio de tu stream junt
 configurable de segundos, desde un botón, una hotkey nativa de OBS o un Stream Deck — **sin que el
 output de streaming se toque nunca.** Sin reconexión, sin corte, en ningún momento, por ningún
 motivo. Sin app externa, sin panel web, sin proceso aparte: todo vive dentro del propio proceso de
-OBS. **Estado: MVP / v0.6.0 — Early Access.**
+OBS. **Estado: MVP / v0.7.0 — Early Access.**
 
 A partir de v0.3.0, el ring buffer de RAM se comprime de verdad con MJPEG en Windows y Linux
 (FFmpeg vendorizado), con un fallback automático y seguro a almacenamiento sin comprimir si el codec
@@ -72,9 +72,21 @@ código que comparar en trigglow.com, un inicio de sesión propio del plugin cif
 de Windows, que Cerrar sesión revoca), los reportes van a tu cuenta con el log de OBS redactado y
 solo si quieres, y las conexiones de red del plugin se endurecen. **Actualizar es obligatorio: en
 cuanto se publique la v0.6.0, la v0.5.x y anteriores ya no podrán iniciar sesión, y las sesiones
-que ya tienen dejarán de funcionar tras un periodo de transición.** En la v0.6.0 el inicio de
-sesión, Trigi y los reportes desde OBS solo funcionan en Windows; macOS y Linux los tendrán en la
-v0.6.1. Ver `docs/FAQ-es.md`.
+que ya tienen dejarán de funcionar tras un periodo de transición.** El inicio de sesión, Trigi y los
+reportes desde OBS solo funcionan en Windows (también en la v0.7.0); macOS y Linux los tendrán con
+el cliente HTTP previsto a continuación (`docs/ROADMAP-es.md`). Ver `docs/FAQ-es.md`.
+
+La v0.7.0 es una versión de optimización: **en Windows el buffer del delay ocupa más o menos la
+mitad de RAM.** Los frames que esperan el delay se guardan con el encoder de vídeo por hardware de
+tu GPU (HEVC con NVENC, AMF o Quick Sync, o H.264 si la GPU no tiene HEVC) y también se decodifican
+en la GPU, en vez de comprimirse uno a uno como imágenes MJPEG. A 1440p60 el buffer pasa de ~675 MB
+a ~325 MB con 30 s, y de ~1,2 GB a ~520 MB con 60 s (medido fuera de OBS con una GPU AMD; NVENC de
+NVIDIA aún no está medido). La imagen con delay se parece más a la original y el plugin usa menos
+CPU. Para no provocar "Encoding overloaded" cuando el buffer comparte el motor de vídeo con el
+encoder de OBS, baja su resolución si ese motor se satura y vuelve a MJPEG al momento si OBS empieza
+a saltarse frames, sin tocar el delay. Sin encoder de hardware guarda en MJPEG como hasta ahora. Sin
+controles ni avisos nuevos; un ajuste oculto, `buffer_codec`, fuerza MJPEG para soporte. Linux y
+macOS no cambian. Ver `CHANGELOG-es.md` y la tabla de RAM de `docs/FAQ-es.md`.
 
 Antes de nada, lee `docs/SPEC.md` (especificación técnica completa de cómo funciona realmente el
 modo buffer, y por qué el enfoque obvio de "simplemente cambiar el delay nativo de OBS en directo"
@@ -83,7 +95,7 @@ primera entrega).
 
 ## Requisitos de uso
 
-**OBS Studio 31.1.0 o superior.** El binario v0.6.0 se compila contra las fuentes de OBS 31.1.1
+**OBS Studio 31.1.0 o superior.** El binario v0.7.0 se compila contra las fuentes de OBS 31.1.1
 (ver `buildspec.json`); se ha verificado con versiones anteriores que el plugin carga y funciona
 correctamente en OBS **32.2.2** (el mecanismo de compatibilidad de plugins de OBS rechaza solo los
 plugins compilados contra una versión *más nueva* que la que está corriendo; nunca se ha probado en
@@ -98,16 +110,26 @@ la calidad mínima que elijas) y, como último paso, a la mitad de fps de captur
 sobrecargar OBS o cortar el delay; mientras tanto el dock muestra un aviso ámbar.
 
 **Memoria.** El presupuesto de RAM del buffer es la mitad de la RAM del sistema, entre 1 GB y 24 GB
-(en macOS y Linux, donde todavía no se detecta la RAM, 2 GB fijos). El gameplay comprime unas
-11–15x, así que 30 s a 1440p60 ocupan unos 0,6–0,8 GB (simulación fuera de OBS). Si los segundos que
-pides no caben a tu calidad mínima, se guardan menos segundos (el dock te lo dice antes de
-activarlo). La compresión necesita FFmpeg, que va incluido en Windows y Linux; en macOS el buffer se
-guarda sin comprimir.
+(en macOS y Linux, donde todavía no se detecta la RAM, 2 GB fijos). Lo que ocupa de verdad depende
+de lo que haya en pantalla y de cómo se guarde. Medido fuera de OBS con contenido tipo gameplay a
+60 fps (solo el buffer; el audio suma unos 11 MB por fuente con sonido para 30 s):
+
+| Salida | 30 s, HEVC por hardware (Windows, v0.7.0) | 30 s, MJPEG | 60 s, HEVC por hardware | 60 s, MJPEG |
+|---|---|---|---|---|
+| 1080p60 | ~190 MB | ~400 MB | ~290 MB | ~750 MB |
+| 1440p60 | ~325 MB | ~640 MB | ~520 MB | ~1200 MB |
+| 2160p60 | ~590 MB | ~1250 MB | ~920 MB | ~2300 MB |
+
+Las cifras por hardware son de una GPU AMD (AMF); NVENC de NVIDIA aún no está medido. MJPEG es lo
+que usan Linux, Windows sin encoder de hardware y el ajuste de soporte `buffer_codec`. Si los
+segundos que pides no caben a tu calidad mínima, se guardan menos segundos (el dock te lo dice antes
+de activarlo). La compresión necesita FFmpeg, que va incluido en Windows y Linux; en macOS el buffer
+se guarda sin comprimir. Detalles en `docs/FAQ-es.md`.
 
 **Una cuenta gratuita de trigglow.com, en Windows.** `Activar delay` necesita que inicies sesión
-una vez desde el dock (en tu navegador; el plugin sigue siendo 100% gratis). En la v0.6.0 el inicio
-de sesión solo funciona en Windows: macOS y Linux todavía no tienen el cliente HTTP del plugin
-(previsto para la v0.6.1). Ver `docs/ACCOUNT_GATE.md`.
+una vez desde el dock (en tu navegador; el plugin sigue siendo 100% gratis). Por ahora el inicio de
+sesión solo funciona en Windows (v0.6.0 y v0.7.0): macOS y Linux todavía no tienen el cliente HTTP
+del plugin, previsto a continuación (ver `docs/ROADMAP-es.md`). Ver `docs/ACCOUNT_GATE.md`.
 
 ## Uso de la red y privacidad
 
@@ -141,7 +163,7 @@ sin modificar su sistema de build (`cmake/`, `CMakePresets.json`, `.github/`) sa
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
 | Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
 
-**Windows es la plataforma prioritaria para v0.6.0** (así lo pidió el producto); macOS/Linux
+**Windows es la plataforma prioritaria para v0.7.0** (así lo pidió el producto); macOS/Linux
 compilan en verde en CI con el propio sistema de build de la plantilla, pero no se han probado en
 directo en esta entrega.
 
@@ -167,7 +189,7 @@ cmake --build --preset macos --config RelWithDebInfo
 
 ## Instalar el plugin
 
-**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.6.0-windows-x64-setup.exe`
+**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.7.0-windows-x64-setup.exe`
 desde la [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest) y
 ejecútalo — detecta tu instalación de OBS automáticamente y copia los archivos por ti. Todavía no
 está firmado (Early Access), así que Windows SmartScreen avisará antes de dejarlo ejecutar. **Guía
@@ -249,10 +271,24 @@ src/
   video-delay-filter.{hpp,cpp}     → el filtro de delay de vídeo: captura, conversión I420 en la
                                      GPU, lectura, reproducción, su pequeño pool fijo de objetos GPU
                                      y la telemetría perf check / pipeline check
-  codec-pipeline.{hpp,cpp}         → hilos de compresión/descompresión y el hilo liberador, fuera
-                                     del hilo gráfico de OBS, con test de estrés en tests/
+  codec-pipeline.{hpp,cpp}         → hilos de compresión/descompresión, el hilo de preparación del
+                                     códec de almacenamiento y el hilo liberador, fuera del hilo
+                                     gráfico de OBS, con test de estrés en tests/
+  storage-codec.hpp                → la interfaz del códec de almacenamiento (encoder asíncrono,
+                                     decoder), el códec sin comprimir, utilidades NV12 y la
+                                     contabilidad de cadenas de los códecs inter-frame
+  hw-storage-codec.{hpp,cpp}       → v0.7.0, solo Windows: códec de almacenamiento HEVC/H.264 por
+                                     hardware (NVENC, AMF, Quick Sync) con decode D3D11VA, y su
+                                     sondeo
+  storage-codec-select.{hpp,cpp}   → puro: el ajuste oculto buffer_codec, las familias de encoders
+                                     de OBS y el orden de los encoders de hardware, con tests
+  storage-codec-policy.{hpp,cpp}   → puro: cuándo funciona el códec por hardware y cuándo el buffer
+                                     vuelve a MJPEG (protección frente a "Encoding overloaded"),
+                                     con tests
+  annexb.{hpp,cpp}                 → recorrido Annex B puro: parámetros en banda, con tests
   mjpeg-codec.{hpp,cpp}            → MJPEG sobre el FFmpeg vendorizado, una instancia por hilo
-  frame-ring.{hpp,cpp}             → ring de cabeceras de slot con máquina de estados, con tests
+  frame-ring.{hpp,cpp}             → ring de cabeceras de slot con máquina de estados y, por
+                                     paquete, códec, key, cadena y seq, con tests
   frame-arena.{hpp,cpp}            → arena por bloques para los frames comprimidos, con tests
   degradation-policy.{hpp,cpp}     → degradación automática pura (hilos, peldaños de resolución,
                                      mitad de fps), con tests
@@ -261,12 +297,15 @@ src/
   buffer-fit.{hpp,cpp}             → aritmética pura de dimensionado del buffer (límite de
                                      resolución de salida, suelo de calidad, presupuesto de RAM),
                                      con tests unitarios en tests/
-  encoder-check.{hpp,cpp}          → decisión pura del aviso de "encoder por encima del buffer"
-                                     en el log (qué encoders ven el lienzo principal), con tests
+  encoder-check.{hpp,cpp}          → decisiones puras sobre los encoders de OBS: cuáles ven el
+                                     lienzo principal, el aviso de "encoder por encima del buffer"
+                                     en el log y el techo de los encoders sobre el buffer (v0.7.0),
+                                     con tests
   audio-delay-filter.{hpp,cpp}     → ring de delay de audio por fuente hoja, sincronizado con el
                                      vídeo
   hardware-info.{hpp,cpp}          → consulta de RAM total del sistema, usada para dimensionar el
-                                     presupuesto del buffer
+                                     presupuesto del buffer, y las GPU presentes (fabricante, para
+                                     el códec de almacenamiento por hardware)
   scene-combo-box.{hpp,cpp}        → combo box del dock poblado a partir de la lista de escenas de
                                      OBS
   settings-ui.{hpp,cpp}            → el dock Qt (escena en directo/de carga, segundos, calidad,
@@ -335,22 +374,28 @@ src/
 data/
   locale/en-US.ini, es-ES.ini      → las cadenas traducidas reales del plugin (ver src/i18n.hpp)
   fonts/                           → Archivo y Geist Mono empaquetadas + sus licencias OFL
-  licenses/                        → avisos de los recursos de terceros compilados en el plugin
+  licenses/                        → avisos de los componentes de terceros (iconos Lucide, DLL de FFmpeg)
 tests/
   buffer_fit_tests.cpp             → tests unitarios de buffer-fit (desactivados por defecto:
                                      -DTRIGGLOW_BUILD_TESTS=ON, después ctest)
   encoder_check_tests.cpp          → tests unitarios de encoder-check (igual)
   ui_tokens_tests.cpp · auto_names_tests.cpp · overlay_layout_tests.cpp ·
-  frame_arena_tests.cpp · frame_ring_tests.cpp · degradation_policy_tests.cpp → igual, para esos
-                                     módulos
+  frame_arena_tests.cpp · frame_ring_tests.cpp · degradation_policy_tests.cpp ·
+  storage_codec_tests.cpp · storage_policy_tests.cpp → igual, para esos módulos
   pipeline_stress_tests.cpp        → test de estrés de concurrencia de ring + arena + pipeline de
                                      códec
+  pipeline_gop_stress_tests.cpp · adversarial_gop_tests.cpp → lo mismo con un códec inter-frame
+                                     falso (fake-gop-codec.hpp): cadenas, pérdidas, evacuaciones,
+                                     cesiones, pausas de render
+  hw_storage_codec_tests.cpp       → el códec de almacenamiento por hardware sobre el FFmpeg real,
+                                     con fallos inyectados (Windows, builds locales con el FFmpeg
+                                     del plugin)
   json_tests.cpp · log_redact_tests.cpp · chat_text_tests.cpp · support_diagnostics_tests.cpp ·
   api_client_tests.cpp · token_store_tests.cpp · auth_client_tests.cpp ·
   support_client_tests.cpp · trigi_states_tests.cpp → cliente de cuenta, Trigi y tickets, con un
                                      sustituto de red guionizado (fake-transport.hpp)
   background_tasks_tests.cpp       → cancelación y cierre acotado de los trabajos en segundo plano
-                                     (19 suites en total)
+                                     (23 suites en total, 24 con hw_storage_codec_tests)
 tools/fonts/                       → cómo se generan los subconjuntos de las fuentes empaquetadas
 docs/
   SPEC.md                  → especificación técnica completa (empieza por aquí)
@@ -379,14 +424,15 @@ del día a día ocurre en `develop`; los PRs van de `develop` a `main`.
 
 ### Recursos de terceros
 
-La interfaz del plugin incluye algunos recursos de terceros, cada uno con su licencia (todas
-compatibles con distribuirlos junto a un binario GPL-2.0):
+El plugin incluye algunos componentes de terceros, cada uno con su licencia (todas compatibles con
+distribuirlos junto a un binario GPL-2.0):
 
 | Recurso | Dónde | Licencia |
 |---|---|---|
 | **Archivo** (SemiBold, Bold), subconjunto | `data/fonts/Archivo-*.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-Archivo.txt` |
 | **Geist Mono** (Medium), subconjunto | `data/fonts/GeistMono-Medium.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-GeistMono.txt` |
 | Iconos de la interfaz (trazados de Lucide, como en la web de Trigglow) | compilados desde `src/resources/icons/` | ISC (partes MIT, Feather), `data/licenses/LICENSE-lucide.txt` |
+| Bibliotecas de **FFmpeg** (avcodec, avutil, swresample), build LGPL de BtbN fijada en `buildspec.json`, solo Windows | DLL junto a la del plugin (`bin/64bit` en el paquete), sin modificar | LGPL 3.0 o posterior, con componentes MIT/BSD/Apache (libvpl, AMF, ffnvcodec); `data/licenses/LICENSE-ffmpeg.txt`, con la etiqueta de la build y su código fuente |
 
 Las fuentes son instancias estáticas, en subconjunto, de las fuentes variables originales de
 [google/fonts](https://github.com/google/fonts) (`ofl/archivo`, `ofl/geistmono`); `tools/fonts/`

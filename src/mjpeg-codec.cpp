@@ -36,55 +36,63 @@ namespace trigglow {
 
 namespace {
 
-class MjpegCodec final : public VideoCodec {
-public:
-	explicit MjpegCodec(const MjpegCodecOptions &options) : options_(options) {}
-	~MjpegCodec() override { Release(); }
+void LogTo(const PipelineLogFn &log, PipelineLogLevel level, const char *fmt, va_list args)
+{
+	if (!log)
+		return;
+	char line[512];
+	std::vsnprintf(line, sizeof(line), fmt, args);
+	log(level, line);
+}
 
-	bool Encode(const I420View &frame, uint32_t sliceThreads, const uint8_t *&packet, size_t &bytes,
-		    bool &compressed) override;
-	bool Decode(const uint8_t *packet, size_t bytes, DecodedImage &out) override;
-	void Release() override;
+class MjpegEncoder final : public storage::Encoder {
+public:
+	MjpegEncoder(const storage::EncoderConfig &config, PipelineLogFn log) : config_(config), log_(std::move(log))
+	{
+		config_.sliceThreads = std::max<uint32_t>(config_.sliceThreads, 1);
+		config_.keyframeInterval = 0; // All-intra.
+	}
+	~MjpegEncoder() override { CloseEncoder(); }
+
+	storage::CodecId Codec() const override { return storage::CodecId::Mjpeg; }
+	storage::Backend GetBackend() const override { return storage::Backend::Cpu; }
+	const char *Name() const override { return "mjpeg"; }
+	bool InterFrame() const override { return false; }
+	const storage::EncoderConfig &Config() const override { return config_; }
+	storage::SendResult Send(const I420View &frame, uint64_t seq, bool forceKey) override;
+	bool Receive(storage::Packet &out) override;
+	void Drain(uint64_t deadlineNs, const std::function<void(const storage::Packet &)> &sink) override;
+	uint32_t InFlight() const override { return pending_ ? 1 : 0; }
 
 private:
 	bool OpenEncoder(uint32_t width, uint32_t height, uint32_t sliceThreads);
 	void CloseEncoder();
-	bool OpenDecoder();
 	void Log(PipelineLogLevel level, const char *fmt, ...);
 
-	MjpegCodecOptions options_;
+	storage::EncoderConfig config_;
+	PipelineLogFn log_;
 	AVCodecContext *encoder_ = nullptr;
 	AVFrame *encodeFrame_ = nullptr;
 	AVPacket *encodePacket_ = nullptr;
-	uint32_t encodeWidth_ = 0;
-	uint32_t encodeHeight_ = 0;
-	uint32_t encodeSlices_ = 0;
-	// Geometry the encoder last failed to open at: not retried every frame
-	// (those frames are stored raw), only once it changes.
-	uint32_t failedWidth_ = 0;
-	uint32_t failedHeight_ = 0;
-	uint32_t failedSlices_ = 0;
+	// The context failed to open at this geometry: not retried every frame
+	// (those frames are stored raw); the pipeline opens a new encoder once
+	// the size or slice count changes.
+	bool openFailed_ = false;
 	int64_t pts_ = 0;
 	bool loggedFirstEncode_ = false;
-
-	AVCodecContext *decoder_ = nullptr;
-	AVPacket *decodePacket_ = nullptr;
-	bool decoderFailed_ = false;
+	bool pending_ = false; // encodePacket_ holds the packet of pendingSeq_, not received yet.
+	uint64_t pendingSeq_ = 0;
 };
 
-void MjpegCodec::Log(PipelineLogLevel level, const char *fmt, ...)
+void MjpegEncoder::Log(PipelineLogLevel level, const char *fmt, ...)
 {
-	if (!options_.log)
-		return;
-	char line[512];
 	va_list args;
 	va_start(args, fmt);
-	std::vsnprintf(line, sizeof(line), fmt, args);
+	LogTo(log_, level, fmt, args);
 	va_end(args);
-	options_.log(level, line);
 }
 
-bool MjpegCodec::OpenEncoder(uint32_t width, uint32_t height, uint32_t sliceThreads)
+bool MjpegEncoder::OpenEncoder(uint32_t width, uint32_t height, uint32_t sliceThreads)
 {
 	const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
 	if (!codec)
@@ -113,10 +121,12 @@ bool MjpegCodec::OpenEncoder(uint32_t width, uint32_t height, uint32_t sliceThre
 		encoder_->pix_fmt = AV_PIX_FMT_YUV420P;
 		encoder_->color_range = AVCOL_RANGE_MPEG;
 		encoder_->strict_std_compliance = FF_COMPLIANCE_UNOFFICIAL;
-		encoder_->time_base = AVRational{1, static_cast<int>(std::max<uint32_t>(1, options_.timeBaseFps))};
+		// Only has to be a valid time base (all-intra, pts is a counter).
+		const uint32_t fps = std::max<uint32_t>(1, config_.fpsNum / std::max<uint32_t>(1, config_.fpsDen));
+		encoder_->time_base = AVRational{1, static_cast<int>(fps)};
 		encoder_->flags |= AV_CODEC_FLAG_QSCALE;
-		encoder_->qmin = options_.quality;
-		encoder_->qmax = options_.quality;
+		encoder_->qmin = config_.quality;
+		encoder_->qmax = config_.quality;
 		// thread_type MUST be explicit: with only thread_count > 1 FFmpeg picks
 		// FRAME threading for MJPEG (AV_CODEC_FLAG_QSCALE skips its
 		// single-thread exception), and frame threads hand packets back one or
@@ -167,25 +177,23 @@ bool MjpegCodec::OpenEncoder(uint32_t width, uint32_t height, uint32_t sliceThre
 		return false;
 	}
 
-	char huffman[96] = "default";
+	static constexpr char kHuffmanFailed[] = "FFmpeg's choice, setting default failed: ";
+	char error[64] = "";
+	char huffman[sizeof(kHuffmanFailed) + sizeof(error)] = "default"; // Room for the whole message.
 	if (huffmanResult < 0) {
-		char error[64] = "";
 		av_strerror(huffmanResult, error, sizeof(error));
-		std::snprintf(huffman, sizeof(huffman), "FFmpeg's choice, setting default failed: %s", error);
+		std::snprintf(huffman, sizeof(huffman), "%s%s", kHuffmanFailed, error);
 	}
 	Log(PipelineLogLevel::Info,
 	    "MJPEG encoder open at %ux%u (qscale=%d, huffman=%s, slice threads=%d of %u requested, "
 	    "active_thread_type=%d, %u logical CPUs)",
-	    width, height, options_.quality, huffman, encoder_->thread_count, sliceThreads,
-	    encoder_->active_thread_type, std::thread::hardware_concurrency());
-	encodeWidth_ = width;
-	encodeHeight_ = height;
-	encodeSlices_ = sliceThreads;
+	    width, height, config_.quality, huffman, encoder_->thread_count, sliceThreads, encoder_->active_thread_type,
+	    std::thread::hardware_concurrency());
 	loggedFirstEncode_ = false;
 	return true;
 }
 
-void MjpegCodec::CloseEncoder()
+void MjpegEncoder::CloseEncoder()
 {
 	if (encoder_)
 		avcodec_free_context(&encoder_);
@@ -193,33 +201,27 @@ void MjpegCodec::CloseEncoder()
 		av_frame_free(&encodeFrame_);
 	if (encodePacket_)
 		av_packet_free(&encodePacket_);
-	encodeWidth_ = 0;
-	encodeHeight_ = 0;
-	encodeSlices_ = 0;
+	pending_ = false;
 }
 
-bool MjpegCodec::Encode(const I420View &frame, uint32_t sliceThreads, const uint8_t *&packet, size_t &bytes,
-			bool &compressed)
+storage::SendResult MjpegEncoder::Send(const I420View &frame, uint64_t seq, bool /*forceKey*/)
 {
-	sliceThreads = std::max<uint32_t>(sliceThreads, 1);
-	if (!encoder_ || encodeWidth_ != frame.width || encodeHeight_ != frame.height ||
-	    encodeSlices_ != sliceThreads) {
-		CloseEncoder();
-		if (failedWidth_ == frame.width && failedHeight_ == frame.height && failedSlices_ == sliceThreads)
-			return false;
-		if (!OpenEncoder(frame.width, frame.height, sliceThreads)) {
+	pending_ = false;
+	if (frame.width != config_.width || frame.height != config_.height)
+		return storage::SendResult::Failed;
+	if (!encoder_) {
+		if (openFailed_)
+			return storage::SendResult::Failed;
+		if (!OpenEncoder(frame.width, frame.height, config_.sliceThreads)) {
 			Log(PipelineLogLevel::Warning,
 			    "failed to open the MJPEG encoder at %ux%u -- storing those frames uncompressed",
 			    frame.width, frame.height);
-			failedWidth_ = frame.width;
-			failedHeight_ = frame.height;
-			failedSlices_ = sliceThreads;
-			return false;
+			openFailed_ = true;
+			return storage::SendResult::Failed;
 		}
-		failedWidth_ = failedHeight_ = failedSlices_ = 0;
 	}
 	if (av_frame_make_writable(encodeFrame_) < 0)
-		return false;
+		return storage::SendResult::Failed;
 	// av_frame_get_buffer() picks FFmpeg's own (padded) linesizes.
 	const uint32_t widths[3] = {frame.width, frame.width / 2, frame.width / 2};
 	const uint32_t heights[3] = {frame.height, frame.height / 2, frame.height / 2};
@@ -231,24 +233,73 @@ bool MjpegCodec::Encode(const I420View &frame, uint32_t sliceThreads, const uint
 	}
 	encodeFrame_->pts = pts_++;
 	if (avcodec_send_frame(encoder_, encodeFrame_) < 0)
-		return false;
+		return storage::SendResult::Failed;
 	av_packet_unref(encodePacket_);
 	// All-intra, no lookahead: the packet is always there right after the send.
 	if (avcodec_receive_packet(encoder_, encodePacket_) < 0)
-		return false;
-	packet = encodePacket_->data;
-	bytes = static_cast<size_t>(encodePacket_->size);
-	compressed = true;
+		return storage::SendResult::Failed;
 	if (!loggedFirstEncode_) {
 		const size_t raw = I420FrameBytes(frame.width, frame.height);
+		const auto bytes = static_cast<size_t>(encodePacket_->size);
 		Log(PipelineLogLevel::Info, "first MJPEG encode at %ux%u: %zu bytes (raw I420 would be %zu -- %.1fx)",
 		    frame.width, frame.height, bytes, raw, static_cast<double>(raw) / std::max<size_t>(1, bytes));
 		loggedFirstEncode_ = true;
 	}
+	pending_ = true;
+	pendingSeq_ = seq;
+	return storage::SendResult::Ok;
+}
+
+bool MjpegEncoder::Receive(storage::Packet &out)
+{
+	if (!pending_)
+		return false;
+	pending_ = false;
+	out = storage::Packet{};
+	out.data = encodePacket_->data;
+	out.bytes = static_cast<size_t>(encodePacket_->size);
+	out.seq = pendingSeq_;
+	out.key = true;
+	out.codec = storage::CodecId::Mjpeg;
 	return true;
 }
 
-bool MjpegCodec::OpenDecoder()
+void MjpegEncoder::Drain(uint64_t /*deadlineNs*/, const std::function<void(const storage::Packet &)> &sink)
+{
+	storage::Packet packet;
+	if (Receive(packet) && sink)
+		sink(packet);
+}
+
+class MjpegDecoder final : public storage::Decoder {
+public:
+	explicit MjpegDecoder(PipelineLogFn log) : log_(std::move(log)) {}
+	~MjpegDecoder() override
+	{
+		if (decoder_)
+			avcodec_free_context(&decoder_);
+		if (decodePacket_)
+			av_packet_free(&decodePacket_);
+	}
+
+	storage::CodecId Codec() const override { return storage::CodecId::Mjpeg; }
+	const char *Name() const override { return "mjpeg"; }
+	storage::DecodeStatus Decode(const storage::EncodedFrame &in, bool wantImage, DecodedImage &out,
+				     uint64_t &outSeq) override;
+	// All-intra, and n9.0's MJPEG decoder keeps nothing across packets
+	// (thread_count = 1): nothing to drop.
+	void Flush() override {}
+
+private:
+	bool OpenDecoder();
+
+	PipelineLogFn log_;
+	AVCodecContext *decoder_ = nullptr;
+	AVPacket *decodePacket_ = nullptr;
+	bool decoderFailed_ = false;
+};
+
+bool MjpegDecoder::OpenDecoder()
 {
 	const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_MJPEG);
 	if (!codec)
@@ -272,34 +323,39 @@ bool MjpegCodec::OpenDecoder()
 	return true;
 }
 
-bool MjpegCodec::Decode(const uint8_t *packet, size_t bytes, DecodedImage &out)
+storage::DecodeStatus MjpegDecoder::Decode(const storage::EncodedFrame &in, bool wantImage, DecodedImage &out,
+					   uint64_t &outSeq)
 {
+	outSeq = in.seq;
+	if (!wantImage)
+		return storage::DecodeStatus::NoFrameYet; // All-intra: no reference to keep.
 	if (!decoder_) {
 		if (decoderFailed_)
-			return false;
+			return storage::DecodeStatus::Failed;
 		if (!OpenDecoder()) {
 			decoderFailed_ = true;
-			Log(PipelineLogLevel::Warning,
-			    "failed to open the MJPEG decoder -- the delayed view repeats frames");
-			return false;
+			if (log_)
+				log_(PipelineLogLevel::Warning,
+				     "failed to open the MJPEG decoder -- the delayed view repeats frames");
+			return storage::DecodeStatus::Failed;
 		}
 	}
-	if (!packet || bytes == 0 || bytes > static_cast<size_t>(INT32_MAX))
-		return false;
+	if (!in.data || in.bytes == 0 || in.bytes > static_cast<size_t>(INT32_MAX))
+		return storage::DecodeStatus::Failed;
 	av_packet_unref(decodePacket_);
-	if (av_new_packet(decodePacket_, static_cast<int>(bytes)) < 0)
-		return false;
-	std::memcpy(decodePacket_->data, packet, bytes);
+	if (av_new_packet(decodePacket_, static_cast<int>(in.bytes)) < 0)
+		return storage::DecodeStatus::Failed;
+	std::memcpy(decodePacket_->data, in.data, in.bytes);
 	if (avcodec_send_packet(decoder_, decodePacket_) < 0)
-		return false;
+		return storage::DecodeStatus::Failed;
 	AVFrame *frame = av_frame_alloc();
 	if (!frame)
-		return false;
+		return storage::DecodeStatus::Failed;
 	if (avcodec_receive_frame(decoder_, frame) < 0 ||
 	    (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P) || frame->width <= 0 ||
 	    frame->height <= 0) {
 		av_frame_free(&frame);
-		return false;
+		return storage::DecodeStatus::Failed;
 	}
 	for (int p = 0; p < 3; ++p) {
 		out.plane[p] = frame->data[p];
@@ -313,25 +369,19 @@ bool MjpegCodec::Decode(const uint8_t *packet, size_t bytes, DecodedImage &out)
 		AVFrame *f = static_cast<AVFrame *>(p);
 		av_frame_free(&f);
 	});
-	return true;
-}
-
-void MjpegCodec::Release()
-{
-	CloseEncoder();
-	if (decoder_)
-		avcodec_free_context(&decoder_);
-	if (decodePacket_)
-		av_packet_free(&decodePacket_);
-	failedWidth_ = failedHeight_ = failedSlices_ = 0;
-	decoderFailed_ = false;
+	return storage::DecodeStatus::Frame;
 }
 
 } // namespace
 
-std::unique_ptr<VideoCodec> MakeMjpegCodec(const MjpegCodecOptions &options)
+std::unique_ptr<storage::Encoder> MakeMjpegEncoder(const storage::EncoderConfig &config, PipelineLogFn log)
 {
-	return std::make_unique<MjpegCodec>(options);
+	return std::make_unique<MjpegEncoder>(config, std::move(log));
+}
+
+std::unique_ptr<storage::Decoder> MakeMjpegDecoder(PipelineLogFn log)
+{
+	return std::make_unique<MjpegDecoder>(std::move(log));
 }
 
 bool MjpegAvailable()

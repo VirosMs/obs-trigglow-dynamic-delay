@@ -2,10 +2,10 @@
 
 # Especificación técnica — Trigglow Dynamic Delay para OBS
 
-Estado: **MVP / v0.6.0 — Early Access**
-Última actualización: 2026-10-19 (v0.6.0: §3.1–§3.8, §4–§4.7, §8; reescrita desde cero el
-2026-08-26 — ver §0). Se preparó un hotfix v0.5.1 que nunca se publicó; todo lo que llevaba salió en
-la v0.6.0, así que este documento fecha esos cambios en la v0.6.0.
+Estado: **MVP / v0.7.0 — Early Access**
+Última actualización: 2026-10-20 (v0.7.0: §3.5, §4–§4.8, §8; v0.6.0: §3.1–§3.8, §4–§4.7, §8;
+reescrita desde cero el 2026-08-26 — ver §0). Se preparó un hotfix v0.5.1 que nunca se publicó; todo
+lo que llevaba salió en la v0.6.0, así que este documento fecha esos cambios en la v0.6.0.
 Nombre interno del plugin: `obs-trigglow-dynamic-delay`
 Web: https://www.trigglow.com/dynamic-delay
 
@@ -393,7 +393,10 @@ El número de frames usa el ritmo exacto: `ceil(delay × fps_num / fps_den)` má
 de holgura (el jitter de captura nunca debe dejar el slot más antiguo más joven que el delay) más un
 slot, así que 30s a 60000/1001 necesitan 1815 slots en vez de un recuento truncado a 59fps. La celda
 de captura es `1e9 × fps_den / fps_num` ns (16.683.333ns a 59,94fps); antes de la v0.6.0 era
-`1e9 / 59` en ese caso, lo que perdía casi un frame real por segundo.
+`1e9 / 59` en ese caso, lo que perdía casi un frame real por segundo. Desde la v0.7.0 la holgura es
+de al menos un GOP (medio segundo) cuando el ciclo puede guardar un códec inter-frame, y el ratio de
+compresión supuesto sale de la clase de almacenamiento del ciclo: 5x para MJPEG, 12x cuando un
+códec por hardware ya ha funcionado en la sesión (§4.8).
 
 El dock muestra una estimación en vivo y no bloqueante de qué logrará realmente una combinación
 dada de (segundos, calidad) — duración y resolución del buffer, techo incluido — *antes* de que el
@@ -462,6 +465,36 @@ vista de un plugin con la misma relación de aspecto que el lienzo principal (un
 se toma por el principal — un WARN que no aplica —, y un encoder del lienzo principal reescalado a
 otra relación de aspecto (estirado) se pasa por alto. Un lienzo vertical (9:16) con un lienzo
 principal 16:9 siempre se distingue.
+
+**Techo de los encoders (v0.7.0).** Guardar más líneas de las que manda cualquier encoder no aporta
+nada, así que cuando todos los encoders activos del lienzo principal codifican por debajo de la
+salida de OBS, el buffer se limita al mayor de ellos (`encodercheck::EncoderCeiling()`, puro,
+`tests/encoder_check_tests.cpp`):
+- E = los encoders de vídeo activos cuyo ámbito es el lienzo principal, exacto o por relación de
+  aspecto (emisión, grabación, Replay Buffer, salidas de otros plugins y todas las pistas de
+  Enhanced Broadcasting: `obs_output_get_video_encoder2()` para cada índice); los de otros lienzos
+  nunca cuentan.
+- **Sin techo** (se queda el límite de salida de la regla 1) si E está vacío, si hay una salida de
+  vídeo sin encoder sobre la mezcla principal (cámara virtual, NDI, DeckLink: toman la salida tal
+  cual), si un encoder reescalado por GPU tiene una relación de aspecto que no es ni la del lienzo
+  ni la de la salida (podría ser el lienzo principal estirado), o con `buffer_output_cap`
+  desactivado.
+- Si no, `s = máx. sobre E de max(w / baseW, h / baseH)`, y el techo es el lienzo escalado por `s`
+  (ancho múltiplo de 8, alto par) cuando `s` queda por debajo de la escala del límite de salida:
+  solo puede bajar respecto a la salida, nunca subir. Un encoder a la resolución de salida o por
+  encima mantiene el límite de salida (y el WARN de arriba).
+- Es un **techo blando**: `bufferfit` y el ring siguen dimensionados para la salida (no cambian el
+  límite de RAM, el número de slots ni el delay de A/V en segundos enteros), y el filtro reconstruye
+  su escalera de degradación desde el techo hasta `min(suelo, techo)`. Así puede levantarse en
+  cualquier momento sin reiniciar el ring; una grabación que arranca después por encima del techo
+  recibe frames al tamaño nuevo al cabo de `delay` segundos.
+- `BufferModeController` lo recalcula en `Enable()`, en cada inicio o parada de la emisión, la
+  grabación, el Replay Buffer y la cámara virtual, y una vez por segundo mientras el delay está
+  activo (las salidas que arrancan otros plugins no lanzan ningún evento del frontend), y lo envía
+  con el proc `set_encoder_ceiling` del filtro. El log dice `encoder ceiling WxH: … (output WxH,
+  canvas WxH)` o `no encoder ceiling: <motivo>`; el dock no muestra nada nuevo (su peldaño 0 es el
+  techo). Con una salida 1440p emitida a 1080p guarda a 1080p: −34 % del buffer con MJPEG y −42 %
+  con HEVC (estimación fuera de OBS).
 
 **Tests (v0.6.0).** `tests/buffer_fit_tests.cpp` prueba `bufferfit::Compute()` sin OBS: lienzo =
 salida, 1440p → 1080p, 4K → 1080p, salida mayor que el lienzo, relaciones de aspecto distintas, un
@@ -553,19 +586,20 @@ las respuestas y códigos de error documentados, y nunca muestra el texto de err
 
 **Un único camino de red.** `win-http.*` es el único código que abre conexiones: WinHTTP en Windows;
 en macOS y Linux `Available()` es falso y toda llamada devuelve "no disponible" al instante (allí no
-hay inicio de sesión, Trigi ni reportes hasta la v0.6.1). Cada petición es HTTPS con TLS 1.2 o
-superior, nunca sigue una redirección (un 3xx es un error, así que un token Bearer no puede rebotar a
-otro host), no envía cookies ni el inicio de sesión automático de Windows, tiene timeouts por paso y
-un límite total (una ventana de recepción más larga para las respuestas y los resúmenes de Trigi),
-pone un tope al tamaño de la respuesta, rechaza valores de cabecera que pudieran inyectar líneas y no
-escribe nada en el log por sí mismo. `api-client.*` va encima: peticiones solo a `api.trigglow.com`,
-un `User-Agent` `TrigglowDynamicDelay/<X.Y.Z> (OBS plugin; <windows|macos|linux>)` con la versión
-real, cabeceras JSON, el cuerpo `{ "error": "<código>" }` traducido a estados del plugin,
-`Retry-After` y la lista fija de páginas que el plugin puede abrir (inicio de sesión, soporte,
-privacidad y la página del plugin en www.trigglow.com, este repositorio en GitHub), comprobadas por
-prefijo. Las peticiones que crean algo (una conversación, una pregunta, un resumen, un ticket, un
-adjunto) nunca se reintentan solas. Un build de prueba local solo puede apuntar a otro host con la
-opción de CMake `TRIGGLOW_ALLOW_API_HOST_OVERRIDE`, que CI rechaza.
+hay inicio de sesión, Trigi ni reportes hasta que tengan cliente HTTP, previsto a continuación).
+Cada petición es HTTPS con TLS 1.2 o superior, nunca sigue una redirección (un 3xx es un error, así
+que un token Bearer no puede rebotar a otro host), no envía cookies ni el inicio de sesión
+automático de Windows, tiene timeouts por paso y un límite total (una ventana de recepción más larga
+para las respuestas y los resúmenes de Trigi), pone un tope al tamaño de la respuesta, rechaza
+valores de cabecera que pudieran inyectar líneas y no escribe nada en el log por sí mismo.
+`api-client.*` va encima: peticiones solo a `api.trigglow.com`, un `User-Agent`
+`TrigglowDynamicDelay/<X.Y.Z> (OBS plugin; <windows|macos|linux>)` con la versión real, cabeceras
+JSON, el cuerpo `{ "error": "<código>" }` traducido a estados del plugin, `Retry-After` y la lista
+fija de páginas que el plugin puede abrir (inicio de sesión, soporte, privacidad y la página del
+plugin en www.trigglow.com, este repositorio en GitHub), comprobadas por prefijo. Las peticiones que
+crean algo (una conversación, una pregunta, un resumen, un ticket, un adjunto) nunca se reintentan
+solas. Un build de prueba local solo puede apuntar a otro host con la opción de CMake
+`TRIGGLOW_ALLOW_API_HOST_OVERRIDE`, que CI rechaza.
 
 **Inicio de sesión (vinculación v2; `auth-client.*`, `auth-manager.*`, `token-store.*`).**
 1. El inicio devuelve un código de enlace (va en la URL de la página), un código corto de usuario que
@@ -722,6 +756,12 @@ esté disponible (macOS hoy, o un build sin FFmpeg enlazado), todos los caminos 
 caen automáticamente al almacenamiento sin comprimir — la compresión es una adición sobre el
 mecanismo existente, nunca un requisito nuevo para que funcione.
 
+**Desde la v0.7.0** el build de Windows guarda el buffer con un códec inter-frame por hardware
+(HEVC, o H.264 en una GPU sin HEVC, con NVENC, AMF o Quick Sync, decodificado con D3D11VA) donde
+funcione, y con MJPEG si no: §4.8. MJPEG sigue siendo el códec de Linux, de Windows sin un encoder
+por hardware utilizable, de los momentos en que se prepara uno y de cada vuelta a MJPEG; §4.1–§4.7
+lo describen, junto con el pipeline que comparten los dos códecs.
+
 ### 4.1. Por qué MJPEG, todo intra
 
 La invariante central del ring (§3.1, §3.4) es que cualquier slot puede sobrescribirse, desalojarse o
@@ -740,11 +780,23 @@ autocontenidos e independientes del resto del bitstream, encajando exactamente c
 lograría una estructura GOP real; eso se acepta como el precio de encajar con esta arquitectura
 concreta, no como un codec de entrega de propósito general.
 
+*v0.7.0:* MJPEG suponía entre el 80 y el 85 % de la RAM del plugin a 1440p60, y un encoder HEVC por
+hardware guarda los mismos frames con entre un 67 y un 74 % menos de bytes y mejor imagen, así que
+el ring aprendió a manejar GOP (§4.8): cada paquete lleva su códec, si es keyframe, y su cadena y su
+seq; un P-frame solo se decodifica justo después de su referencia; el ring guarda un GOP de holgura
+para que el keyframe del frame que toca siga siempre ahí; y un decoder que arranca, se reanuda o
+salta se pone al día desde ese keyframe sin mostrar nada. "Cualquier slot, en cualquier momento"
+pasó a ser "cualquier keyframe, en cualquier momento", y MJPEG, con todos sus paquetes keyframe,
+sigue funcionando exactamente como se describe aquí.
+
 ### 4.2. Flujo de codificación/decodificación
 
-El códec está detrás de una pequeña interfaz, `VideoCodec` (`src/codec-pipeline.hpp`): una instancia
-por hilo, que solo ese hilo abre, usa y cierra. En las plataformas con `TRIGGLOW_HAVE_FFMPEG` es
-`MjpegCodec` (`src/mjpeg-codec.*`); en el resto, `MakeRawCodec()` guarda los frames sin comprimir.
+El códec está detrás de una pequeña interfaz: hasta la v0.6.0 `VideoCodec`
+(`src/codec-pipeline.hpp`), y desde la v0.7.0 un `storage::Encoder` y un `storage::Decoder`
+separados (`src/storage-codec.hpp`, §4.8). Cada instancia MJPEG la abre, usa y cierra un solo hilo.
+En las plataformas con `TRIGGLOW_HAVE_FFMPEG` es MJPEG (`src/mjpeg-codec.*`,
+`MjpegEncoder`/`MjpegDecoder` desde la v0.7.0); en el resto, el códec sin comprimir guarda los
+frames tal cual.
 
 - **Codificar:** los planos I420 leídos de vuelta de la GPU (§3.1, paso 3) se copian en un `AVFrame`
   reutilizado (`AV_PIX_FMT_YUV420P`, etiquetado `AVCOL_RANGE_MPEG` — el rango de estudio que escribe
@@ -774,16 +826,18 @@ de conversión, la copia de la lectura y la subida: ~1,2–1,7/1,6–2,1ms p50/p
 el benchmark de hilos fuera de OBS (Ryzen 7 7700X), con compresión ~8,8/10,4ms y descompresión
 ~6,2/7,5ms en sus propios hilos.
 
-- **Hilos de slice, de forma explícita.** Un contexto de compresión puede usar 1, 2 o 4 hilos de
-  slice (`thread_type = FF_THREAD_SLICE`, `thread_count = k`); cuántos lo decide la política de
-  degradación (§4.7), y en modo síncrono (§4.6) empieza en `clamp(hardware_concurrency() / 4, 1, 4)`
-  — 4 en una CPU de 8 núcleos/16 hilos, 1 en una de 4 hilos — porque ahí reducen el tiempo real de la
-  compresión en el hilo gráfico (compresión a 1080p de 5,1 a 1,8ms p50 con 4 slices, el mismo CPU
-  total, paquetes ~3,5% más grandes). `thread_type` hay que fijarlo de forma explícita: con solo
-  `thread_count > 1`, FFmpeg elige threading por frames para MJPEG (`QSCALE` se salta su excepción de
-  un solo hilo), `receive_packet()` devuelve entonces `EAGAIN` y todos los frames se guardarían en
-  crudo. Si `active_thread_type` sigue indicando threading por frames, el codificador se reabre con un
-  solo hilo (WARN). El decodificador se queda en `thread_count = 1` (el decodificador MJPEG de n9.0 no
+- **Hilos de slice, de forma explícita.** Un contexto de compresión puede usar 1 o 2 hilos de slice
+  desde la v0.7.0 (1, 2 o 4 antes; cada hilo de slice tiene sus propios buffers de codificación,
+  ~15MB a 1440p y ~33MB a 2160p) (`thread_type = FF_THREAD_SLICE`, `thread_count = k`); cuántos lo
+  decide la política de degradación (§4.7), y en modo síncrono (§4.6) empieza en
+  `hardware_concurrency() / 4` acotado a [1, 2] (`CodecPipeline::kMaxSlicesPerContext = 2`), porque
+  ahí reducen el tiempo real de la compresión en el hilo gráfico (compresión a 1080p de 5,1 a 1,8ms
+  p50 con 4 slices en la v0.6.0, unos 3ms con 2, el mismo CPU total, paquetes ~3,5% más grandes).
+  `thread_type` hay que fijarlo de forma explícita: con solo `thread_count > 1`, FFmpeg elige
+  threading por frames para MJPEG (`QSCALE` se salta su excepción de un solo hilo),
+  `receive_packet()` devuelve entonces `EAGAIN` y todos los frames se guardarían en crudo. Si
+  `active_thread_type` sigue indicando threading por frames, el codificador se reabre con un solo
+  hilo (WARN). El decodificador se queda en `thread_count = 1` (el decodificador MJPEG de n9.0 no
   tiene threading). La línea de log `MJPEG encoder open` indica tamaño, qscale, tablas de Huffman,
   hilos de slice pedidos y concedidos, `active_thread_type` y las CPU lógicas.
 - **Tablas de Huffman estándar.** El codificador se abre con `huffman=default` (`av_opt_set()` sobre
@@ -852,6 +906,16 @@ asignación falla y el frame se descarta (`drops arena`) en vez de que la memori
 `kAssumedCompressionRatio` ahora solo decide cuántos segundos caben en el presupuesto y el tamaño
 esperado de la arena; ya no se reserva nada por slot.
 
+**Bloques más pequeños (v0.7.0).** `FrameArena::SizedFor()` usa ahora bloques de 1/64 de los bytes
+esperados del ring en MiB enteros, entre 4 y 8MiB, y guarda como mucho uno de repuesto
+(`maxSpareBlocks = 1`); desaparece el mínimo de "dos frames en crudo por bloque", porque un frame en
+crudo mayor que un bloque (2160p, el fallback a crudo) ya va por la vía de tamaño excesivo. La
+memoria comprometida de más sobre los paquetes vivos baja de 35–71MB a unos dos bloques (la cola
+libre del bloque actual, la cabeza ya liberada del más antiguo y el de repuesto). Sin FFmpeg todos
+los paquetes son frames en crudo, así que ahí los bloques guardan un número entero de ellos. Los
+bytes esperados siguen la clase de almacenamiento del ciclo (§4.8): `slots × crudo / 5` para MJPEG y
+`/ 12` para el códec por hardware.
+
 **Reajuste de v0.4.0.** `kAssumedCompressionRatio` vale `5.0` en plataformas
 `TRIGGLOW_HAVE_FFMPEG` desde v0.4.0, tras la primera medición real (una sesión en directo de
 30s/1080p60 con gameplay mantuvo un ratio estable de ~11-15x, y ningún slot creció nunca por encima
@@ -892,14 +956,15 @@ perf check (periodic, 10.0s): buf=1920x1080 (capped to OBS output 1920x1080, can
 fps=60.00 | render p50/p95/max=…ms own=… readback=… upload=… | calls=…/s captures=…/s uploads=…/s
 holds=N (late decode N, dropped N, encoding N) | obs frames+N lagged+N skipped+N
 
-pipeline check (periodic): mode=workers rung=0/4 capture=1920x1080@60.00fps enc=1x1 L=3 S=3 |
-enc0 p50/p95/max=…ms busy=…% enc1=… busy=…% dec=… busy=…% | drops reserve=N backpressure=N arena=N
-capture=N rawFallback=N encFail=N decFail=N staleEnc=N decJumps=N staleDec=N | queue enc max=N
-avg=… dec ahead avg=… min=N | ratio=…x arena=…MB committed (live …MB, peak …MB, N blocks of …MB,
-limit …MB) ring=N slots (ready N, dropped N, in flight N, pinned N)
+pipeline check (periodic): mode=workers codec=mjpeg rung=0/4 capture=1920x1080@60.00fps enc=1x1 L=3
+S=3 | enc0 p50/p95/max=…ms busy=…% enc1=… busy=…% dec=… busy=…% | drops reserve=N backpressure=N
+arena=N capture=N rawFallback=N encFail=N decFail=N staleEnc=N decJumps=N staleDec=N | queue enc
+max=N avg=… dec ahead avg=… min=N | ratio=…x arena=…MB committed (live …MB, peak …MB, N blocks of
+…MB, limit …MB) ring=N slots (ready N, dropped N, in flight N, pinned N)
 ```
 
-(dos líneas en el log; partidas aquí.)
+(dos líneas en el log; partidas aquí. `codec=` desde la v0.7.0, seguidas de una tercera línea,
+`storage codec check`, §4.8.)
 
 - **`perf check` — el hilo gráfico.** La resolución del buffer a calidad completa y el motivo —
   `capped to OBS output WxH, canvas WxH`, `not capped, source WxH, output WxH` o
@@ -914,14 +979,16 @@ limit …MB) ring=N slots (ready N, dropped N, in flight N, pinned N)
   renderizado (`obs_get_lagged_frames`) y frames saltados por retraso de codificación
   (`video_output_get_skipped_frames`).
 - **`pipeline check` — los hilos y la memoria.** Modo (`workers`, o `sync` con el interruptor de
-  emergencia, §4.6), peldaño de degradación y el último, el tamaño y el ritmo que se capturan ahora,
-  contextos de compresión × hilos de slice, descompresión anticipada (`L`) y slots de staging (`S`);
-  p50/p95/max por frame y proporción ocupada de cada contexto de compresión y del descompresor;
-  descartes (sin slot libre, compresión atrasada, arena en su límite, lectura fallida), fallbacks a
-  crudo, fallos de códec, compresiones obsoletas por un slot reutilizado, saltos del descompresor,
-  frames decodificados descartados por obsoletos tras una pausa del render; profundidad de la cola de
-  compresión y frames decodificados por adelantado; ratio de compresión; memoria comprometida, viva y
-  pico de la arena, bloques, tamaño de bloque y límite; y los estados de los slots del ring.
+  emergencia, §4.6), el códec que guarda ahora los frames (v0.7.0: `mjpeg`, el nombre de FFmpeg del
+  encoder por hardware, como `hevc_nvenc`, o `raw` sin FFmpeg), peldaño de degradación y el último,
+  el tamaño y el ritmo que se capturan ahora, contextos de compresión × hilos de slice,
+  descompresión anticipada (`L`) y slots de staging (`S`); p50/p95/max por frame y proporción
+  ocupada de cada contexto de compresión y del descompresor; descartes (sin slot libre, compresión
+  atrasada, arena en su límite, lectura fallida), fallbacks a crudo, fallos de códec, compresiones
+  obsoletas por un slot reutilizado, saltos del descompresor, frames decodificados descartados por
+  obsoletos tras una pausa del render; profundidad de la cola de compresión y frames decodificados
+  por adelantado; ratio de compresión; memoria comprometida, viva y pico de la arena, bloques,
+  tamaño de bloque y límite; y los estados de los slots del ring.
 - **Muestras:** p50/p95 mediante `std::nth_element` sobre un array fijo de 4096 muestras por serie,
   máximo exacto. Sin asignaciones por frame ni por ventana. Las tasas de frames descartados y
   repetidos de la última ventana alimentan también el aviso de degradación del dock (§4.7).
@@ -937,9 +1004,12 @@ limit …MB) ring=N slots (ready N, dropped N, in flight N, pinned N)
   destrucción, espera a que terminen los hilos de códec y después entra en el contexto gráfico para
   liberar los objetos de GPU. Las ventanas de menos de 1s se descartan.
 - **Otras líneas:** `delay pipeline: …` al empezar cada ciclo (modo, tamaño del buffer, slots, delay,
-  contextos de compresión × slices, descompresión anticipada, slots de staging, la escalera de
-  degradación hasta su último peldaño, tamaño de bloque y límite de la arena); un WARN por cada cambio
-  de peldaño (§4.7); `settings loaded` y `enabled` con `output_cap=on|off codec_workers=on|off`.
+  la clase de almacenamiento con su ratio supuesto y su margen de GOP desde la v0.7.0, contextos de
+  compresión × slices, descompresión anticipada, slots de staging, la escalera de degradación hasta
+  su último peldaño, tamaño de bloque y límite de la arena); un WARN por cada cambio de peldaño
+  (§4.7); `settings loaded` y `enabled` con `output_cap=on|off codec_workers=on|off` y, desde la
+  v0.7.0, `buffer_codec=auto|mjpeg` (`enabled` también da la `storage_class` del ciclo). Las líneas
+  propias del códec de almacenamiento están en §4.8.
 
 Cómo leer cada campo desde el lado del usuario: `docs/TROUBLESHOOTING-es.md`, "Cómo leer las líneas
 del log".
@@ -950,9 +1020,10 @@ Invariantes del diseño: el delay de vídeo es exacto por reloj de pared, los fr
 antigüedad de captura, y vídeo y audio comparten un único delay en segundos enteros (§3.3); "nunca
 corta": en `Active` el ring solo se vacía por un cambio real de geometría; todo lo que es `gs_*` se
 queda en el hilo gráfico (los hilos de códec nunca tocan la GPU); y cada `AVCodecContext` lo usa un
-solo hilo, que también lo abre y lo cierra. `src/codec-pipeline.*`, `src/frame-ring.*` y
-`src/frame-arena.*` son C++ puro (std::thread, sin OBS, con el códec inyectado), así que los tests los
-manejan sin OBS ni FFmpeg.
+solo hilo, que también lo abre y lo cierra (desde la v0.7.0 uno por hardware se abre en el hilo de
+preparación y se entrega, siempre a un solo hilo a la vez: invariante I8, §4.8).
+`src/codec-pipeline.*`, `src/frame-ring.*` y `src/frame-arena.*` son C++ puro (std::thread, sin OBS,
+con el códec inyectado), así que los tests los manejan sin OBS ni FFmpeg.
 
 **Hilos.**
 
@@ -961,7 +1032,8 @@ manejan sin OBS ni FFmpeg.
 | Hilo gráfico de OBS (`Render()`) | Renderiza y convierte la captura, recoge el slot de staging que se lanzó dos capturas antes en un frame crudo de un pool (`kMaxEncodeContexts + 2` frames), reserva el slot del ring, envía el trabajo de compresión; elige el frame decodificado que toca, lo sube si es nuevo y lo dibuja; ejecuta la política de degradación cada 250ms | Comprimir, descomprimir, (des)entrelazar, liberar el ring, esperar a un hilo |
 | Hilos de compresión (1-2, `trigglow-enc-N`) | Sacan trabajos de una cola FIFO acotada, comprimen fuera de todo lock con su propio contexto de códec, copian el paquete en la arena y publican el slot | Tocar la GPU, compartir un contexto de códec |
 | Hilo de descompresión (1, `trigglow-dec`) | Decodifica en orden de captura hasta `L = 3` frames por delante de lo que hay en pantalla, a partir del objetivo de reproducción que publica el hilo gráfico (`ahora − delay`, predecible por el reloj); salta directamente al frame que toca cuando se queda atrás; en los últimos 250ms de la ventana de llenado se le apunta a los frames más antiguos (`PrimeDecode()`), para que el primer frame retrasado esté listo cuando toca; guarda `L + 2` frames decodificados | Decodificar frames que nunca se van a mostrar |
-| Liberador (1, `trigglow-reap`) | Libera lo que nunca debe liberarse en el hilo gráfico ni frenar una compresión: rings desenganchados y sus arenas (600-770MB a 1440p, decenas de ms), el pool de frames crudos tras Disable, frames decodificados descartados al desenganchar; ejecuta el `Trim()` de la arena | Cualquier otra cosa |
+| Liberador (1, `trigglow-reap`) | Libera lo que nunca debe liberarse en el hilo gráfico ni frenar una compresión: rings desenganchados y sus arenas (600-770MB a 1440p, decenas de ms), el pool de frames crudos tras Disable, frames decodificados descartados al desenganchar; ejecuta el `Trim()` de la arena; desde la v0.7.0 también cierra los encoders y decoders por hardware retirados | Cualquier otra cosa |
+| Preparación del códec (1, `trigglow-codec-setup`, v0.7.0, se crea al primer uso) | Abre y sondea un encoder por hardware al tamaño de frame que pide el hilo de compresión 0, y lo entrega con un decoder ya calentado (§4.8) | Codificar o decodificar un frame capturado; retrasar una captura |
 
 **Ring y estados de slot.** `FrameRing` es un número fijo de cabeceras de slot más la arena. Cada
 slot está `Free`, `Reserved`, `Encoding`, `Ready` o `Dropped`, y quien es dueño de un estado es el
@@ -1016,7 +1088,9 @@ cuando es `false`, se envía al filtro en cada `Enable()`
 dock. Un valor distinto del del pipeline en marcha crea un pipeline nuevo en el siguiente ciclo (los
 hilos del anterior se esperan en el destructor, nunca en el hilo gráfico). Si no se puede arrancar un
 hilo de códec, el pipeline pasa solo a modo síncrono. Aparece como `codec_workers=on|off` en las
-líneas `settings loaded` y `enabled`, y como `mode=` en `pipeline check`.
+líneas `settings loaded` y `enabled`, y como `mode=` en `pipeline check`. Desde la v0.7.0 el modo
+síncrono guarda siempre MJPEG: el códec por hardware necesita los hilos asíncronos, así que
+`codec_workers=false` manda sobre `buffer_codec` (la línea `enabled` lo dice).
 
 **Medido** (benchmark de hilos `bench-workers` fuera de OBS, Ryzen 7 7700X, FFmpeg n9.0.2
 vendorizado, contenido sintético tipo gameplay, 20s por ejecución, un contexto de compresión y un
@@ -1054,12 +1128,15 @@ buffer, para que un equipo que no da más baje la calidad de la imagen retrasada
 OBS o cortar el delay.
 
 **Los dos mandos.**
-- *Paralelismo* (contextos de compresión × hilos de slice): con hilos de códec `1×1 → 2×1 → 2×2 →
-  2×4`; en modo síncrono `1 → 2 → 4` slices en el único contexto. El paso de partida se predice según
-  la resolución: el primero cuyo p95 de compresión previsto (`1,1 × (0,3 + 2,3 ms por megapíxel)`,
-  dividido entre 1,6 por cada duplicación de slices) no pase del 70% de lo que tienen los contextos
-  por frame — 1440p60 empieza en 1×1 y 4K60 en 2×1; el modo síncrono empieza en
-  `clamp(hardware_concurrency() / 4, 1, 4)` slices.
+- *Paralelismo* (contextos de compresión × hilos de slice): con hilos de códec `1×1 → 2×1 → 2×2`
+  desde la v0.7.0 (`→ 2×4` antes); en modo síncrono `1 → 2` slices en el único contexto (`→ 4`
+  antes). El paso de partida se predice según la resolución: el primero cuyo p95 de compresión
+  previsto (`1,1 × (0,3 + 2,3 ms por megapíxel)`, dividido entre 1,6 por cada duplicación de slices)
+  no pase del 70% de lo que tienen los contextos por frame — 1440p60 empieza en 1×1 y 4K60 en 2×1;
+  el modo síncrono empieza en `hardware_concurrency() / 4` slices, acotado a [1, 2]. El códec por
+  hardware (§4.8) tiene un único paso, `1×1`: un solo contexto mantiene el bitstream en orden de
+  captura, y los slices no le aportan nada. `SetParallelism()` cambia los pasos cuando cambia el
+  códec en uso y conserva el peldaño.
 - *Peldaño de calidad*: el peldaño 0 es el buffer dimensionado (§3.5); después pasos de ×0,83 en
   escala hasta la calidad mínima del usuario en píxeles del buffer (el mismo suelo que usó
   `bufferfit`; el propio suelo es el último peldaño de resolución, nunca por debajo); y después ese
@@ -1086,6 +1163,17 @@ segundo paso por una carga a la que el primero todavía no ha llegado en el desc
 subida con las cifras del peldaño anterior. En el último peldaño con la carga todavía demasiado alta
 no se hace nada más (sin oscilaciones, sin cortes); las capturas se siguen descartando y contando.
 
+**Con el códec de almacenamiento (v0.7.0).** La etiqueta de descompresión es `(peldaño, clase de
+códec)`, así que las cifras del decoder por hardware y las de MJPEG nunca se mezclan tras un cambio
+de códec. Las repeticiones que provoca el decoder a propósito (ponerse al día desde un keyframe,
+esperar al siguiente, §4.8) y los paquetes que el encoder nunca llegó a guardar no cuentan como
+descompresión lenta. La latencia del encoder nunca cuenta como carga de compresión (invariante I6,
+§4.8): solo cuenta el tiempo propio del hilo en sus llamadas. La política del códec de
+almacenamiento puede forzar una bajada de peldaño al momento (`ForceLower()`, causa `Encode`, así
+que con el aviso que ya existía en el dock) y vetar la subida durante 5 minutos (`Sample::blockUp`).
+`Rebase()` mueve la escalera bajo el techo de los encoders (§3.5) en un peldaño dado, conservando el
+paralelismo.
+
 **Aviso.** Cada cambio de peldaño es un WARN (`delay buffer lower rung (encode, load 85%): now WxH at
 F fps capture, rung N of M (…) -- last 2s: … The delay itself is unchanged.`); los cambios de
 paralelismo son INFO. El filtro guarda un `PipelineHealth` (`src/pipeline-health.hpp`: peldaño,
@@ -1104,6 +1192,281 @@ oyen una vez: el nombre accesible de la tarjeta solo cambia con el estado y cuan
 se va, lo que se redujo va en su descripción, y con Qt 6.8+ un `QAccessibleAnnouncementEvent` lee el
 aviso cuando aparece o cambia su causa, y `Dock.Health.Restored` cuando se va con el delay todavía en
 marcha (con Qt anterior cambia el nombre de la tarjeta).
+
+### 4.8. v0.7.0: el códec de almacenamiento — almacenamiento inter-frame por hardware en Windows
+
+**Por qué.** Medido fuera de OBS a 1440p60 con 30 s, entre el 80 y el 85 % de la RAM del plugin era
+la arena, es decir, los propios paquetes MJPEG; el resto (contextos de códec, reservas de frames,
+holgura de bloques) era poco. Solo con menos bytes por frame se podía reducir a la mitad. MJPEG no
+puede dárselos sin empeorar la imagen (cada escalón de qscale cuesta más o menos un punto de VMAF
+tras la codificación del stream), mientras que un encoder HEVC por hardware a QP constante 20 con un
+keyframe por segundo guardaba los mismos frames con entre un 67 y un 74 % menos de bytes, con mejor
+imagen y una fracción de la CPU. Ningún encoder por software que no sea GPL es lo bastante rápido a
+1440p60 junto a un juego, así que sin encoder por hardware el buffer se queda en MJPEG.
+
+**Piezas.**
+
+```
+G (hilo gráfico)          captura -> lectura I420 -> frame en crudo, slot del ring reservado
+                              |
+trigglow-enc-0                v
+  encoder por hardware (asíncrono, un contexto) <-- adoptado entre frames -- trigglow-codec-setup
+  o MJPEG (puente mientras se prepara, alternativa)                          (ordena, abre, sondea)
+                              |
+ring + arena                  v
+  paquetes HEVC/H.264 y MJPEG, cada uno con su códec, keyframe, cadena y seq
+                              |
+trigglow-dec                  v
+  D3D11VA -> NV12 -> I420 (un decoder por software solo en emergencias)
+                              |
+G                             v
+  reproducción por antigüedad; cada 250 ms la política del códec baja un peldaño, evacúa o cede
+```
+
+- **Interfaz** (`src/storage-codec.hpp`, C++17 puro, sin OBS ni FFmpeg). `storage::Encoder` es
+  asíncrono: `Send(frame, seq, forceKey)` copia el frame (`Ok`, `Busy` o `Failed`), y
+  `Receive(packet)` entrega los paquetes listos en el orden de `Send()`, cada uno con su `seq` y si
+  es keyframe; `Drain()` lo vacía antes de cerrarlo e `InFlight()` cuenta los frames que aún no han
+  salido. `storage::Decoder::Decode(packet, wantImage, …)` decodifica un paquete guardado
+  (`wantImage = false`: puesta al día, solo referencias) y `Flush()` gestiona una discontinuidad.
+  Los frames decodificados son siempre I420, así que la reproducción nunca sabe qué códec había
+  detrás. Implementaciones: sin comprimir, MJPEG (`src/mjpeg-codec.*`, todos los paquetes keyframe)
+  y la de hardware (`src/hw-storage-codec.*`, `TRIGGLOW_HAVE_HW_STORAGE`, solo Windows).
+  `ChainTracker` e `InFlightQueue` llevan las cuentas de un bitstream para cualquier códec.
+- **Metadatos del ring** (`src/frame-ring.*`). `FrameRing::Payload` lleva el códec, `key`, `chain`
+  (una sesión de bitstream: un encoder desde su primer keyframe, para un ring) y `seq` (consecutivo
+  en el bitstream). `ringselect::Decodable()`: un keyframe siempre, un P-frame solo justo después de
+  su referencia (misma cadena, seq siguiente). `PlanDecodeStart()` retrocede desde el frame que toca
+  hasta el keyframe desde el que se puede decodificar (solo por los paquetes de su propio códec, así
+  que un frame MJPEG en medio no corta la cadena); `ChooseDecodeStart()` se pone al día desde él o
+  espera al siguiente keyframe, lo que muestre antes un frame nuevo. La máquina de estados de los
+  slots, las generaciones y el `captureNs` al reservar no cambian.
+- **Invariantes**, citadas por número en el código:
+
+| # | Invariante | Cómo |
+|---|---|---|
+| I1 | Dentro de una cadena, el bitstream sigue el orden de captura | Un único contexto inter, paquetes emparejados en el orden de `Send()`; un paquete fuera de orden es un error grave |
+| I2 | Nunca se decodifica un P-frame sin su referencia | `Decodable()`; si no, el decoder salta al siguiente keyframe |
+| I3 | Las capturas descartadas antes de codificarse no consumen seq; tras perder un paquete ya codificado, el siguiente frame es un keyframe forzado y no se guarda ningún P-frame huérfano | `ChainTracker` |
+| I4 | Con un códec inter-frame, el keyframe del frame que toca siempre está en el ring | Un GOP de holgura en `bufferfit::SlackFrames()` |
+| I5 | La reproducción (re)arranca en un keyframe, manteniendo mientras tanto el frame en pantalla | `FrameRing::PlanDecodeStart()` |
+| I6 | La latencia de un encoder nunca cuenta como carga | La degradación solo ve el tiempo propio del hilo; la latencia va a la política del códec |
+| I7 | Ni un cambio de códec, ni de cadena, ni de resolución vacía el ring o mueve el delay | Los rings admiten varios códecs; los frames decodificados son siempre I420; MJPEG hace de puente |
+| I8 | Cada encoder y decoder lo usa un solo hilo a la vez, nunca el hilo gráfico | Se abre en el hilo de preparación, se entrega bajo el mutex del pipeline y lo cierra su hilo o el liberador |
+| I9 | La clase de almacenamiento que dimensiona el ring de un ciclo es fija durante el ciclo | Se escribe en el filtro en `Enable()`; el ring y el delay previsto leen el mismo valor |
+
+**Encoders por hardware.** `RankCandidates()` (`src/storage-codec-select.*`, puro) ordena
+`hevc_nvenc`, `hevc_amf`, `hevc_qsv`, `h264_nvenc`, `h264_amf`, `h264_qsv`, y solo deja los
+fabricantes de GPU que informa DXGI (`QueryGpuAdapters()`), así que nunca se carga el runtime de
+otro fabricante; primero van los motores en los que OBS no codifica (una iGPU junto a un stream en
+la gráfica dedicada). NVENC solo es candidato mientras OBS tenga como mucho 3 encoders NVENC en
+marcha (`kMaxObsNvencForBuffer`), así queda una sesión libre incluso con el antiguo límite de 5.
+Quick Sync nunca es candidato en un OBS elevado (`TokenElevation`): su runtime lo carga un cargador
+que busca DLL en rutas que controla un usuario sin privilegios. Los encoders que fallaron de forma
+grave en esta sesión van a una lista negra. Ajustes:
+- HEVC a QP constante 20 y H.264 a 18; un keyframe cada medio segundo (`KeyframeIntervalFrames()`:
+  `ceil(fps / 2)`, 30 frames a 60 fps); sin B-frames; IDR forzados (`pict_type = I` más la opción
+  del backend); parámetros en banda, y copiados delante de un keyframe que no los lleve
+  (`src/annexb.*`); `pts = seq`, que se empareja con los frames del pipeline.
+- NVENC: `p1`, `ll`, `constqp`, latencia cero, sin lookahead, sin multipass, sin AQ espacial, 4
+  superficies. AMF: `lowlatency_high_quality`, `speed`, `cqp`, sin preanálisis, cabeceras en cada
+  IDR. Quick Sync: `veryfast`, entrada NV12 (el croma se entrelaza en el hilo de compresión),
+  `async_depth` 1.
+- Frames de entrada en memoria del sistema desde una reserva de buffers (I420; NV12 para Quick
+  Sync). NVENC y AMF se abren en un dispositivo D3D11 del adaptador de su fabricante, el de OBS si
+  es de ese fabricante.
+
+**Decoders.** D3D11VA en el adaptador de OBS (`obs_video_info.adapter`), de baja latencia y un hilo;
+la imagen se descarga como NV12 en un frame reutilizado y su croma se separa a I420 en el hilo de
+descompresión (en una puesta al día no se descarga nada). Nunca pasa a software en silencio: un
+stream que no puede decodificar es un fallo. El decoder HEVC/H.264 por software de libavcodec (con
+hilos de slice) es solo la vía de emergencia, para los frames por hardware que quedan en el ring
+cuando falla el decoder por hardware o cuando el buffer abandona un motor que comparte con OBS para
+decodificar (VCN de AMD e Intel decodifican en el mismo motor que codifica; NVDEC de NVIDIA es un
+motor aparte). Cuesta unos 15ms de CPU por frame a 1440p y no llega a 2160p60; entonces el decoder
+salta al siguiente keyframe y se mantiene el frame en pantalla.
+
+**Preparación y adopción.** El hilo de compresión 0 le pide al hilo de preparación
+(`trigglow-codec-setup`, que se crea al primer uso) un encoder al tamaño de frame que necesita, y
+mientras tanto sigue guardando en MJPEG (el puente; nunca se descarta ni se retrasa una captura).
+Para cada candidato, en más o menos un segundo: lo abre, le manda 8 frames sintéticos (un degradado
+en movimiento con ruido suave) con keyframes forzados en el 0 y el 5, y comprueba 8 paquetes en
+orden, keyframes en el 0 y el 5 con sus parámetros, un decode D3D11VA del 0 al 7 y, tras vaciar el
+decoder, del 5 al 7, los tamaños, y un PSNR-Y por encima de 30dB (un detector de basura, no un
+listón de calidad). Lo que pasa se entrega abierto, con su decoder ya calentado, y se adopta en una
+frontera de frame en una cadena nueva que empieza en un keyframe. Un registro de la sesión recuerda
+qué pasó (un tamaño nuevo solo necesita entonces una reapertura de 2 frames), qué falló y a qué
+tamaño, y qué falló de forma grave. La preparación consulta un predicado de cancelación entre pasos
+(Disable, cierre, un objetivo MJPEG, una cesión) y cierra en su propio hilo lo que abrió. Medido en
+una RX 7800 XT (AMF): sondeo de 330–380ms a 1440p, reapertura de unos 100ms, todos los peldaños de
+las escaleras de 2160p, 1440p y 1080p se abren y hacen el viaje de ida y vuelta, y en D3D11VA un
+cambio de parámetros del stream cuesta 11ms (15ms a 2160p).
+
+**Hilo de compresión con el códec por hardware.** Un único contexto (I1). Cada frame enviado queda
+en cola "en vuelo" `{reserva, seq, hora de envío}` y se guarda cuando sale su paquete; con frames en
+vuelo y sin trabajo, el hilo sondea cada 2ms. Un paquete fuera de orden, un error del encoder, o
+500ms con frames en vuelo y ningún paquete mientras siguen llegando frames (un intento de `Send()`
+en los últimos 250ms, para que una pausa del render no sea un atasco) es un error grave: se pierde
+lo que estaba en vuelo y el encoder se cierra. Un paquete que no cabe en la arena, o cuyo slot se
+reutilizó, rompe la cadena: el slot pasa a `Dropped`, el siguiente `Send()` fuerza un keyframe y los
+P-frames no se guardan hasta entonces (I3). Un tamaño de frame nuevo (un peldaño, un reinicio del
+vídeo de OBS) vacía el encoder anterior (como mucho 50ms), MJPEG hace de puente y se le pide a la
+preparación el tamaño nuevo. El tiempo propio del hilo en `Send()`/`Receive()`/copia/publicación
+alimenta la degradación; la latencia de `Send()` al paquete y los frames en vuelo alimentan la
+política del códec (I6).
+
+**Hilo de descompresión.** Un decoder por cada códec que hay en el ring; el de hardware llega ya
+calentado. Al arrancar, tras una pausa o cuando se queda atrás sobre un P-frame, planifica desde el
+keyframe (I5): se pone al día sin mostrar y después decodifica el frame que toca, o espera al
+siguiente keyframe; la espera se publica para que el hilo gráfico cuente esas repeticiones aparte
+(`holdsCatchUp`), nunca como descompresión lenta. Un cambio de tamaño de frame o de códec en una
+frontera de cadena solo necesita vaciar el decoder, o el decoder del otro códec. Los decoders
+ociosos se cierran a los 3 s.
+
+**Política del códec de almacenamiento** (`src/storage-codec-policy.*`, pura,
+`tests/storage_policy_tests.cpp`), evaluada en el hilo gráfico cada 250ms, antes de la política de
+degradación:
+
+| Estado | Qué significa |
+|---|---|
+| `Mjpeg` | Solo MJPEG: `buffer_codec` en `mjpeg`, modo síncrono, sin GPU o ningún encoder funciona |
+| `Probing` | La preparación busca un encoder; MJPEG hace de puente |
+| `Hw` | El encoder por hardware guarda los frames |
+| `HwGuarded` | Su motor avisó: un peldaño menos y sin subir durante 5 minutos |
+| `Yielded` | Una salida de OBS que arrancaba se quedó con la sesión NVENC |
+| `Evacuated` | De vuelta en MJPEG hasta el siguiente `Enable()` (sin segundo intento en el mismo ciclo) |
+
+- **Entradas.** `engineShared` (`ComputeEngineShare()`): el encoder del buffer es de la misma
+  familia que un encoder de vídeo activo de OBS (`FamilyFromObsEncoderId()`: `*nvenc*`, `*amf*`,
+  `*qsv*`, los de CPU), o su decode va en una GPU AMD o Intel cuyo motor codifica para OBS; lo
+  desconocido cuenta como compartido. Los frames que OBS se salta por retraso de codificación: la
+  mezcla principal (`video_output_get_skipped_frames()`, leída en el hilo gráfico) más las mezclas
+  de los encoders de OBS (reescalado por GPU, pistas de Enhanced Broadcasting), leídas una vez por
+  segundo en el hilo de la UI y enviadas con `report_encoder_lag`. Una salida de OBS que se para con
+  `OBS_OUTPUT_ENCODE_ERROR` (se vigila la señal de parada de cada salida activa con encoder de
+  vídeo) llega con `report_obs_encode_error`. Los errores graves del encoder o del decoder por
+  hardware vienen del pipeline.
+- **Reglas**, de mayor a menor prioridad: un error grave evacúa al momento (el fallo del propio
+  encoder lo manda a la lista negra de la sesión). Con el motor compartido, un error de codificación
+  de OBS, o al menos un frame que OBS se saltó en los últimos 2s, evacúa al momento, sin esperar
+  nunca al enfriamiento (un error de codificación de OBS que llega mientras se sondea o se ha cedido
+  se guarda hasta que el hardware vuelve a guardar frames). El aviso temprano, solo con el motor
+  compartido, mantenido durante 1s con al menos 20 paquetes y 2s después de la transición anterior:
+  latencia p95 por encima de 2,5 intervalos de captura (42ms a 60fps; AMF midió 20–21ms) o 3 frames
+  en vuelo. Baja un peldaño (menos píxeles es lo que libera el motor: −31 % por peldaño de ×0,83) y
+  veta la subida durante 5 minutos; si no queda peldaño por encima del suelo, evacúa. En un motor
+  que OBS no comparte, el buffer no puede provocar el retraso de codificación de OBS, así que nada
+  de esto aplica (la degradación sigue ocupándose de la carga de CPU y del hilo gráfico).
+- **La evacuación** apunta el pipeline a MJPEG sin parar: el encoder por hardware se vacía (50ms) y
+  se cierra en el liberador, los frames siguientes son keyframes MJPEG en una cadena nueva, el ring
+  guarda los dos y la reproducción sigue sin hueco. Con el decode en el motor compartido (AMD,
+  Intel) y el retraso de OBS como causa, los frames por hardware que quedan en el ring se
+  decodifican por software. La RAM sube hasta el nivel de MJPEG durante los siguientes `delay`
+  segundos, dentro del presupuesto. El WARN: `delay buffer codec <encoder> -> mjpeg: <motivo> …;
+  buffer encoder latency p95 N ms -- the delay itself is unchanged, …`.
+- **Sesiones NVENC.** Con `OBS_FRONTEND_EVENT_{STREAMING,RECORDING,REPLAY_BUFFER}_STARTING`,
+  `BufferModeController` llama al proc `yield_hw_encoder` del filtro, que solo actúa cuando puede
+  haber una sesión NVENC abierta o abriéndose; el hilo de compresión 0 (o la preparación) la cierra
+  y guarda en MJPEG. La UI espera a eso como mucho 100ms, y solo cuando los encoders NVENC de OBS,
+  el que arranca y el del buffer suman 4 o más. 3s después de que arranque la salida (10s después de
+  la cesión como mucho) llama a `resume_hw_encoder`, se vuelven a contar los encoders de OBS y la
+  política vuelve a `Probing`.
+
+**Clase de almacenamiento y dimensionado.** `BufferModeController` fija la clase del ciclo en
+`Enable()` y la escribe en el filtro (el proc `set_storage_class` y el ajuste `storage_class`, I9):
+
+| Clase | Cuándo | Ratio supuesto | Holgura |
+|---|---|---|---|
+| `intra` | `buffer_codec` en `mjpeg`, `codec_workers` desactivado, sin GPU, Linux (macOS: ratio 1) | 5x | `ceil(fps / 4)` |
+| `intra-gop` | El hardware puede tomar el relevo, pero ningún encoder ha pasado aún su sondeo en esta sesión (el primer ciclo) | 5x | `max(ceil(fps / 4), GOP)` |
+| `inter` | Un encoder por hardware pasó su sondeo en esta sesión | 12x | `max(ceil(fps / 4), GOP)` |
+
+`ApplyStorageClass()` fija los dos parámetros para `EnsureRingSized()` y para `EstimateBufferFit()`,
+así que el ring, la estimación del dock y el delay del audio mantienen un único delay en segundos
+enteros. El ratio solo importa cuando falta RAM (4K, delays largos, equipos de 8–16GB): 12x mete 2,4
+veces los frames de 5x, y aguanta aunque el ciclo acabe en MJPEG (13–17x medido); con contenido peor
+la arena descarta frames (repeticiones) en vez de crecer. El tamaño de bloque de la arena sigue los
+mismos bytes esperados (§4.3).
+
+**`buffer_codec`** (oculto, `buffer-mode-settings.json`). `plugin-main.cpp` lo lee al cargar con
+`storage::ParseBufferCodec()`: si falta (o es null de JSON) vale `"auto"`; solo cuentan los textos
+exactos en minúsculas `"auto"` y `"mjpeg"`; cualquier otra cosa (`"MJPEG"`, `"hevc"`, `false`, `0`)
+se queda en `"auto"` con un WARN y desaparece del archivo al salir; solo se vuelve a escribir cuando
+es `"mjpeg"`. El controlador lo envía al filtro en cada `Enable()` (`SetBufferFilterCodec()`), y
+`codec_workers=false` manda sobre él. Sin propiedad en el filtro ni control en el dock.
+
+**Telemetría.** En la preparación: `storage codec: auto -> hevc_amf (AMF, QP 20, GOP 30 = 0.50 s, no
+B-frames, decode d3d11va on "<adaptador>") at WxH; probe N ms (open N ms on its adapter, 8/8
+packets, IDR in-band ok, fresh-decoder start ok, psnr N dB); tried: …; engine shared with OBS:
+yes|no|unknown; NVENC sessions by OBS: N`, o `storage codec: auto -> mjpeg at WxH (…)` con el
+motivo. En cada ventana de telemetría, justo después de `pipeline check`:
+
+```
+storage codec check (periodic): codec=hevc_nvenc(qp20,gop30) dec=d3d11va | hwenc lat
+p50/p95/max=…ms inflight max=N send p95=…ms | keys=N forcedIdr=N chainBreaks=N orphanP=N catchUps=N
+(frames N, max Nms) noKeyWaits=N noKeySkips=N | bridge frames=N codecChanges=N hardErrors=N |
+policy=Hw guard=off | obs encode-lag skipped main+N mixes+N
+```
+
+(una sola línea; una corta, `codec=mjpeg(q5,huff=default) dec=mjpeg policy=Mjpeg | obs encode-lag
+…`, cuando todo el ciclo es MJPEG). `PipelineHealth` v2 añade el códec, el nombre del encoder, el
+decode por hardware, el estado de la política y su contador de cambios, solo para el diagnóstico de
+soporte; `get_pipeline_state` recibe el tamaño de la estructura de quien llama y nunca copia más
+allá. El dock no cambia.
+
+**Plataformas y licencias.** Solo Windows: el FFmpeg vendorizado de BtbN (LGPL 3.0, sin
+`--enable-gpl` ni `--enable-nonfree`, comprobado en CI) ya trae los encoders NVENC, AMF y Quick Sync
+y D3D11VA en `avcodec-63.dll`/`avutil-61.dll`, así que no se distribuye ninguna DLL nueva; los
+runtimes de los encoders vienen con el driver de la GPU; `data/licenses/LICENSE-ffmpeg.txt` viaja
+con las DLL. Linux sigue con MJPEG sobre el libavcodec del sistema (los encoders VAAPI necesitan
+frames de hardware, y Linux no se ha probado en directo); macOS guarda I420 en crudo como antes. Los
+códecs por hardware los licencia el fabricante de la GPU; el decoder HEVC/H.264 por software ya
+venía en el avcodec que se distribuye (es una nota, no asesoría legal).
+
+**Medido** (benchmark de almacenamiento compilado con las fuentes del plugin, fuera de OBS: Ryzen 7
+7700X, RX 7800 XT con AMF, contenido sintético tipo gameplay a 60fps, working set privado del
+pipeline del buffer sin audio; build v0.7.0, `auto` frente a `mjpeg`):
+
+| Salida | Delay | MJPEG | HEVC por hardware | Menos | PSNR-Y MJPEG / HEVC | CPU del códec MJPEG / HEVC |
+|---|---|---|---|---|---|---|
+| 1080p60 | 30s | ~395MB | ~190MB | −52 % | 40,4–40,5 / 45,3–45,4 dB | 0,45 / 0,18–0,24 núcleos |
+| 1080p60 | 60s | ~750MB | ~285MB | −62 % | 40,4 / 45,1–45,3 dB | 0,48 / 0,19–0,21 núcleos |
+| 1440p60 | 30s | ~635MB | ~325MB | −49 % | 40,1–40,3 / 44,7–45,1 dB | 0,78–0,88 / 0,20–0,32 núcleos |
+| 1440p60 | 60s | ~1200MB | ~520MB | −57 % | 40,1–40,3 / 44,8–45,0 dB | 0,58–0,82 / 0,22 núcleos |
+| 2160p60 | 30s | ~1250–1275MB | ~590MB | −53 % | 40,9 / 45,2–45,3 dB | 1,6–2,0 / 0,60–0,66 núcleos |
+| 2160p60 | 60s | ~2315MB | ~880–920MB | −60 a −62 % | 40,8 / 45,2 dB | 2,0 / 0,39–0,63 núcleos |
+
+- La v0.6.0 ocupaba ~661MB (1440p60, 30s; ~685MB con sus objetos del lado de la GPU) y ~1232MB (60s)
+  con MJPEG.
+- La latencia del encoder por hardware es de más o menos un frame (p50 de 19–24ms, p95 de 20–26ms en
+  la mayoría de las pruebas, 39ms en una a 2160p60), con 1 frame en vuelo. Su sondeo y su adopción
+  no cuestan ninguna captura.
+- Junto a un proxy de stream 1440p60 codificado en tiempo real con `h264_amf` en la misma GPU
+  (14 Mbps CBR, preset de calidad, 2 B-frames), los dos mantuvieron 60fps: el stream a 1,01x tiempo
+  real, y la codificación y la decodificación del buffer en ~30 % del motor de vídeo.
+- Una pausa de render de 500ms: 1–2 repeticiones en los 2s siguientes, el primer frame nuevo a los
+  33–42ms, una puesta al día de 11 frames (22–25ms). Cambiando MJPEG ↔ hardware cada 10s durante un
+  minuto: 5 cambios de códec, 14 frames de puente, 0 errores graves.
+- Tras Disable, el proceso volvió a menos de 13–25MB por encima de su base, sin ningún encoder por
+  hardware abierto.
+- **Sin medir**: NVENC y NVDEC de NVIDIA (los bytes por frame, y con ellos la RAM, pueden variar),
+  Quick Sync de Intel, la VRAM que ocupa el códec por hardware, y nada dentro de un OBS real.
+
+**Tests.** `storage_codec_tests` (frames en vuelo de 0 a 16, `ChainTracker`, parámetros Annex B con
+start codes de 3 y 4 bytes y paquetes truncados, separación NV12, `ParseBufferCodec()`,
+`RankCandidates()` con y sin Quick Sync, `FamilyFromObsEncoderId()`, motor compartido, una
+simulación de un solo hilo con pérdidas aleatorias), `storage_policy_tests` (prioridades, la regla
+del motor compartido, enfriamiento, veto, cesiones, muestras mínimas, un tamaño en el que no abre
+ningún encoder, una hora en el límite de los umbrales con como mucho una transición),
+`pipeline_gop_stress_tests` y `adversarial_gop_tests` (el pipeline real con un códec inter-frame
+falso, `tests/fake-gop-codec.hpp`, cuyo decoder marca cualquier P-frame decodificado sin su
+referencia: latencia de 0–3 frames, GOP de 2–8, pérdidas, cambios de códec y de tamaño, pausas de
+render, preparaciones de 0–200ms que a veces fallan, evacuaciones, cesiones, encoders y decoders
+rotos, un decode por software lento; nunca una imagen corrupta, cadenas que empiezan en un keyframe,
+un hilo por objeto de códec y nunca el hilo gráfico, la latencia nunca contada como carga), y
+`hw_storage_codec_tests` (Windows, builds locales con el FFmpeg del plugin en `.deps`: el FFmpeg
+real con fallos inyectados, aperturas fallidas, una preparación cancelada, un decoder que no llega a
+abrirse). El job de ThreadSanitizer también ejecuta `pipeline_gop_stress_tests`.
 
 ## 5. Alcance de v0.2.0, tal y como se distribuye realmente
 
@@ -1166,17 +1529,32 @@ como un problema resuelto, hasta que se vuelva a probar específicamente para ve
 
 ```
 plugin-main.cpp              → obs_module_load/unload, cableado de todos los componentes, archivo de
-                                ajustes (buffer_output_cap / codec_workers ocultos, copia .invalid)
+                                ajustes (buffer_output_cap / codec_workers / buffer_codec ocultos,
+                                copia .invalid)
 buffer-mode-controller.*      → la máquina de estados descrita en §3.3 (Inactive/Filling/Active/Error)
 obs-frontend-bridge.*         → la única capa que toca obs-frontend-api.h + el cableado de filtros/escenas
 video-delay-filter.*          → §3.1 -- captura, conversión I420, lectura, reproducción y el pequeño
                                 pool fijo de objetos de GPU; dueño del ring, del pipeline de códec y
-                                de la política de degradación (§4.5 -- telemetría perf check /
-                                pipeline check)
-codec-pipeline.*              → §4.6 -- hilos de compresión/descompresión y el liberador (v0.6.0)
+                                de las políticas de degradación y del códec de almacenamiento (§4.5
+                                -- telemetría perf check / pipeline check; §4.8 -- storage codec
+                                check)
+codec-pipeline.*              → §4.6, §4.8 -- hilos de compresión/descompresión, el liberador
+                                (v0.6.0) y el hilo de preparación del códec de almacenamiento
+                                (v0.7.0)
+storage-codec.hpp             → §4.8 -- interfaz del códec de almacenamiento, códec sin comprimir,
+                                contabilidad de cadenas, invariantes I1-I9 (v0.7.0)
+hw-storage-codec.*            → §4.8 -- encoders HEVC/H.264 por hardware (NVENC, AMF, Quick Sync),
+                                decoders D3D11VA y por software de emergencia, el sondeo (Windows,
+                                v0.7.0)
+storage-codec-select.*        → §4.8 -- lectura de buffer_codec, familias de encoders de OBS, orden
+                                de candidatos, motor compartido; puro (v0.7.0)
+storage-codec-policy.*        → §4.8 -- la política del códec de almacenamiento; pura (v0.7.0)
+annexb.*                      → §4.8 -- parámetros Annex B en banda; puro (v0.7.0)
 mjpeg-codec.*                 → §4.2 -- MJPEG sobre el FFmpeg vendorizado, una instancia por hilo
                                 (solo Windows/Linux)
-frame-ring.*                  → §4.6 -- ring de cabeceras de slot con máquina de estados (v0.6.0)
+frame-ring.*                  → §4.6, §4.8 -- ring de cabeceras de slot con máquina de estados
+                                (v0.6.0), códec/keyframe/cadena/seq por paquete y planes de arranque
+                                del decode (v0.7.0)
 frame-arena.*                 → §4.3 -- arena por bloques para los datos de los frames (v0.6.0)
 degradation-policy.*          → §4.7 -- degradación automática, pura (v0.6.0)
 pipeline-health.hpp           → §4.7 -- lo que lee el dock sobre el pipeline (v0.6.0)
@@ -1185,15 +1563,18 @@ buffer-fit.*                  → §3.5 -- aritmética pura de dimensionado del 
                                 de calidad, presupuesto de RAM, fps exactos, delay efectivo en segundos
                                 enteros), sin libobs/FFmpeg
 encoder-check.*               → §3.5 -- decisión pura del WARN de "encoder por encima del buffer"
-                                (qué encoders ven el lienzo principal), sin libobs
+                                (qué encoders ven el lienzo principal) y el techo de los encoders
+                                (v0.7.0), sin libobs
 audio-delay-filter.*          → §3.2 -- ring de delay de audio por fuente hoja
 overlay-badge.*               → §3.6 -- pinta el overlay del directo como un único PNG (QPainter, hilo de UI)
 overlay-layout.*              → §3.6 -- colocación pura del overlay en el lienzo
 auto-names.*                  → §3.7 -- nombres de los objetos gestionados y su migración
-hardware-info.*               → consulta de la RAM total del sistema (sustituye a la antigua consulta VRAM/DXGI)
+hardware-info.*               → consulta de la RAM total del sistema; los adaptadores de GPU
+                                (fabricante, nombre y VRAM de DXGI) para el códec de almacenamiento
+                                (v0.7.0)
 win-http.* / api-client.*     → §3.8 -- el único camino HTTPS endurecido y el cliente de
-                                api.trigglow.com (Windows; "no disponible" en macOS/Linux hasta la
-                                v0.6.1)
+                                api.trigglow.com (Windows; "no disponible" en macOS/Linux hasta que
+                                tengan cliente HTTP)
 json.*                        → §3.8 -- lector/escritor JSON estricto y acotado
 auth-manager.* / auth-client.* → §3.8 -- inicio de sesión (vinculación v2), renovación, cierre de
                                 sesión, cambio desde la v0.5.x, reglas de 401/403; la puerta de
@@ -1222,13 +1603,15 @@ hotkeys.*                     → registro de las 3 hotkeys nativas de OBS, cone
                                 Enable()/Disable()/Toggle() de BufferModeController
 logging.*                     → envoltorio de logging con prefijo de componente
 delay-controller.*            → §6 -- lógica heredada del modo reconexión, presente pero sin usar
-tests/                        → 19 suites, solo se compilan con -DTRIGGLOW_BUILD_TESTS=ON o por
+tests/                        → 23 suites, solo se compilan con -DTRIGGLOW_BUILD_TESTS=ON o por
                                 separado (cmake -S tests): buffer_fit, encoder_check, ui_tokens,
                                 auto_names, overlay_layout, frame_arena, frame_ring,
-                                degradation_policy, pipeline_stress, background_tasks, json,
+                                degradation_policy, pipeline_stress, storage_codec, storage_policy,
+                                pipeline_gop_stress, adversarial_gop, background_tasks, json,
                                 log_redact, chat_text, support_diagnostics, api_client,
                                 token_store, auth_client, support_client, trigi_states (las del
-                                cliente, con un sustituto de red guionizado)
+                                cliente, con un sustituto de red guionizado); más hw_storage_codec
+                                en Windows cuando el FFmpeg del plugin está en .deps
 ```
 
 Principio de diseño: **`BufferModeController` es el único dueño del estado**. Tanto el dock como las

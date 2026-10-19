@@ -817,7 +817,10 @@ void TrigglowDelayDock::BuildUi()
 	// Started and stopped by RefreshFromStatus() (Filling/Active only).
 	healthTimer_ = new QTimer(this);
 	healthTimer_->setInterval(1000);
-	connect(healthTimer_, &QTimer::timeout, this, [this] { RefreshPipelineHealth(bufferController_.GetStatus()); });
+	connect(healthTimer_, &QTimer::timeout, this, [this] {
+		bufferController_.Tick(); // v0.7.0: the storage codec's once-a-second duties.
+		RefreshPipelineHealth(bufferController_.GetStatus());
+	});
 }
 
 void TrigglowDelayDock::ApplyTheme(bool force)

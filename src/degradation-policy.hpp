@@ -28,9 +28,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //
 // Two independent knobs, never cutting the delay:
 //   - Parallelism: encode contexts x slice threads. Threaded (codec workers):
-//     1x1 -> 2x1 -> 2x2 -> 2x4 (at most 2 encode workers and 4 slices per
-//     context). Sync (kill switch, codec on the graphics thread): slices
-//     1 -> 2 -> 4 on the one context.
+//     1x1 -> 2x1 -> 2x2 (at most 2 encode workers and, since v0.7.0, 2
+//     slices per context: each slice adds an encoder's worth of buffers).
+//     Sync (kill switch, codec on the graphics thread): slices 1 -> 2 on the
+//     one context. A hardware inter-frame encoder (v0.7.0): 1x1 only, its
+//     bitstream follows capture order and a slice means nothing to it; the
+//     steps switch with the codec (SetParallelism()), the rung stays.
 //   - Quality rung: the fitted buffer size, then smaller sizes in x0.83 steps
 //     down to the user's quality floor, then that floor captured at half the
 //     frame rate (only when the output runs at 48fps or more). Every rung is a
@@ -59,6 +62,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // (G p95 <= 25% of the interval; workers <= 50%) for 30 s straight. Quality
 // is restored before parallelism is given back. The prediction scales the
 // measured p95 by the pixel ratio (and by 1.6 per halving of slices), plus 10%.
+//
+// v0.7.0, the storage codec policy (storage-codec-policy.hpp) on top: an
+// early warning of the hardware encoder's engine (its latency) lowers one
+// rung through ForceLower() (Cause::Encode, the dock's usual "lowered"
+// notice), and vetoes going back up for 5 minutes (Sample::blockUp). The
+// encode metric it gets is always the worker's own time per frame, never a
+// hardware encoder's latency (invariant I6).
 namespace trigglow::degradation {
 
 struct Rung {
@@ -80,7 +90,8 @@ struct Parallelism {
 std::vector<Rung> BuildLadder(uint32_t fullWidth, uint32_t fullHeight, uint32_t floorHeight, bool allowHalfRate,
 			      double step = 0.83);
 
-std::vector<Parallelism> BuildParallelismSteps(bool threaded);
+// inter: a hardware inter-frame encoder (one context, one "slice"): {1x1}.
+std::vector<Parallelism> BuildParallelismSteps(bool threaded, bool inter = false);
 
 // Predicted encode p95 (ms) of ONE single-threaded MJPEG context at
 // width x height (huffman=default), from the perf measurements with a 10%
@@ -136,6 +147,8 @@ struct Sample {
 	// those metrics are ignored. kSameRung: assume the current one.
 	static constexpr size_t kSameRung = SIZE_MAX;
 	size_t decodeRung = kSameRung;
+	// v0.7.0: no going up (the codec policy's veto after its engine warned).
+	bool blockUp = false;
 };
 
 enum class Action : uint8_t { None, MoreParallelism, LessParallelism, LowerQuality, RaiseQuality };
@@ -158,6 +171,17 @@ public:
 
 	// Applies and returns at most one step. Call every few hundred ms.
 	Decision Evaluate(const Sample &sample);
+	// v0.7.0: one rung down right now, for a reason of the caller's (the
+	// codec policy's early warning); None at the last rung. Restarts the
+	// cooldown like any change.
+	Decision ForceLower(Cause cause, double load, uint64_t nowNs);
+	// v0.7.0: other parallelism steps (the codec changed: hardware 1x1, MJPEG
+	// the usual ones), starting at `initial`; the rung is kept. The trailing
+	// windows should be cleared by the caller, as after any change.
+	void SetParallelism(std::vector<Parallelism> steps, size_t initial);
+	// v0.7.0: another ladder (the encoders' ceiling moved), on rung `rung`;
+	// the parallelism is kept.
+	void Rebase(std::vector<Rung> ladder, size_t rung);
 
 	bool Valid() const { return !ladder_.empty() && !steps_.empty(); }
 	size_t RungIndex() const { return rung_; }

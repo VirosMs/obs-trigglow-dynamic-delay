@@ -153,11 +153,49 @@ overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida
 - **Build/CI**: FFmpeg fijado a un build de fin de mes de BtbN, 19 suites de tests unitarios en CI
   en todas las plataformas, un job de ThreadSanitizer, `Qt6::Svg`.
 
-## Siguiente (v0.6.x)
-- **v0.6.1: un cliente HTTP en macOS y Linux**, para que el inicio de sesión (y con él Activar
-  delay), Trigi y los reportes desde OBS funcionen también allí, con el inicio de sesión guardado en
-  el llavero o el almacén de secretos del sistema. Hasta entonces, las funciones de cuenta del plugin
-  son solo para Windows.
+## v0.7.0 (entregado — 2026-10-20)
+Una versión de optimización: el buffer del delay ocupa más o menos la mitad de RAM en Windows. La
+v0.6.1 prevista (cliente HTTP para macOS y Linux) no se publicó; va a continuación.
+- **Códec de almacenamiento por hardware en Windows.** El buffer se guarda como HEVC (H.264 en una
+  GPU sin HEVC) con el encoder de la GPU (NVENC, AMF, Quick Sync) y se decodifica con D3D11VA, en
+  vez de MJPEG: a 1440p60 pasa de ~675 MB a ~325 MB con 30 s y de ~1,2 GB a ~520 MB con 60 s, el
+  PSNR-Y de los frames guardados sube de ~40 a ~45 dB y la CPU del códec baja de ~0,8 a ~0,2–0,3
+  núcleos (fuera de OBS, AMF de AMD). MJPEG se queda como puente mientras se prepara un encoder y
+  como alternativa. Sin DLL nuevas.
+- **Un ring que admite códecs inter-frame**: códec, keyframe, cadena y seq por paquete, un GOP de
+  margen, decode desde un keyframe con puesta al día, varios códecs en un mismo ring y una interfaz
+  de encoder asíncrona.
+- **Protección frente a "Encoding overloaded"** cuando el motor de la GPU se comparte con los
+  encoders de OBS: un peldaño menos ante un aviso temprano de latencia (veto de 5 minutos), vuelta a
+  MJPEG al momento ante un frame que OBS se salta por retraso de codificación, un error de un
+  encoder de OBS o cualquier error del hardware, y la sesión NVENC cedida a una salida que arranca.
+- **Dimensionado**: clase de almacenamiento fija por ciclo (12x cuando el códec por hardware ya ha
+  funcionado en la sesión, 2,4 veces los frames cuando falta RAM; el 5x de MJPEG en el primer ciclo
+  de la sesión), el buffer limitado a la resolución de los encoders del stream cuando todos
+  reescalan por debajo de la salida, bloques de arena de 8 MiB con uno de repuesto y como mucho dos
+  hilos de slice por contexto MJPEG.
+- **Soporte**: ajuste oculto `buffer_codec` (`"auto"` o `"mjpeg"`), `codec=` en `pipeline check`,
+  una línea `storage codec check` y `PipelineHealth` v2. Sin UI, textos ni avisos de RAM nuevos.
+- **Seguridad y licencias**: sin Quick Sync en un OBS elevado, `get_pipeline_state` limitado al
+  tamaño de la estructura de quien llama, `LICENSE-ffmpeg.txt` incluido y una comprobación LGPL de
+  la build de FFmpeg en CI.
+- **Tests**: 23 suites en CI (estrés y pruebas adversariales con un códec inter-frame falso, la
+  política del códec), más el códec por hardware sobre el FFmpeg real en builds locales de Windows.
+
+## Siguiente
+- **Un cliente HTTP en macOS y Linux** (previsto como v0.6.1, no publicado), para que el inicio de
+  sesión (y con él Activar delay), Trigi y los reportes desde OBS funcionen también allí, con el
+  inicio de sesión guardado en el llavero o el almacén de secretos del sistema. Hasta entonces, las
+  funciones de cuenta del plugin son solo para Windows.
+- **Validar el códec de almacenamiento por hardware en NVIDIA dentro de un OBS real**: NVENC
+  compartido con el encoder del stream (y Enhanced Broadcasting) sin ningún frame saltado por
+  retraso de codificación, NVDEC, la VRAM que ocupa y los bytes por frame frente a las cifras de
+  AMD. También Quick Sync, en hardware Intel.
+- **Después: copia cero en la GPU.** Codificar directamente desde la textura de OBS y decodificar a
+  una textura D3D11, para que desaparezcan las copias de cada frame en la CPU (lectura, frames sin
+  comprimir, la reserva de decodificados): según nuestra estimación, otros 50–120 MB menos y menos
+  trabajo en el hilo gráfico de OBS. Tiene más riesgo (compartir el dispositivo D3D11 de OBS con
+  FFmpeg entre hilos), así que va después del cliente HTTP.
 - **Deduplicar las capturas por la hora de frame de OBS** (`obs_get_video_frame_time()`) en vez de
   por una celda de reloj por intervalo de frame: exactamente una captura por frame de OBS, sin
   depender de la fase de la celda, para que el jitter del render no meta dos renders en una celda y se
@@ -168,18 +206,22 @@ overloaded") en cuanto se activaba el delay con un lienzo 2560x1440 y una salida
   misma proyección.
 - **Rediseño del delay a nivel de output** — el siguiente gran paso de arquitectura; ver "Más
   adelante" abajo para lo que implica y por qué no ha empezado.
-- Verificar la v0.6.0 en directo: salida 1440p60 y la degradación dentro de una sesión real de OBS
-  (las cifras de arriba salen de benchmarks fuera de OBS en CPU y GPU de AMD), y la alineación A/V con
-  un reloj y una palmada.
+- Verificar la v0.6.0 y la v0.7.0 en directo: salida 1440p60 y la degradación dentro de una sesión
+  real de OBS (las cifras de arriba salen de benchmarks fuera de OBS en CPU y GPU de AMD), y la
+  alineación A/V con un reloj y una palmada.
 - Presets de delay guardados (p. ej. "Delay corto 5s", "Delay largo 30s"), seleccionables desde el
   dock y desde hotkeys adicionales.
 - **Verificación en directo** de macOS/Linux — ambos ya compilan en verde en CI; esto trata de
   ejecutar y confirmar el plugin de verdad en esas plataformas, no de trabajo nuevo de build.
-- Revisar `kAssumedCompressionRatio = 5.0` con las cifras de `ratio` y de la arena de la línea
-  `pipeline check` de más sesiones y juegos. Desde la v0.6.0 solo decide cuántos segundos caben en el
-  presupuesto, así que subirlo daría duración, no memoria residente.
+- Revisar los ratios de compresión supuestos (5x para MJPEG, 12x para el códec por hardware desde la
+  v0.7.0) con las cifras de `ratio` y de la arena de la línea `pipeline check` de más sesiones y
+  juegos. Solo deciden cuántos segundos caben en el presupuesto, así que subirlos daría duración, no
+  memoria residente.
 
-## v0.7.0 (pausado — acotado, sin empezar, 2026-09-08)
+## Replay Buffer en directo real (pausado — acotado, sin empezar, 2026-09-08)
+Se planteó como v0.7.0 cuando se acotó; la v0.7.0 acabó siendo la versión de RAM de arriba, y esto
+no tiene número de versión hasta que se retome.
+
 Objetivo: un Replay Buffer "en directo real", propio de Trigglow, guardado con su propio hotkey (el
 hotkey nativo "Save Replay" de OBS no se puede redirigir a un output propio, así que esto nunca iba a
 reutilizarlo) que siga funcionando mientras el modo buffer está Active, en vez de capturar la escena
@@ -220,15 +262,16 @@ antes de escribir código — ver abajo.
 
 ## Más adelante
 - **Rediseño del delay a nivel de output** (estudiado el 2026-09-08, no iniciado). `obsdelay.com`
-  bufferiza el bitstream ya codificado y lo reenvía mediante su propio sender RTMP
-  multi-destino, de modo que Programa, el cambio de escena, el Replay Buffer y la grabación nunca
-  se tocan — con una huella de memoria mucho menor que nuestro ring de frames NV12/MJPEG, ya que un
-  bitstream comprimido es mucho más pequeño que frames decodificados. Es arquitectónicamente la
-  solución más limpia al objetivo de v0.7.0 Y al cambio de escena sin recarga (ver "Fuera de
-  alcance por ahora" abajo) a la vez, pero implica sustituir el output RTMP nativo de OBS por uno
-  propio (reconexión, manejo de keyframes, envío multi-destino) — varias sesiones de trabajo y un
-  riesgo notablemente mayor. Solo merece priorizarse si el fix más acotado de v0.7.0 no llega a
-  cubrir el uso real una vez entregado.
+  bufferiza el bitstream ya codificado y lo reenvía mediante su propio sender RTMP multi-destino, de
+  modo que Programa, el cambio de escena, el Replay Buffer y la grabación nunca se tocan — con una
+  huella de memoria menor que nuestro ring de frames, ya que el bitstream del propio stream es
+  todavía más pequeño que los frames MJPEG (o, desde la v0.7.0, HEVC de alta calidad) del buffer. Es
+  arquitectónicamente la solución más limpia al objetivo del Replay Buffer en directo real Y al
+  cambio de escena sin recarga (ver "Fuera de alcance por ahora" abajo) a la vez, pero implica
+  sustituir el output RTMP nativo de OBS por uno propio (reconexión, manejo de keyframes, envío
+  multi-destino) — varias sesiones de trabajo y un riesgo notablemente mayor. Solo merece
+  priorizarse si el fix más acotado del Replay Buffer no llega a cubrir el uso real una vez
+  entregado.
 - Instaladores firmados para Windows/macOS (el instalador de Windows actual no está firmado —
   Early Access).
 - Un plugin de Stream Deck propio de Trigglow, además del flujo de hotkey nativa (que se mantiene

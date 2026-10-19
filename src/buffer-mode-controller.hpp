@@ -154,11 +154,13 @@ public:
 	// minResolutionHeight) would actually achieve -- see
 	// ObsFrontendBridge::EstimateBufferFit. For live-updating the dock as
 	// the user adjusts either control, before Enable() has even run once.
+	// Informational only (no warning of its own): with the delay on, the
+	// cycle's storage class; before Enable, the one the next cycle would get.
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds,
 							      uint32_t minResolutionHeight) const
 	{
 		return bridge_.EstimateBufferFit(status_.liveSceneName, requestedDelaySeconds, minResolutionHeight,
-						 bufferOutputCap_);
+						 bufferOutputCap_, PlannedRingClass());
 	}
 
 	// Health of the video buffer's pipeline (v0.6.0, design B.8): the
@@ -175,6 +177,16 @@ public:
 	// user pressed Disable before the timer fired).
 	void OnFillTimerElapsed();
 
+	// v0.7.0: once a second while Filling/Active (the dock's health timer),
+	// UI thread: pushes OBS's active video encoders to the video filter again
+	// when they changed without a frontend event (outputs other plugins
+	// start) and watches those outputs for encoder errors, reports the
+	// frames OBS's encoders' own mixes skipped for encoding lag to the video
+	// filter's storage codec policy, and lets the buffer's hardware encoder
+	// come back once an output that made it yield has started (3 s after, or
+	// 10 s after the yield at the latest). Never blocks on the graphics thread.
+	void Tick();
+
 	// Persistence, mirroring DelayController::LoadSettings/SaveSettings.
 	// Deliberately never auto-Enable()s on load, same reasoning as
 	// DelayController: this creates/modifies OBS scenes, which should never
@@ -186,10 +198,13 @@ public:
 	// like v0.5.0). Only read at load, so changing it needs an OBS restart.
 	// codecWorkers is the hidden "codec_workers" key (v0.6.0 kill switch, same
 	// rules): false runs the MJPEG encode/decode on OBS's graphics thread, as
-	// before v0.6.0, instead of on worker threads.
+	// before v0.6.0, instead of on worker threads. bufferCodecAuto is the
+	// hidden "buffer_codec" key (v0.7.0): false ("mjpeg") keeps the buffer on
+	// MJPEG instead of a hardware inter-frame codec. codec_workers=false wins
+	// over it (the hardware codec needs the workers).
 	void LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
 			  std::string loadingSceneName, bool showOverlay = true, uint32_t overlayCorner = 0,
-			  bool bufferOutputCap = true, bool codecWorkers = true);
+			  bool bufferOutputCap = true, bool codecWorkers = true, bool bufferCodecAuto = true);
 	struct SettingsSnapshot {
 		uint32_t delaySeconds;
 		uint32_t minResolutionHeight;
@@ -199,6 +214,7 @@ public:
 		uint32_t overlayCorner;
 		bool bufferOutputCap;
 		bool codecWorkers;
+		bool bufferCodecAuto;
 	};
 	SettingsSnapshot SaveSettings() const;
 
@@ -309,6 +325,38 @@ private:
 	// frontend events: all on the UI thread, which is where
 	// ObsFrontendBridge::ListActiveVideoEncoders() must run.
 	void WarnAboutEncodersAboveBuffer();
+
+	// v0.7.0 storage codec: OBS's active video encoders (one listing), to the
+	// video filter: their families (PushObsEncoders()) and the ceiling they
+	// put on the buffer (PushEncoderCeiling()). At Enable (before the filter
+	// is switched on), at every output start or stop, and from Tick() when
+	// they changed without a frontend event (force false: only then).
+	void RefreshObsEncoders(bool force);
+	std::vector<std::string> encoderSignature_; // What RefreshObsEncoders() pushed last.
+	void PushObsEncoders(const std::vector<ActiveVideoEncoder> &active);
+	// v0.7.0: the ceiling OBS's main-canvas encoders put on the buffer
+	// (encodercheck::EncoderCeiling(); Enhanced Broadcasting's tracks only
+	// exist after Go Live).
+	void PushEncoderCeiling(const std::vector<ActiveVideoEncoder> &active);
+	uint32_t lastCeilingWidth_ = UINT32_MAX; // What was pushed (UINT32_MAX: nothing yet this cycle).
+	uint32_t lastCeilingHeight_ = UINT32_MAX;
+	// The ring class of the cycle running, or (Inactive) of the next one:
+	// inter only with buffer_codec auto, the codec workers, and a hardware
+	// codec that passed its probe this session; before that (the first Enable
+	// of a session) intra with a GOP of slack, in case the hardware takes
+	// over during the cycle; plain intra when it can't. Invariant I9
+	// (storage-codec.hpp): the class never changes within a cycle.
+	bufferfit::RingClass PlannedRingClass() const;
+	bufferfit::RingClass NextCycleRingClass() const;
+	bufferfit::RingClass cycleRingClass_ = bufferfit::RingClass::Intra; // Fixed at Enable(), pushed to the filter.
+	bool bufferCodecAuto_ = true; // Hidden buffer_codec setting, see LoadSettings().
+	// An output is starting: the filter yields an NVENC session it may hold,
+	// waiting up to 100 ms only near the old session limits (OBS's NVENC
+	// encoders + the starting one + the buffer's >= 4).
+	void YieldForOutputStart();
+	bool yieldPending_ = false;
+	uint64_t yieldSinceNs_ = 0;
+	uint64_t outputStartedNs_ = 0; // An output started since the yield (0 = not yet).
 
 	// The effective delay lives in status_.effectiveDelaySeconds (the one value
 	// audio, video, the dock and the overlay share), not in a member here.

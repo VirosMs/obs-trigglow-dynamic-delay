@@ -1,13 +1,18 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
 # src/encoder-check.*, and since v0.6.0 src/ui-tokens.*, src/auto-names.*,
 # src/overlay-layout.*, src/frame-arena.*, src/frame-ring.*,
-# src/degradation-policy.*, a stress test of src/codec-pipeline.*, the
+# src/degradation-policy.*, a stress test of src/codec-pipeline.*, since
+# v0.7.0 the storage codec interface (src/storage-codec.hpp, src/annexb.*,
+# src/storage-codec-select.*), the storage codec policy
+# (src/storage-codec-policy.*) and a stress test of the pipeline with a fake
+# inter-frame codec (tests/fake-gop-codec.hpp), the
 # background jobs' lifecycle (src/cancel-token.*, src/background-tasks.*), and
 # the account, Trigi and ticket client: src/json.*, src/log-redact.*,
 # src/chat-text.*, src/support-diagnostics.*, src/api-client.*,
 # src/token-store.*, src/auth-client.*, src/support-client.*) and the support
-# dialog's Trigi states (src/trigi-states.*). No libobs, no Qt, no FFmpeg, no
-# test framework, no network (a scripted transport stands in for it). Two
+# dialog's Trigi states (src/trigi-states.*). No libobs, no Qt, no FFmpeg (but
+# for hw_storage_codec_tests, Windows only, when .deps has the plugin's FFmpeg),
+# no test framework, no network (a scripted transport stands in for it). Two
 # ways to build them:
 #
 # 1. From the plugin's own CMakeLists.txt (same compiler flags as the plugin):
@@ -96,6 +101,7 @@ add_executable(
   "${_src}/frame-ring.hpp"
   "${_src}/frame-arena.cpp"
   "${_src}/frame-arena.hpp"
+  "${_src}/storage-codec.hpp"
 )
 target_include_directories(frame_ring_tests PRIVATE "${_src}")
 set_target_properties(frame_ring_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
@@ -114,10 +120,8 @@ target_include_directories(degradation_policy_tests PRIVATE "${_src}")
 set_target_properties(degradation_policy_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME degradation_policy_tests COMMAND degradation_policy_tests)
 
-add_executable(
-  pipeline_stress_tests
-  pipeline_stress_tests.cpp
-  check.hpp
+set(
+  _pipeline_sources
   "${_src}/codec-pipeline.cpp"
   "${_src}/codec-pipeline.hpp"
   "${_src}/frame-ring.cpp"
@@ -126,11 +130,104 @@ add_executable(
   "${_src}/frame-arena.hpp"
   "${_src}/perf-stats.cpp"
   "${_src}/perf-stats.hpp"
+  "${_src}/storage-codec.hpp"
 )
+
+add_executable(pipeline_stress_tests pipeline_stress_tests.cpp check.hpp ${_pipeline_sources})
 target_include_directories(pipeline_stress_tests PRIVATE "${_src}")
 target_link_libraries(pipeline_stress_tests PRIVATE Threads::Threads)
 set_target_properties(pipeline_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME pipeline_stress_tests COMMAND pipeline_stress_tests)
+
+# v0.7.0 storage codecs: the interface's pure parts (in-flight queue, chain
+# tracker, raw codec) with the fake inter-frame codec, and the pipeline's
+# stress test with it (frames in flight, GOPs, chain breaks, mixed codecs).
+add_executable(
+  storage_codec_tests
+  storage_codec_tests.cpp
+  check.hpp
+  fake-gop-codec.hpp
+  "${_src}/storage-codec.hpp"
+  "${_src}/annexb.cpp"
+  "${_src}/annexb.hpp"
+  "${_src}/storage-codec-select.cpp"
+  "${_src}/storage-codec-select.hpp"
+)
+target_include_directories(storage_codec_tests PRIVATE "${_src}")
+set_target_properties(storage_codec_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME storage_codec_tests COMMAND storage_codec_tests)
+
+# v0.7.0 storage codec policy: evacuation to MJPEG, early warning, veto, yields.
+add_executable(
+  storage_policy_tests
+  storage_policy_tests.cpp
+  check.hpp
+  "${_src}/storage-codec-policy.cpp"
+  "${_src}/storage-codec-policy.hpp"
+)
+target_include_directories(storage_policy_tests PRIVATE "${_src}")
+set_target_properties(storage_policy_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME storage_policy_tests COMMAND storage_policy_tests)
+
+# v0.7.0 hardware storage codec (src/hw-storage-codec.*) over the real FFmpeg,
+# its failures injected so it needs no particular GPU. Windows only, and only
+# where the plugin's FFmpeg is already extracted in .deps (a local build of the
+# plugin): CI's unit-tests job downloads no dependencies and skips it.
+if(WIN32)
+  file(GLOB _ffmpeg_dirs "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/ffmpeg-windows-x64/*")
+  list(LENGTH _ffmpeg_dirs _ffmpeg_count)
+  if(_ffmpeg_count EQUAL 1)
+    list(GET _ffmpeg_dirs 0 _ffmpeg)
+    add_executable(
+      hw_storage_codec_tests
+      hw_storage_codec_tests.cpp
+      check.hpp
+      "${_src}/hw-storage-codec.cpp"
+      "${_src}/hw-storage-codec.hpp"
+      "${_src}/annexb.cpp"
+      "${_src}/annexb.hpp"
+      "${_src}/storage-codec-select.cpp"
+      "${_src}/storage-codec-select.hpp"
+      "${_src}/hardware-info.cpp"
+      "${_src}/hardware-info.hpp"
+      "${_src}/buffer-fit.cpp"
+      "${_src}/buffer-fit.hpp"
+    )
+    target_include_directories(hw_storage_codec_tests PRIVATE "${_src}" "${_ffmpeg}/include")
+    target_compile_definitions(hw_storage_codec_tests PRIVATE TRIGGLOW_HAVE_FFMPEG TRIGGLOW_HAVE_HW_STORAGE)
+    target_link_libraries(hw_storage_codec_tests PRIVATE "${_ffmpeg}/lib/avcodec.lib" "${_ffmpeg}/lib/avutil.lib" dxgi)
+    set_target_properties(hw_storage_codec_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    add_custom_command(
+      TARGET hw_storage_codec_tests
+      POST_BUILD
+      COMMAND
+        "${CMAKE_COMMAND}" -E copy_if_different "${_ffmpeg}/bin/avcodec-63.dll" "${_ffmpeg}/bin/avutil-61.dll"
+        "${_ffmpeg}/bin/swresample-7.dll" "$<TARGET_FILE_DIR:hw_storage_codec_tests>"
+    )
+    add_test(NAME hw_storage_codec_tests COMMAND hw_storage_codec_tests)
+  endif()
+endif()
+
+add_executable(
+  pipeline_gop_stress_tests
+  pipeline_gop_stress_tests.cpp
+  check.hpp
+  fake-gop-codec.hpp
+  ${_pipeline_sources}
+)
+target_include_directories(pipeline_gop_stress_tests PRIVATE "${_src}")
+target_link_libraries(pipeline_gop_stress_tests PRIVATE Threads::Threads)
+set_target_properties(pipeline_gop_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME pipeline_gop_stress_tests COMMAND pipeline_gop_stress_tests)
+
+# v0.7.0 adversarial tests of the pipeline's hardware path (one edge each:
+# evacuations inside a GOP, packet losses, Disable and shutdown during a
+# setup, yields, render pauses, a slow software decode, a tight arena).
+add_executable(adversarial_gop_tests adversarial_gop_tests.cpp check.hpp fake-gop-codec.hpp ${_pipeline_sources})
+target_include_directories(adversarial_gop_tests PRIVATE "${_src}")
+target_link_libraries(adversarial_gop_tests PRIVATE Threads::Threads)
+set_target_properties(adversarial_gop_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME adversarial_gop_tests COMMAND adversarial_gop_tests)
 
 # Lifecycle of the plugin's background jobs (src/cancel-token.*,
 # src/background-tasks.*): cancellation, results only for owners still alive,

@@ -18,7 +18,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Unit tests for trigglow::FrameRing (src/frame-ring.hpp): the slot state
 // machine, generations, reservation failures, age-based selection with
-// dropped slots in the way, decode-ahead, and payload freeing.
+// dropped slots in the way, decode-ahead, and payload freeing; since v0.7.0
+// the per-packet storage metadata (codec, key, chain, seq) with several codecs
+// in one ring, ringselect::Decodable(), PlanDecodeStart() and
+// ChooseDecodeStart() (invariants I2 and I5, storage-codec.hpp).
 
 #include "check.hpp"
 #include "frame-ring.hpp"
@@ -30,6 +33,7 @@ using trigglow::FrameArena;
 using trigglow::FrameRing;
 using trigglow::SlotState;
 namespace ringselect = trigglow::ringselect;
+namespace storage = trigglow::storage;
 
 namespace {
 
@@ -54,7 +58,7 @@ bool PublishTagged(FrameRing &ring, const FrameRing::Reservation &reservation, u
 	payload.bytes = 100;
 	payload.width = 4;
 	payload.height = 2;
-	payload.compressed = true;
+	payload.codec = trigglow::storage::CodecId::Mjpeg;
 	if (!ring.Publish(reservation.index, reservation.generation, payload)) {
 		ring.Arena().Free(payload.allocation);
 		return false;
@@ -312,6 +316,292 @@ void TestTags()
 	CHECK_EQ(ring.Due(125).tag, 7u);
 }
 
+// A stored packet's metadata, as an encoder publishes it.
+struct Meta {
+	storage::CodecId codec = storage::CodecId::Hevc;
+	bool key = false;
+	uint32_t chain = 0;
+	uint32_t seq = 0;
+};
+
+bool PublishMeta(FrameRing &ring, const FrameRing::Reservation &reservation, const Meta &meta)
+{
+	if (!ring.BeginEncode(reservation.index, reservation.generation))
+		return false;
+	FrameRing::Payload payload;
+	payload.allocation = ring.Arena().Allocate(64);
+	payload.bytes = 64;
+	payload.width = 4;
+	payload.height = 2;
+	payload.codec = meta.codec;
+	payload.key = meta.key;
+	payload.chain = meta.chain;
+	payload.seq = meta.seq;
+	if (!ring.Publish(reservation.index, reservation.generation, payload)) {
+		ring.Arena().Free(payload.allocation);
+		return false;
+	}
+	return true;
+}
+
+// Codec, key, chain and seq travel with the payload into every view of the
+// slot (decode, display, Due(), Snapshot()); one ring holds several codecs; a
+// reused slot starts over from the defaults (raw, key, no chain).
+void TestPayloadMetadata()
+{
+	testcheck::g_currentTest = "payload metadata";
+	FrameRing ring(8, ArenaConfig());
+	const Meta metas[5] = {{storage::CodecId::Hevc, true, 7, 0},
+			       {storage::CodecId::Hevc, false, 7, 1},
+			       {storage::CodecId::Mjpeg, true, 8, 0},
+			       {storage::CodecId::Raw, true, storage::kNoChain, 0},
+			       {storage::CodecId::H264, false, 9, 41}};
+	std::vector<FrameRing::Reservation> r(5);
+	for (int i = 0; i < 5; ++i) {
+		CHECK(ring.Reserve(1000 + i * kDelta, r[i]));
+		CHECK(PublishMeta(ring, r[i], metas[i]));
+	}
+	for (int i = 0; i < 5; ++i) {
+		FrameRing::ReadView view;
+		CHECK(ring.PinForDisplay(1000 + i * kDelta, 0, view));
+		CHECK(view.codec == metas[i].codec && view.key == metas[i].key && view.chain == metas[i].chain &&
+		      view.seq == metas[i].seq);
+		ring.Unpin(view);
+		const FrameRing::DueSlot due = ring.Due(1000 + i * kDelta);
+		CHECK(due.state == SlotState::Ready && due.codec == metas[i].codec && due.key == metas[i].key &&
+		      due.chain == metas[i].chain && due.seq == metas[i].seq);
+	}
+	FrameRing::ReadView view;
+	CHECK(ring.PinNextForDecode(1000, 1010, UINT64_MAX, 1000, view));
+	CHECK(view.captureNs == 1010 && view.codec == storage::CodecId::Hevc && !view.key && view.seq == 1);
+	ring.Unpin(view);
+	const std::vector<FrameRing::SlotSummary> snap = ring.Snapshot();
+	CHECK_EQ(snap.size(), 5u);
+	for (size_t i = 0; i < snap.size() && i < 5; ++i)
+		CHECK(snap[i].state == SlotState::Ready && snap[i].codec == metas[i].codec &&
+		      snap[i].chain == metas[i].chain && snap[i].seq == metas[i].seq &&
+		      snap[i].captureNs == 1000 + i * kDelta);
+	// A plain raw payload (what v0.6.0 called compressed = false): the defaults.
+	const FrameRing::Payload plain;
+	CHECK(plain.codec == storage::CodecId::Raw && plain.key && plain.chain == storage::kNoChain);
+	// Wrap around: a slot reused by Reserve() reports nothing of its old packet.
+	for (int i = 0; i < 8; ++i) {
+		FrameRing::Reservation w;
+		CHECK(ring.Reserve(2000 + i * kDelta, w));
+	}
+	const FrameRing::DueSlot reused = ring.Due(2000);
+	CHECK(reused.state == SlotState::Reserved && reused.codec == storage::CodecId::Raw && reused.key &&
+	      reused.chain == storage::kNoChain);
+}
+
+// Capture times only grow from the oldest slot to the newest with payloads
+// of several codecs published out of order (two encoders, one of them with
+// frames in flight), so the binary searches stay valid.
+void TestMixedCodecsMonotonic()
+{
+	testcheck::g_currentTest = "mixed codecs keep capture order";
+	FrameRing ring(32, ArenaConfig());
+	std::vector<FrameRing::Reservation> r(32);
+	for (int i = 0; i < 32; ++i)
+		CHECK(ring.Reserve(5000 + i * kDelta, r[i]));
+	// Publish odd slots (MJPEG) first, then the even ones (HEVC) late.
+	for (int i = 1; i < 32; i += 2)
+		CHECK(PublishMeta(ring, r[i], {storage::CodecId::Mjpeg, true, 100, static_cast<uint32_t>(i / 2)}));
+	for (int i = 0; i < 32; i += 2)
+		CHECK(PublishMeta(ring, r[i], {storage::CodecId::Hevc, i % 8 == 0, 200, static_cast<uint32_t>(i / 2)}));
+	const std::vector<FrameRing::SlotSummary> snap = ring.Snapshot();
+	bool increasing = true;
+	for (size_t i = 1; i < snap.size(); ++i)
+		increasing = increasing && snap[i - 1].captureNs < snap[i].captureNs;
+	CHECK(increasing);
+	FrameRing::ReadView view;
+	CHECK(ring.PinForDisplay(5000 + 17 * kDelta + 3, 0, view));
+	CHECK(view.captureNs == 5000 + 17 * kDelta && view.codec == storage::CodecId::Mjpeg);
+	ring.Unpin(view);
+}
+
+// The decoder's rule (invariant I2): a key always; a P-frame only right
+// after its reference -- same chain, next seq.
+void TestDecodable()
+{
+	testcheck::g_currentTest = "decodable";
+	ringselect::ChainCursor none;
+	CHECK(ringselect::Decodable(true, 5, 9, none));   // A key: always.
+	CHECK(!ringselect::Decodable(false, 5, 1, none)); // A P-frame with nothing decoded yet.
+	ringselect::ChainCursor at{true, 5, 3};
+	CHECK(ringselect::Decodable(false, 5, 4, at));  // The next one.
+	CHECK(!ringselect::Decodable(false, 5, 5, at)); // A gap (4 lost).
+	CHECK(!ringselect::Decodable(false, 5, 3, at)); // The same one again.
+	CHECK(!ringselect::Decodable(false, 6, 4, at)); // Another chain.
+	CHECK(ringselect::Decodable(true, 6, 0, at));   // Another chain's key.
+	ringselect::ChainCursor wrap{true, 5, UINT32_MAX};
+	CHECK(ringselect::Decodable(false, 5, 0, wrap)); // seq wraps around.
+}
+
+// One position of a fake ring for PlanDecodeStart(): Ready with its packet's
+// metadata, or not Ready (dropped before its encode, still encoding).
+ringselect::ChainSlot K(uint32_t chain, uint32_t seq)
+{
+	return {true, true, chain, seq};
+}
+ringselect::ChainSlot P(uint32_t chain, uint32_t seq)
+{
+	return {true, false, chain, seq};
+}
+ringselect::ChainSlot D()
+{
+	return {false, false, 0, 0};
+}
+
+ringselect::DecodeStart Plan(const std::vector<ringselect::ChainSlot> &slots, size_t due)
+{
+	return ringselect::PlanDecodeStart(slots.size(), due, [&](size_t p) { return slots[p]; });
+}
+
+void TestPlanDecodeStart()
+{
+	testcheck::g_currentTest = "plan decode start";
+	// The due frame is a key: nothing to catch up (raw and MJPEG, always).
+	ringselect::DecodeStart plan = Plan({K(1, 0), K(2, 0), K(3, 0)}, 2);
+	CHECK(plan.found && plan.keyPos == 2 && plan.catchUp == 0);
+	CHECK_EQ(plan.nextKeyPos, ringselect::kNoPosition);
+	// Its key 3 frames back: decode 3 unshown (K, P1, P2), then show P3.
+	plan = Plan({K(7, 0), P(7, 1), P(7, 2), P(7, 3), P(7, 4), K(7, 5)}, 3);
+	CHECK(plan.found && plan.keyPos == 0 && plan.catchUp == 3);
+	CHECK_EQ(plan.nextKeyPos, 5u);
+	// Slots dropped before their encode (no seq) aren't gaps.
+	plan = Plan({K(7, 0), D(), P(7, 1), D(), D(), P(7, 2)}, 5);
+	CHECK(plan.found && plan.keyPos == 0 && plan.catchUp == 2);
+	// A packet lost after its encode (seq 2 never stored): wait for the next key.
+	plan = Plan({K(7, 0), P(7, 1), D(), P(7, 3), K(7, 4)}, 3);
+	CHECK(!plan.found);
+	CHECK_EQ(plan.nextKeyPos, 4u);
+	// Its key already overwritten (the oldest slot is a P-frame): not found.
+	plan = Plan({P(7, 5), P(7, 6), P(7, 7)}, 2);
+	CHECK(!plan.found);
+	// All MJPEG (every frame its own key): always the due frame itself.
+	plan = Plan({K(10, 0), K(10, 1), K(11, 0), K(10, 2)}, 3);
+	CHECK(plan.found && plan.keyPos == 3 && plan.catchUp == 0);
+	// HEVC -> MJPEG fallback -> HEVC again: the new chain starts on its own key.
+	plan = Plan({K(1, 0), P(1, 1), K(2, 0), K(3, 0), K(4, 0), P(4, 1), P(4, 2)}, 6);
+	CHECK(plan.found && plan.keyPos == 4 && plan.catchUp == 2);
+	// A Ready frame of another chain right before the due P-frame: its chain
+	// was cut there, so no key can be reached (the encoder never stores that).
+	plan = Plan({K(1, 0), P(1, 1), K(2, 0), P(1, 2)}, 3);
+	CHECK(!plan.found);
+	// The due position not Ready, or past the end: nothing.
+	CHECK(!Plan({K(1, 0), D()}, 1).found);
+	CHECK(!Plan({K(1, 0)}, 3).found);
+	// v0.7.0: an intra frame of another codec between the key and the due
+	// P-frame (a second MJPEG context while the hardware encoder took over)
+	// isn't part of the chain: skipped, not decoded, not a gap.
+	auto hevc = [](ringselect::ChainSlot slot) {
+		slot.codec = storage::CodecId::Hevc;
+		return slot;
+	};
+	auto mjpeg = [](ringselect::ChainSlot slot) {
+		slot.codec = storage::CodecId::Mjpeg;
+		return slot;
+	};
+	plan = Plan({hevc(K(1, 0)), hevc(P(1, 1)), mjpeg(K(2, 0)), hevc(P(1, 2)), mjpeg(K(3, 0)), hevc(P(1, 3))}, 5);
+	CHECK(plan.found && plan.keyPos == 0 && plan.catchUp == 3);
+	CHECK_EQ(plan.nextKeyPos, ringselect::kNoPosition);
+	// The MJPEG frame after the due one is the next key (of any codec).
+	plan = Plan({hevc(K(1, 0)), hevc(P(1, 1)), hevc(P(1, 2)), mjpeg(K(2, 0))}, 2);
+	CHECK(plan.found && plan.catchUp == 2);
+	CHECK_EQ(plan.nextKeyPos, 3u);
+	// Another chain of the same codec in between still cuts it.
+	plan = Plan({hevc(K(1, 0)), hevc(K(4, 0)), hevc(P(1, 1))}, 2);
+	CHECK(!plan.found);
+}
+
+void TestChooseDecodeStart()
+{
+	testcheck::g_currentTest = "choose decode start";
+	constexpr uint64_t kMs = 1000000;
+	ringselect::DecodeStart plan;
+	plan.found = true;
+	plan.keyPos = 0;
+	plan.catchUp = 3;
+	plan.nextKeyPos = 5;
+	const size_t due = 3;
+	// 3 decodes of 4 ms (12 ms) vs. the next key 2 frames away (33 ms at 60 fps): catch up.
+	CHECK(ringselect::ChooseDecodeStart(plan, due, 4 * kMs, 16666667) == ringselect::StartChoice::CatchUp);
+	// 3 decodes of 20 ms (60 ms) vs. 33 ms: wait for the key.
+	CHECK(ringselect::ChooseDecodeStart(plan, due, 20 * kMs, 16666667) == ringselect::StartChoice::WaitForKey);
+	// No key in sight: catch up whatever it costs.
+	plan.nextKeyPos = ringselect::kNoPosition;
+	CHECK(ringselect::ChooseDecodeStart(plan, due, 20 * kMs, 16666667) == ringselect::StartChoice::CatchUp);
+	// Nothing to catch up: the due frame is its own key.
+	plan.catchUp = 0;
+	plan.nextKeyPos = 5;
+	CHECK(ringselect::ChooseDecodeStart(plan, due, 20 * kMs, 16666667) == ringselect::StartChoice::CatchUp);
+	// No key to start from: wait.
+	plan.found = false;
+	CHECK(ringselect::ChooseDecodeStart(plan, due, 1, 16666667) == ringselect::StartChoice::WaitForKey);
+}
+
+// FrameRing::PlanDecodeStart() on a real ring with GOP packets: the frame
+// shown for a target, its key, the catch-up count, the next key, and the
+// choice -- across dropped slots and a chain change.
+void TestRingPlan()
+{
+	testcheck::g_currentTest = "ring plan";
+	FrameRing ring(16, ArenaConfig());
+	std::vector<FrameRing::Reservation> r(12);
+	for (int i = 0; i < 12; ++i)
+		CHECK(ring.Reserve(1000 + i * kDelta, r[i]));
+	// 0:K(5,0) 1:P(5,1) 2:dropped 3:P(5,2) 4:P(5,3) 5:K(5,4) 6:P(5,5)
+	// 7:K(6,0) MJPEG 8:K(9,0) 9:P(9,1) 10:P(9,2) 11:still encoding.
+	const struct {
+		int i;
+		Meta meta;
+	} published[] = {{0, {storage::CodecId::Hevc, true, 5, 0}},  {1, {storage::CodecId::Hevc, false, 5, 1}},
+			 {3, {storage::CodecId::Hevc, false, 5, 2}}, {4, {storage::CodecId::Hevc, false, 5, 3}},
+			 {5, {storage::CodecId::Hevc, true, 5, 4}},  {6, {storage::CodecId::Hevc, false, 5, 5}},
+			 {7, {storage::CodecId::Mjpeg, true, 6, 0}}, {8, {storage::CodecId::Hevc, true, 9, 0}},
+			 {9, {storage::CodecId::Hevc, false, 9, 1}}, {10, {storage::CodecId::Hevc, false, 9, 2}}};
+	for (const auto &p : published)
+		CHECK(PublishMeta(ring, r[p.i], p.meta));
+	CHECK(ring.MarkDropped(r[2].index, r[2].generation));
+	CHECK(ring.BeginEncode(r[11].index, r[11].generation));
+
+	constexpr uint64_t kInterval = kDelta;
+	// Due 4 (P(5,3)): from the key at 0, 3 frames unshown (0, 1, 3); next key at 5.
+	FrameRing::DecodePlan plan = ring.PlanDecodeStart(1000 + 4 * kDelta + 5, 4, 1, kInterval);
+	CHECK(plan.due && plan.dueNs == 1040 && plan.found && plan.keyNs == 1000 && plan.catchUp == 3);
+	CHECK(plan.nextKey && plan.framesToNextKey == 1);
+	// 3 decodes of 1 ns vs. 1 frame: catch up; of 20 ns each: wait for the key.
+	CHECK(plan.choice == ringselect::StartChoice::CatchUp);
+	plan = ring.PlanDecodeStart(1000 + 4 * kDelta + 5, 4, 20, kInterval);
+	CHECK(plan.choice == ringselect::StartChoice::WaitForKey);
+	// Due 2 is dropped: the frame shown is 1, P(5,1), one back from its key.
+	plan = ring.PlanDecodeStart(1000 + 2 * kDelta, 4, 1, kInterval);
+	CHECK(plan.due && plan.dueNs == 1010 && plan.found && plan.keyNs == 1000 && plan.catchUp == 1);
+	// Due 7 (MJPEG): its own key.
+	plan = ring.PlanDecodeStart(1000 + 7 * kDelta, 4, 1, kInterval);
+	CHECK(plan.found && plan.keyNs == 1070 && plan.catchUp == 0 && plan.choice == ringselect::StartChoice::CatchUp);
+	// Due 10 (P(9,2)): key at 8, past the MJPEG frame; slot 11 still encoding.
+	plan = ring.PlanDecodeStart(1000 + 11 * kDelta, 4, 1, kInterval);
+	CHECK(plan.due && plan.dueNs == 1100 && plan.found && plan.keyNs == 1080 && plan.catchUp == 2);
+	CHECK(!plan.nextKey);
+	// Before the oldest frame: nothing due.
+	CHECK(!ring.PlanDecodeStart(999, 4, 1, kInterval).due);
+	CHECK_EQ(ring.GetCounts().pinned, 0u);
+
+	// PinNextInRange(): the catch-up walk, Ready slots only, inside (after, until].
+	FrameRing::ReadView view;
+	CHECK(ring.PinNextInRange(999, 1040, view) && view.captureNs == 1000);
+	ring.Unpin(view);
+	CHECK(ring.PinNextInRange(1010, 1040, view) && view.captureNs == 1030); // 2 is dropped.
+	ring.Unpin(view);
+	CHECK(!ring.PinNextInRange(1040, 1040, view));         // Nothing after 1040 up to 1040.
+	CHECK(ring.PinNextInRange(1100, 2000, view) == false); // 11 is still encoding, nothing after.
+	CHECK(ring.PinNextInRange(1060, 1075, view) && view.captureNs == 1070 && view.codec == storage::CodecId::Mjpeg);
+	ring.Unpin(view);
+	CHECK_EQ(ring.GetCounts().pinned, 0u);
+}
+
 } // namespace
 
 int main()
@@ -323,5 +613,11 @@ int main()
 	TestDecodeAhead();
 	TestPayloadsFreedOnReuse();
 	TestTags();
+	TestPayloadMetadata();
+	TestMixedCodecsMonotonic();
+	TestDecodable();
+	TestPlanDecodeStart();
+	TestChooseDecodeStart();
+	TestRingPlan();
 	return testcheck::Finish("frame_ring_tests");
 }

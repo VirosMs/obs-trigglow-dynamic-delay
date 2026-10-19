@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "logging.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <initializer_list>
 
@@ -34,6 +35,19 @@ constexpr const char *kComponent = "buffer-mode-controller";
 // this file has no Qt (no QString::arg) and isn't worth pulling in a format
 // library for the few status messages that need numbers (Filling's seconds,
 // and the RAM-trimmed variant's two). A "%N" without a value stays as is.
+uint64_t SteadyNowNs()
+{
+	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+					     std::chrono::steady_clock::now().time_since_epoch())
+					     .count());
+}
+
+// The buffer's hardware encoder gets its engine back this long after an output
+// that made it yield started (the new output has its NVENC session by then), or
+// this long after the yield whatever happened.
+constexpr uint64_t kResumeAfterStartNs = 3000000000ULL;
+constexpr uint64_t kResumeAtMostNs = 10000000000ULL;
+
 std::string FormatArgs(const char *tmpl, std::initializer_list<std::string> values)
 {
 	std::string result;
@@ -179,6 +193,10 @@ void BufferModeController::Enable()
 	// filter saved with the scene collection.
 	bridge_.SetBufferFilterOutputCap(status_.liveSceneName, bufferOutputCap_);
 	bridge_.SetBufferFilterCodecWorkers(status_.liveSceneName, codecWorkers_);
+	bridge_.SetBufferFilterCodec(status_.liveSceneName, bufferCodecAuto_);
+	// v0.7.0: the ring class is fixed here for the whole cycle (I9).
+	cycleRingClass_ = NextCycleRingClass();
+	bridge_.SetBufferFilterStorageClass(status_.liveSceneName, cycleRingClass_);
 
 	// Audio: unlike the video filter, these attach to individual leaf audio
 	// sources inside the live scene (Mic, Desktop, etc.), not the scene
@@ -194,6 +212,18 @@ void BufferModeController::Enable()
 	// SyncAudioDelayToVideoEffective's comment.
 	SyncAudioDelayToVideoEffective();
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, true);
+
+	// v0.7.0 storage codec: OBS's encoders as they are now and the ceiling
+	// they put on the buffer, BEFORE the filter is switched on -- its first
+	// ring and its first codec setup (ranking, NVENC sessions, engine
+	// sharing) then work with them, not with the previous cycle's -- and a
+	// fresh baseline for their mixes' skipped frames.
+	yieldPending_ = false;
+	lastCeilingWidth_ = UINT32_MAX;
+	lastCeilingHeight_ = UINT32_MAX;
+	RefreshObsEncoders(true);
+	bridge_.TakeMixSkippedFrames();
+	bridge_.WatchOutputStops();
 
 	// Enable the filter AND force the live scene to keep rendering in the
 	// background right now, not once the fill timer elapses: Program is
@@ -213,14 +243,150 @@ void BufferModeController::Enable()
 
 	++status_.fillGeneration; // A new fill window: the dock starts its countdown.
 	SetState(BufferModeState::Filling, FillingMessage());
-	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s",
-			  status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
-			  bufferOutputCap_ ? "on" : "off", codecWorkers_ ? "on" : "off");
+	TRIGGLOW_LOG_INFO(
+		kComponent,
+		"enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s buffer_codec=%s%s "
+		"storage_class=%s",
+		status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
+		bufferOutputCap_ ? "on" : "off", codecWorkers_ ? "on" : "off", bufferCodecAuto_ ? "auto" : "mjpeg",
+		bufferCodecAuto_ && !codecWorkers_ ? " (ignored: codec_workers=false keeps MJPEG)" : "",
+		bufferfit::RingClassName(cycleRingClass_));
 
 	// New cycle: warn again about any encoder above the buffer, starting with
 	// the outputs already running right now.
 	warnedEncoders_.clear();
 	WarnAboutEncodersAboveBuffer();
+}
+
+void BufferModeController::RefreshObsEncoders(bool force)
+{
+	const std::vector<ActiveVideoEncoder> active = bridge_.ListActiveVideoEncoders();
+	// What tells one set of encoders from another: every output's encoder,
+	// its id and its size.
+	std::vector<std::string> signature;
+	signature.reserve(active.size());
+	for (const ActiveVideoEncoder &encoder : active)
+		signature.push_back(encoder.outputName + '\x1f' + encoder.encoderName + '\x1f' + encoder.encoderId +
+				    '\x1f' + std::to_string(encoder.width) + 'x' + std::to_string(encoder.height));
+	std::sort(signature.begin(), signature.end());
+	const bool changed = signature != encoderSignature_;
+	if (!force && !changed)
+		return;
+	encoderSignature_ = std::move(signature);
+	PushObsEncoders(active);
+	PushEncoderCeiling(active);
+	if (!force) {
+		// Found by the once-a-second check, not by a frontend event: an
+		// output another plugin started or stopped.
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "OBS's active video encoders changed without a frontend event (an output of "
+				  "another plugin?): %zu now, pushed to the delay buffer",
+				  active.size());
+		WarnAboutEncodersAboveBuffer();
+	}
+}
+
+void BufferModeController::PushEncoderCeiling(const std::vector<ActiveVideoEncoder> &active)
+{
+	encodercheck::Size base, output;
+	if (!bridge_.MainCanvasGeometry(base, output))
+		return;
+	std::vector<encodercheck::CeilingEncoder> encoders;
+	for (const ActiveVideoEncoder &encoder : active)
+		encoders.push_back({encoder.source, encoder.scope, {encoder.width, encoder.height}});
+	const encodercheck::Ceiling ceiling = encodercheck::EncoderCeiling(encoders, base, output, bufferOutputCap_,
+									   bridge_.RawVideoOutputOnMainMix());
+	const uint32_t width = ceiling.applies ? ceiling.size.width : 0;
+	const uint32_t height = ceiling.applies ? ceiling.size.height : 0;
+	if (width == lastCeilingWidth_ && height == lastCeilingHeight_)
+		return;
+	lastCeilingWidth_ = width;
+	lastCeilingHeight_ = height;
+	if (ceiling.applies)
+		TRIGGLOW_LOG_INFO(kComponent, "encoder ceiling %ux%u: %s (output %ux%u, canvas %ux%u)", width, height,
+				  encodercheck::CeilingWhyText(ceiling.why), output.width, output.height, base.width,
+				  base.height);
+	else
+		TRIGGLOW_LOG_INFO(kComponent, "no encoder ceiling: %s", encodercheck::CeilingWhyText(ceiling.why));
+	bridge_.SetBufferFilterEncoderCeiling(status_.liveSceneName, width, height);
+}
+
+bufferfit::RingClass BufferModeController::NextCycleRingClass() const
+{
+	if (!bufferCodecAuto_ || !codecWorkers_ || !bridge_.HardwareStoragePossible())
+		return bufferfit::RingClass::Intra;
+	// A hardware codec worked this session: its 12x. Not yet (the first
+	// cycle of a session, or none passed): MJPEG's 5x, but with the GOP of
+	// slack the hardware needs if it takes over during the cycle.
+	return bridge_.HardwareStorageAvailable() ? bufferfit::RingClass::Inter : bufferfit::RingClass::IntraWithGop;
+}
+
+bufferfit::RingClass BufferModeController::PlannedRingClass() const
+{
+	const bool busy = status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active;
+	return busy ? cycleRingClass_ : NextCycleRingClass();
+}
+
+void BufferModeController::PushObsEncoders(const std::vector<ActiveVideoEncoder> &active)
+{
+	VideoDelayFilter::ObsEncoderSet set;
+	set.known = true;
+	std::vector<std::string> seen;
+	for (const ActiveVideoEncoder &encoder : active) {
+		// One encoder can feed several outputs (stream and replay buffer): one session.
+		if (std::find(seen.begin(), seen.end(), encoder.encoderName) != seen.end())
+			continue;
+		seen.push_back(encoder.encoderName);
+		if (set.count < VideoDelayFilter::ObsEncoderSet::kMax)
+			set.families[set.count++] = storage::FamilyFromObsEncoderId(encoder.encoderId);
+	}
+	bridge_.SetBufferFilterObsEncoders(status_.liveSceneName, set);
+}
+
+void BufferModeController::YieldForOutputStart()
+{
+	if (status_.state != BufferModeState::Filling && status_.state != BufferModeState::Active)
+		return;
+	uint32_t obsNvenc = 0;
+	std::vector<std::string> seen;
+	for (const ActiveVideoEncoder &encoder : bridge_.ListActiveVideoEncoders()) {
+		if (std::find(seen.begin(), seen.end(), encoder.encoderName) != seen.end())
+			continue;
+		seen.push_back(encoder.encoderName);
+		if (storage::FamilyFromObsEncoderId(encoder.encoderId) == storage::EncoderFamily::Nvenc)
+			++obsNvenc;
+	}
+	// OBS's NVENC encoders running, the one starting and the buffer's.
+	const bool wait = obsNvenc + 2 >= 4;
+	bridge_.YieldBufferHwEncoder(status_.liveSceneName, wait);
+	yieldPending_ = true;
+	yieldSinceNs_ = SteadyNowNs();
+	outputStartedNs_ = 0;
+}
+
+void BufferModeController::Tick()
+{
+	if (status_.state != BufferModeState::Filling && status_.state != BufferModeState::Active)
+		return;
+	// Outputs other plugins start or stop (Aitum Vertical, multi-rtmp, Source
+	// Record...) raise no frontend event: without this their encoders were
+	// never seen -- the engine counted as not shared with OBS, so nothing
+	// evacuated, and the NVENC sessions were counted short. One listing of
+	// the active outputs (lock-free reads under libobs' outputs mutex, never
+	// the graphics thread), pushed only when it changed; their stop signals
+	// are watched for encoder errors too.
+	RefreshObsEncoders(false);
+	bridge_.WatchOutputStops();
+	const uint64_t skipped = bridge_.TakeMixSkippedFrames();
+	if (skipped > 0)
+		bridge_.ReportBufferEncoderLag(status_.liveSceneName, skipped);
+	const uint64_t nowNs = SteadyNowNs();
+	if (yieldPending_ && ((outputStartedNs_ != 0 && nowNs >= outputStartedNs_ + kResumeAfterStartNs) ||
+			      nowNs >= yieldSinceNs_ + kResumeAtMostNs)) {
+		yieldPending_ = false;
+		RefreshObsEncoders(true); // The sessions are recounted before the next setup.
+		bridge_.ResumeBufferHwEncoder(status_.liveSceneName);
+	}
 }
 
 void BufferModeController::OnFillTimerElapsed()
@@ -253,9 +419,9 @@ bool BufferModeController::BufferRestartsWith(uint32_t previousDelaySeconds, uin
 	// The filter keeps its ring only if bufferfit sizes it exactly the same
 	// (the same Compute() it runs, through EstimateBufferFit()).
 	const auto before = bridge_.EstimateBufferFit(status_.liveSceneName, previousDelaySeconds,
-						      previousMinResolutionHeight, bufferOutputCap_);
+						      previousMinResolutionHeight, bufferOutputCap_, cycleRingClass_);
 	const auto after = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
-						     status_.minResolutionHeight, bufferOutputCap_);
+						     status_.minResolutionHeight, bufferOutputCap_, cycleRingClass_);
 	return before.width != after.width || before.height != after.height ||
 	       before.actualSeconds != after.actualSeconds || before.effectiveSeconds != after.effectiveSeconds;
 }
@@ -337,6 +503,7 @@ void BufferModeController::StopDelay(std::string message, bool restoreProgram)
 
 	bridge_.SetDelayOverlay(false, 0);
 	status_.effectiveDelaySeconds = 0;
+	yieldPending_ = false;
 	bridge_.SetBufferFilterEnabled(status_.liveSceneName, false);
 	bridge_.SetAudioDelayFiltersEnabled(status_.liveSceneName, false);
 	if (restoreProgram) {
@@ -378,10 +545,11 @@ void BufferModeController::Toggle()
 
 void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
 					std::string loadingSceneName, bool showOverlay, uint32_t overlayCorner,
-					bool bufferOutputCap, bool codecWorkers)
+					bool bufferOutputCap, bool codecWorkers, bool bufferCodecAuto)
 {
 	bufferOutputCap_ = bufferOutputCap;
 	codecWorkers_ = codecWorkers;
+	bufferCodecAuto_ = bufferCodecAuto;
 	status_.delaySeconds = delaySeconds;
 	status_.minResolutionHeight = minResolutionHeight;
 	status_.liveSceneName = std::move(liveSceneName);
@@ -397,7 +565,8 @@ void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResol
 BufferModeController::SettingsSnapshot BufferModeController::SaveSettings() const
 {
 	return {status_.delaySeconds, status_.minResolutionHeight, status_.liveSceneName, status_.loadingSceneName,
-		status_.showOverlay,  status_.overlayCorner,       bufferOutputCap_,      codecWorkers_};
+		status_.showOverlay,  status_.overlayCorner,       bufferOutputCap_,      codecWorkers_,
+		bufferCodecAuto_};
 }
 
 PipelineHealth BufferModeController::GetPipelineHealth() const
@@ -444,10 +613,29 @@ void BufferModeController::OnFrontendEvent(FrontendEvent event)
 		onSceneListRefresh_();
 	if (event == FrontendEvent::ThemeChanged && onThemeChanged_)
 		onThemeChanged_();
+	// v0.7.0: OBS's own encoder failed: the buffer leaves a shared engine.
+	if (event == FrontendEvent::OutputEncodeError &&
+	    (status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active)) {
+		TRIGGLOW_LOG_WARN(kComponent, "an OBS output stopped on an encoder error: telling the delay buffer");
+		bridge_.ReportBufferObsEncodeError(status_.liveSceneName);
+	}
+	// v0.7.0: an output about to open its encoder gets the NVENC engine first.
+	if (event == FrontendEvent::StreamingStarting || event == FrontendEvent::RecordingStarting ||
+	    event == FrontendEvent::ReplayBufferStarting)
+		YieldForOutputStart();
+	const bool started = event == FrontendEvent::StreamingStarted || event == FrontendEvent::RecordingStarted ||
+			     event == FrontendEvent::ReplayBufferStarted;
+	const bool stopped = event == FrontendEvent::StreamingStopped || event == FrontendEvent::RecordingStopped ||
+			     event == FrontendEvent::ReplayBufferStopped;
+	const bool busy = status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active;
+	if (started && yieldPending_ && outputStartedNs_ == 0)
+		outputStartedNs_ = SteadyNowNs();
+	if (busy && (started || stopped || event == FrontendEvent::VirtualcamStarted ||
+		     event == FrontendEvent::VirtualcamStopped))
+		RefreshObsEncoders(true);
 	// A new output's encoders may encode above the delay buffer. No-op unless
 	// the delay is Filling/Active (see WarnAboutEncodersAboveBuffer).
-	if (event == FrontendEvent::StreamingStarted || event == FrontendEvent::RecordingStarted ||
-	    event == FrontendEvent::ReplayBufferStarted)
+	if (started)
 		WarnAboutEncodersAboveBuffer();
 	if (event == FrontendEvent::BufferRestarted)
 		OnBufferRestarted();
@@ -462,9 +650,9 @@ void BufferModeController::WarnAboutEncodersAboveBuffer()
 	// Same bufferfit::Compute() the filter sizes its ring with, so this is the
 	// buffer it uses (or will use, before its first Render()), cap on and off.
 	const auto capped = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
-						      status_.minResolutionHeight, true);
+						      status_.minResolutionHeight, true, cycleRingClass_);
 	const auto uncapped = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
-							status_.minResolutionHeight, false);
+							status_.minResolutionHeight, false, cycleRingClass_);
 	const encodercheck::Size cappedSize{capped.width, capped.height};
 	const encodercheck::Size uncappedSize{uncapped.width, uncapped.height};
 	// The cap isn't what limits the buffer (no cap applies, or RAM sets the

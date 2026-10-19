@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 // Pure decision behind BufferModeController's "video encoder above the delay
 // buffer" WARN: which active encoders see OBS's main canvas (and so the
@@ -96,5 +97,48 @@ bool CapLimitsBuffer(Size cappedBuffer, Size uncappedBuffer);
 // upscaled. cappedBuffer/uncappedBuffer are bufferfit::Compute() with the cap
 // on and off, as the filter would size its ring.
 bool ShouldWarn(Scope scope, Size encoder, Size cappedBuffer, Size uncappedBuffer, bool capToOutput);
+
+// --- v0.7.0: the ceiling OBS's encoders put on the buffer ---
+//
+// The buffer never needs more pixels than the encoders that see the delayed
+// scene emit: when every one of them rescales below OBS's output (Rescale
+// output, the tracks of Enhanced Broadcasting, a recording at a lower size),
+// buffering at the largest of them loses nothing (-34% RAM with MJPEG and
+// -42% with HEVC from 1440p to 1080p). A soft ceiling: the ring stays sized
+// for the output (the A/V delay doesn't move), only the degradation ladder
+// starts lower, so it can go back up as soon as an encoder needs more.
+
+struct CeilingEncoder {
+	VideoSource source = VideoSource::MainMix; // What Classify() was given.
+	Scope scope = Scope::MainCanvas;
+	Size size;
+};
+
+enum class CeilingWhy : uint8_t {
+	Applied,        // `size` is the ceiling, below the output.
+	NoEncoders,     // No active encoder sees the main canvas.
+	RawOutput,      // An output without an encoder takes the main mix as is (virtual camera, NDI...).
+	UnknownMix,     // A GPU-rescaled encoder of another aspect ratio: maybe the main canvas, stretched.
+	CapOff,         // buffer_output_cap=false: no ceiling of any kind.
+	NotBelowOutput, // The largest encoder needs the output (or more): the output cap stands.
+};
+
+struct Ceiling {
+	bool applies = false;
+	Size size; // When applies: width a multiple of 8, height even (bufferfit's rules).
+	CeilingWhy why = CeilingWhy::NoEncoders;
+};
+
+// The rule: E = every active encoder with Scope MainCanvas or
+// MainCanvasByAspect (other canvases never count). No ceiling when E is empty,
+// a raw output runs on the main mix, an UnlistedMix encoder has an aspect ratio
+// of neither the canvas nor the output (OtherCanvas from an UnlistedMix), or
+// the cap is off. Otherwise, with base the canvas: s = max over E of max(w /
+// baseW, h / baseH), and the ceiling is the canvas scaled by s when s is below
+// the output cap's scale -- only ever lower than the output, never above it.
+Ceiling EncoderCeiling(const std::vector<CeilingEncoder> &encoders, Size base, Size output, bool capToOutput,
+		       bool rawOutputOnMainMix);
+
+const char *CeilingWhyText(CeilingWhy why);
 
 } // namespace trigglow::encodercheck

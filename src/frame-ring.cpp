@@ -138,7 +138,10 @@ void FrameRing::FillViewLocked(size_t index, ReadView &out)
 	out.bytes = header.payload.bytes;
 	out.width = header.payload.width;
 	out.height = header.payload.height;
-	out.compressed = header.payload.compressed;
+	out.codec = header.payload.codec;
+	out.key = header.payload.key;
+	out.chain = header.payload.chain;
+	out.seq = header.payload.seq;
 	out.tag = header.tag;
 }
 
@@ -186,6 +189,26 @@ bool FrameRing::PinNextForDecode(uint64_t afterNs, uint64_t targetNs, uint64_t w
 			return false;     // Future frame still encoding: wait for it.
 		case SlotState::Free:
 			return false;
+		}
+	}
+	return false;
+}
+
+bool FrameRing::PinNextInRange(uint64_t afterNs, uint64_t untilNs, ReadView &out)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	const size_t count = buffered_;
+	auto captureAt = [&](size_t p) {
+		return headers_[IndexAt(p)].captureNs;
+	};
+	const size_t last = ringselect::LastAtOrBefore(count, afterNs, captureAt);
+	for (size_t p = last == count ? 0 : last + 1; p < count; ++p) {
+		const Header &header = headers_[IndexAt(p)];
+		if (header.captureNs > untilNs)
+			return false;
+		if (header.captureNs > afterNs && header.state == SlotState::Ready) {
+			FillViewLocked(IndexAt(p), out);
+			return true;
 		}
 	}
 	return false;
@@ -253,6 +276,12 @@ FrameRing::DueSlot FrameRing::Due(uint64_t targetNs) const
 	due.captureNs = header.captureNs;
 	due.state = header.state;
 	due.tag = header.tag;
+	if (header.state == SlotState::Ready) {
+		due.codec = header.payload.codec;
+		due.key = header.payload.key;
+		due.chain = header.payload.chain;
+		due.seq = header.payload.seq;
+	}
 	return due;
 }
 
@@ -263,6 +292,68 @@ bool FrameRing::OldestCaptureNs(uint64_t &out) const
 		return false;
 	out = headers_[oldest_].captureNs;
 	return true;
+}
+
+FrameRing::DecodePlan FrameRing::PlanDecodeStart(uint64_t targetNs, size_t maxBack, uint64_t decodeNs,
+						 uint64_t intervalNs) const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	DecodePlan plan;
+	const size_t count = buffered_;
+	auto captureAt = [&](size_t p) {
+		return headers_[IndexAt(p)].captureNs;
+	};
+	auto readyAt = [&](size_t p) {
+		return headers_[IndexAt(p)].state == SlotState::Ready;
+	};
+	auto chainAt = [&](size_t p) {
+		const Header &header = headers_[IndexAt(p)];
+		ringselect::ChainSlot slot;
+		slot.ready = header.state == SlotState::Ready;
+		slot.key = header.payload.key;
+		slot.chain = header.payload.chain;
+		slot.seq = header.payload.seq;
+		slot.codec = header.payload.codec;
+		return slot;
+	};
+	const size_t due = ringselect::SelectForDisplay(count, targetNs, maxBack, captureAt, readyAt);
+	if (due == count)
+		return plan;
+	plan.due = true;
+	plan.dueNs = captureAt(due);
+	const ringselect::DecodeStart start = ringselect::PlanDecodeStart(count, due, chainAt);
+	plan.found = start.found;
+	if (start.found) {
+		plan.keyNs = captureAt(start.keyPos);
+		plan.catchUp = static_cast<uint32_t>(start.catchUp);
+	}
+	if (start.nextKeyPos != ringselect::kNoPosition) {
+		plan.nextKey = true;
+		plan.framesToNextKey = static_cast<uint32_t>(start.nextKeyPos - due);
+	}
+	plan.choice = ringselect::ChooseDecodeStart(start, due, decodeNs, intervalNs);
+	return plan;
+}
+
+std::vector<FrameRing::SlotSummary> FrameRing::Snapshot() const
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	std::vector<SlotSummary> out;
+	out.reserve(buffered_);
+	for (size_t p = 0; p < buffered_; ++p) {
+		const Header &header = headers_[IndexAt(p)];
+		SlotSummary slot;
+		slot.state = header.state;
+		slot.captureNs = header.captureNs;
+		if (header.state == SlotState::Ready) {
+			slot.codec = header.payload.codec;
+			slot.key = header.payload.key;
+			slot.chain = header.payload.chain;
+			slot.seq = header.payload.seq;
+		}
+		out.push_back(slot);
+	}
+	return out;
 }
 
 FrameRing::Counts FrameRing::GetCounts() const
