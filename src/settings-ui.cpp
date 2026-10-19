@@ -525,8 +525,13 @@ void TrigglowDelayDock::BuildUi()
 	minResolutionCombo_->addItem(QStringLiteral("480p"), 480);
 	minResolutionCombo_->addItem(QStringLiteral("720p"), 720);
 	minResolutionCombo_->addItem(QStringLiteral("1080p"), 1080);
+	// Floors above 1080p only matter with an OBS output that big: the buffer
+	// never exceeds the output (bufferfit::Compute()), so with a 1080p output
+	// they buffer at 1080p, like the 1080p entry.
+	minResolutionCombo_->addItem(T("Dock.Quality.Option1440"), 1440);
+	minResolutionCombo_->addItem(T("Dock.Quality.Option2160"), 2160);
 	minResolutionCombo_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-	minResolutionCombo_->setMinimumContentsLength(5);
+	minResolutionCombo_->setMinimumContentsLength(10);
 	minResolutionCombo_->setToolTip(T("Dock.Quality.Tooltip"));
 	minResolutionCombo_->setAccessibleName(T("Dock.Quality.Label"));
 	qualityColumn->addWidget(makeEyebrow(T("Dock.Quality.Label"), minResolutionCombo_));

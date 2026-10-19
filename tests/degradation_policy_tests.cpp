@@ -97,12 +97,28 @@ void TestLadder()
 	CHECK_EQ(l.size(), 1u);
 	CHECK(BuildLadder(0, 0, 720, true).empty());
 
+	// The 1440p (2K) and 2160p (4K) floors: at an output that size the CPU
+	// may only halve the frame rate, never drop below the floor.
+	l = BuildLadder(2560, 1440, 1440, true);
+	CHECK_EQ(l.size(), 2u);
+	CHECK(l[0].width == 2560 && l[0].height == 1440 && l[0].captureDivisor == 1);
+	CHECK(l[1].width == 2560 && l[1].height == 1440 && l[1].captureDivisor == 2);
+	l = BuildLadder(3840, 2160, 2160, true);
+	CHECK_EQ(l.size(), 2u);
+	CHECK(l[1].width == 3840 && l[1].height == 2160 && l[1].captureDivisor == 2);
+	l = BuildLadder(3840, 2160, 1440, true);
+	CHECK(l.size() >= 3u);
+	CHECK(l[l.size() - 2].width == 2560 && l[l.size() - 2].height == 1440);
+	for (const Rung &rung : l)
+		CHECK(rung.height >= 1440);
+
 	// Every rung of every ladder bufferfit can start from: Y rows a multiple of
 	// 8 bytes, U/V rows of 4 (QA: 1594x896, 2124x1194 with 1062-byte chroma
 	// rows and 852x480 sheared the picture on OpenGL).
-	const uint32_t starts[][3] = {{1920, 1080, 720}, {2560, 1440, 720}, {1280, 720, 480}, {3840, 2160, 1080},
-				      {1360, 768, 480},  {1600, 900, 720},  {856, 480, 480},  {2560, 1440, 480},
-				      {3440, 1440, 720}, {2560, 1080, 480}};
+	const uint32_t starts[][3] = {{1920, 1080, 720},  {2560, 1440, 720}, {1280, 720, 480},   {3840, 2160, 1080},
+				      {1360, 768, 480},   {1600, 900, 720},  {856, 480, 480},    {2560, 1440, 480},
+				      {3440, 1440, 720},  {2560, 1080, 480}, {2560, 1440, 1440}, {3840, 2160, 1440},
+				      {3840, 2160, 2160}, {3440, 1440, 1440}};
 	for (const auto &start : starts) {
 		for (const Rung &rung : BuildLadder(start[0], start[1], start[2], true)) {
 			CHECK(rung.width % 8 == 0 && (rung.width / 2) % 4 == 0);

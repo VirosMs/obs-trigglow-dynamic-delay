@@ -417,7 +417,7 @@ void TestProperties()
 	const uint32_t sources[][2] = {{1920, 1080}, {2560, 1440}, {3840, 2160},
 				       {1365, 767},  {1280, 720},  {2560, 1080}};
 	const uint32_t outputs[][2] = {{3840, 2160}, {2560, 1440}, {1920, 1080}, {1600, 900}, {1280, 720}, {852, 480}};
-	const uint32_t minResolutions[] = {480, 720, 1080};
+	const uint32_t minResolutions[] = {480, 720, 1080, 1440, 2160};
 	const uint32_t delays[] = {5, 30, 60};
 	int violations = 0;
 
@@ -565,7 +565,7 @@ void TestWidthAlignment()
 	int violations = 0;
 	for (const auto &src : sources) {
 		for (const auto &out : outputs) {
-			for (uint32_t minRes : {480u, 720u, 1080u}) {
+			for (uint32_t minRes : {480u, 720u, 1080u, 1440u, 2160u}) {
 				for (uint64_t budget : {16 * kMiB, 100 * kMiB, 300 * kMiB, 800 * kMiB, 16 * kGiB}) {
 					for (bool cap : {true, false}) {
 						Input in = MakeInput(src[0], src[1], out[0], out[1], minRes);
@@ -594,6 +594,93 @@ void TestWidthAlignment()
 	CHECK_EQ(Compute(MakeInput(852, 480, 852, 480, 480)).bufferWidth, 848u);
 }
 
+// v0.6.0: the 1440p (2K) and 2160p (4K) floors. Still only a floor for the
+// RAM reduction, and still under the output ceiling: when RAM is short the
+// delay gets shorter instead of the buffer dropping below the floor.
+void TestHighFloors()
+{
+	g_currentTest = "19 1440p and 2160p floors";
+	// 1440p output, 1440p floor, RAM for half of the 30 s at 1440p: the
+	// buffer stays 2560x1440 and the delay is trimmed.
+	Input tight = MakeInput(2560, 1440, 2560, 1440, 1440);
+	tight.budgetBytes = 1 * kGiB;
+	Result t = Compute(tight);
+	CHECK_EQ(t.bufferWidth, 2560u);
+	CHECK_EQ(t.bufferHeight, 1440u);
+	CHECK(!t.cappedByOutput);
+	CHECK(!t.reducedByRam);
+	CHECK(!t.fitsFullDuration);
+	CHECK(WithinBudget(tight, t));
+	// floor(1 GiB / (2560*1440*1.5/5)) = 970 slots: span 969, minus 15 of
+	// slack, is 15.9 s -> 15 s.
+	CHECK_EQ(t.actualFrames, 970u);
+	CHECK_EQ(t.effectiveDelaySeconds, 15u);
+
+	// The same RAM with a 1080p floor: the buffer drops to 1080p instead.
+	Input lower = tight;
+	lower.minResolutionHeight = 1080;
+	Result l = Compute(lower);
+	CHECK_EQ(l.bufferHeight, 1080u);
+	CHECK(l.reducedByRam);
+
+	// Enough RAM for the full delay above 1080p but not at 1440p: with the
+	// 1080p floor the buffer shrinks and keeps the 30 s, with the 1440p floor
+	// it keeps 1440p and the delay is shorter (1456 slots: 24 s).
+	Input mid = MakeInput(2560, 1440, 2560, 1440, 1080);
+	mid.budgetBytes = 1536 * kMiB;
+	Result m = Compute(mid);
+	CHECK(m.reducedByRam);
+	CHECK(m.fitsFullDuration);
+	CHECK(m.bufferHeight >= 1080u && m.bufferHeight < 1440u);
+	mid.minResolutionHeight = 1440;
+	m = Compute(mid);
+	CHECK_EQ(m.bufferHeight, 1440u);
+	CHECK(!m.reducedByRam);
+	CHECK(!m.fitsFullDuration);
+	CHECK_EQ(m.effectiveDelaySeconds, 24u);
+
+	// Plenty of RAM: the floor changes nothing.
+	Result full = Compute(MakeInput(2560, 1440, 2560, 1440, 1440));
+	CHECK_EQ(full.bufferHeight, 1440u);
+	CHECK(full.fitsFullDuration);
+	CHECK_EQ(full.effectiveDelaySeconds, 30u);
+
+	// The output ceiling still wins: a 1080p output buffers at 1080p with a
+	// 1440p or 2160p floor, and a 1440p output at 1440p with a 2160p one.
+	for (const uint32_t floorRes : {1440u, 2160u}) {
+		Result c = Compute(MakeInput(2560, 1440, 1920, 1080, floorRes));
+		CHECK_EQ(c.bufferWidth, 1920u);
+		CHECK_EQ(c.bufferHeight, 1080u);
+		CHECK(c.cappedByOutput);
+		Input small = MakeInput(2560, 1440, 1920, 1080, floorRes);
+		small.budgetBytes = 100 * kMiB;
+		Result s = Compute(small);
+		CHECK_EQ(s.bufferHeight, 1080u);
+		CHECK(!s.reducedByRam);
+		CHECK(!s.fitsFullDuration);
+	}
+	Result k = Compute(MakeInput(3840, 2160, 2560, 1440, 2160));
+	CHECK_EQ(k.bufferWidth, 2560u);
+	CHECK_EQ(k.bufferHeight, 1440u);
+	CHECK(k.cappedByOutput);
+
+	// 4K output: a 2160p floor holds 3840x2160 and trims the delay, a 1440p
+	// one lets RAM bring it down to 1440p first.
+	Input uhd = MakeInput(3840, 2160, 3840, 2160, 2160);
+	uhd.budgetBytes = 1536 * kMiB;
+	Result u = Compute(uhd);
+	CHECK_EQ(u.bufferWidth, 3840u);
+	CHECK_EQ(u.bufferHeight, 2160u);
+	CHECK(!u.fitsFullDuration);
+	CHECK(WithinBudget(uhd, u));
+	uhd.minResolutionHeight = 1440;
+	u = Compute(uhd);
+	CHECK_EQ(u.bufferWidth, 2560u);
+	CHECK_EQ(u.bufferHeight, 1440u);
+	CHECK(u.reducedByRam);
+	CHECK(WithinBudget(uhd, u));
+}
+
 } // namespace
 
 int main()
@@ -617,6 +704,7 @@ int main()
 	TestTinySource();
 	TestEffectiveDelay();
 	TestWidthAlignment();
+	TestHighFloors();
 
 	std::printf("buffer_fit_tests: %d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;
