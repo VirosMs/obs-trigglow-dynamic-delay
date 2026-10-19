@@ -31,7 +31,7 @@
 ; override pattern below -- falls back to buildspec.json's value at the time
 ; of this fix for anyone building locally without passing it explicitly.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.5.0"
+  #define MyAppVersion "0.6.0"
 #endif
 #define MyAppPublisher "Trigglow (VirosMs)"
 #define MyAppURL "https://www.trigglow.com/dynamic-delay"
@@ -74,9 +74,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
 DisableWelcomePage=no
-; Trigglow branding -- generated from a dedicated Dynamic Delay icon
-; (apps/web/public/trigglow-dynamic-delay-icon.png in the main monorepo,
-; www.trigglow.com as of the 2026-09-02 domain migration) via
+; Trigglow branding -- generated from a dedicated Dynamic Delay icon (from
+; Trigglow's web brand assets) via
 ; installers/windows/branding/generate-assets.py, which also documents the
 ; exact Inno Setup size/aspect-ratio requirements these were built against.
 ; SetupIconFile becomes the .exe's own icon (Explorer,
@@ -104,8 +103,20 @@ Source: "{#PluginStageDir}\data\locale\en-US.ini"; DestDir: "{app}\data\obs-plug
 ; Spanish" from the user's side even though the running OBS was correctly
 ; set to it and the .dll's own logic was fine. Found live, 2026-09-08.
 Source: "{#PluginStageDir}\data\locale\es-ES.ini"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"; Flags: ignoreversion
-; Delay overlay badge frame (src/obs-frontend-bridge.cpp SetDelayOverlay loads it via obs_module_file()).
+; v0.5.x overlay badge frame. No longer drawn: the overlay is now one image the
+; plugin renders itself (src/overlay-badge.cpp). Kept one more version as a
+; fallback while the generated badge is validated live.
 Source: "{#PluginStageDir}\data\images\delay-badge.png"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\images"; Flags: ignoreversion
+; Brand fonts for the dock and the overlay (Archivo, Geist Mono; SIL OFL 1.1),
+; with their licenses next to them as the OFL requires. Loaded by
+; src/ui-theme.cpp's LoadBrandFonts() from data/fonts. The plugin can fall back
+; to OBS's UI font at runtime, but a release must ship them: a staged build
+; without the fonts or their licenses fails to compile here instead of quietly
+; packaging an installer without them.
+Source: "{#PluginStageDir}\data\fonts\*.ttf"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion
+Source: "{#PluginStageDir}\data\fonts\OFL-*.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion
+; Notices of third-party assets compiled into the plugin (Lucide icons, ISC).
+Source: "{#PluginStageDir}\data\licenses\*.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\licenses"; Flags: ignoreversion
 ; v0.3.0 Phase 0 (FFmpeg groundwork, docs/ROADMAP.md): CMake's install() rule
 ; already places these next to the plugin's own .dll in the packaged output
 ; (CMakeLists.txt's OS_WINDOWS block) specifically so Windows' DLL search
@@ -127,6 +138,9 @@ Source: "{#PluginStageDir}\bin\64bit\swresample-7.dll"; DestDir: "{app}\obs-plug
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\locale"
+Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\images"
+Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"
+Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\licenses"
 Type: dirifempty; Name: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay"
 
 [Run]

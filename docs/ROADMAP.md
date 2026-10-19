@@ -83,14 +83,83 @@
   v0.4.0 (currently in production) — small enough on its own that it doesn't need to wait on the
   unrelated features below.
 
-## v0.6.0 (proposed)
+## v0.6.0 (shipped — 2026-10-19)
+Performance, adaptivity and the Trigglow look, plus Trigi, a safer sign-in and a security pass. A
+v0.5.1 performance hotfix was prepared but never published; all of it ships here. Reported live
+first: "Encoding overloaded" as soon as the delay was enabled with a 2560x1440 canvas and a
+1920x1080 output at 60 fps.
+- **Buffer capped at OBS's output resolution.** The ring was sized from the canvas, so a 1440p
+  canvas streamed at 1080p was MJPEG-encoded/decoded at 1440p on OBS's graphics thread
+  (14.3/17.4 ms p50/p95 per frame). The minimum quality became a RAM floor that never exceeds the
+  output. Sizing math in `src/buffer-fit.*`, unit-tested; widths multiples of 8 for OpenGL readback.
+  Hidden `buffer_output_cap` support setting, and a log warning for encoders above the buffer.
+- **Encode/decode on worker threads, off OBS's graphics thread — 1440p60 output supported.** One or
+  two encode workers, one decode worker that decodes ahead, a reaper thread that frees memory, a
+  ring of slot headers with a state machine and a block arena. At 1440p60 the plugin's work on the
+  graphics thread went from ~14/17 ms to ~1.2–1.7/1.6–2.1 ms per frame (p50/p95, offline
+  microbenchmark). Hidden `codec_workers` kill switch back to the codec on the graphics thread.
+- **Adaptive degradation that never cuts the delay**: more encode threads, then lower resolution
+  rungs down to the minimum quality, then half the capture rate; back up with 30 s of hysteresis;
+  amber notice in the dock saying what was lowered and why. The minimum quality goes up to 1440p
+  (2K) and 2160p (4K).
+- **Less RAM, nothing heavy on the graphics thread**: no zero fill, arena by blocks (~1.9 GB →
+  ~0.6–0.8 GB for 30 s at 1440p60 in simulation), memory freed on the reaper, codecs and GPU objects
+  freed on Disable, I420 conversion on the GPU, standard Huffman tables, each frame decoded and
+  uploaded once.
+- **One whole-second delay for video and audio**, also when RAM trims the ring (was up to ~1 s
+  apart); exact frame interval at 59.94 fps; a buffer restart refills behind the loading scene
+  instead of showing black; 0 s passes the video through.
+- **Delay filters left on by an OBS close while Active are really switched off**, at startup and
+  on a scene collection switch; filter reference leak and destructor without graphics context
+  fixed; an unreadable settings file is set aside as `.invalid`.
+- **`perf check` and `pipeline check` telemetry** every 10 s in the OBS log (replaces
+  `compression check`).
+- **UI redesign aligned with trigglow.com**: dock, report dialog and live overlay on top of the OBS
+  theme, bundled Archivo and Geist Mono (OFL), SVG icons, WCAG AA contrast and keyboard focus,
+  sign-in errors shown, the delay seconds locked while the delay runs. The overlay is one generated
+  image, the same on every OS, signed "By Trigglow", that keeps the position and size you give it.
+- **"(auto)" names** for the scene, filters and overlay the plugin manages, migrated automatically.
+- **Trigi, Trigglow's AI support assistant, in "Report a problem"** (Windows, signed in): first-use
+  AI and privacy notice, optional OBS technical data (numbers and states only, with a preview), the
+  OBS log never sent to the AI, every error state with its next step, safe rendering of answers,
+  and the conversation turned into a ticket with a summary.
+- **Sign-in v2**: a code to compare on the trigglow.com page with "It wasn't me", the plugin's own
+  scoped sign-in encrypted with the Windows data protection API, renewed automatically and revoked
+  by Sign out (or from trigglow.com's connected apps), and a one-time automatic move from v0.5.x.
+  The v0.5.x-and-earlier sign-in is switched off when this version is published, so updating is
+  required.
+- **Signed-in tickets** with an optional subject and a version footer; the OBS log redacted in
+  memory, previewed and attached only with consent; old copies in `%TEMP%` deleted; guests sent to
+  the web form when trigglow.com asks for a human check.
+- **Hardening**: one WinHTTP path (no redirects, TLS 1.2+, timeouts, size cap, the token only for
+  api.trigglow.com), fixed pages only, no codes, URLs or user paths in the OBS log, the update notice
+  limited to this repo's releases, no build paths in the DLL, and every network call cancellable so
+  OBS closes cleanly even while Trigi is answering.
+- **Build/CI**: FFmpeg re-pinned to a BtbN month-end build, 19 unit test suites in CI on every
+  platform, a ThreadSanitizer job, `Qt6::Svg`.
+
+## Next (v0.6.x)
+- **v0.6.1: an HTTP client on macOS and Linux**, so sign-in (and with it Enable delay), Trigi and
+  reports from OBS work there too, with the sign-in kept in the system's keychain or secret store.
+  Until then the plugin's account features are Windows-only.
+- **Deduplicate captures by OBS's frame time** (`obs_get_video_frame_time()`) instead of a
+  wall-clock cell per frame interval: exactly one capture per OBS frame, with no dependence on the
+  cell's phase, so render jitter can't put two renders in one cell and lose a real frame.
+- **A smaller keep-alive render target.** While the buffer fills, keeping the live scene rendering
+  still renders it into a canvas-sized texture whose content is never used (14.7 MB at 1440p, cleared
+  every frame); a tiny target with the same projection would do.
+- **Output-level delay redesign** — the next big architectural step; see "Later" below for what it
+  involves and why it hasn't started.
+- Verify v0.6.0 live: 1440p60 output and the degradation inside a real OBS session (the figures
+  above come from offline benchmarks on an AMD CPU and GPU), and the A/V alignment with a clock and
+  a clap.
 - Saved delay presets (e.g. "Short delay 5s", "Long delay 30s"), selectable from the dock and from
   additional hotkeys.
 - macOS/Linux **live verification** — both already build green in CI; this is about actually
   running and confirming the plugin on those platforms, not new build-system work.
-- Measure the v0.4.0 RAM retune (`kAssumedCompressionRatio = 5.0`) against more sessions/games
-  using the new per-slot growth counter (`encodeGrowthCount_`) before considering raising it
-  further — see that constant's comment in `src/video-delay-filter.cpp`.
+- Revisit `kAssumedCompressionRatio = 5.0` with the `ratio` and arena figures of the `pipeline
+  check` line from more sessions and games. Since v0.6.0 it only decides how many seconds fit the
+  budget, so raising it would buy duration, not resident memory.
 
 ## v0.7.0 (paused — scoped, not started, 2026-09-08)
 Goal: a "true-live" Replay Buffer (dedicated to Trigglow, saved via its own hotkey — OBS's native

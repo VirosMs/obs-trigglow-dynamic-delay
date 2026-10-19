@@ -2,8 +2,10 @@
 
 # Especificación técnica — Trigglow Dynamic Delay para OBS
 
-Estado: **MVP / v0.3.2 — Early Access**
-Última actualización: 2026-08-26 (reescrita desde cero — ver §0)
+Estado: **MVP / v0.6.0 — Early Access**
+Última actualización: 2026-10-19 (v0.6.0: §3.1–§3.8, §4–§4.7, §8; reescrita desde cero el
+2026-08-26 — ver §0). Se preparó un hotfix v0.5.1 que nunca se publicó; todo lo que llevaba salió en
+la v0.6.0, así que este documento fecha esos cambios en la v0.6.0.
 Nombre interno del plugin: `obs-trigglow-dynamic-delay`
 Web: https://www.trigglow.com/dynamic-delay
 
@@ -80,24 +82,39 @@ máquina de estados:
 ### 3.1. `VideoDelayFilter` — vídeo
 
 Un filtro de OBS solo `OBS_SOURCE_VIDEO`, adjunto a una **escena contenedora** oculta que contiene la
-escena en directo elegida por el usuario. En cada llamada a `video_render`:
+escena en directo elegida por el usuario. En cada llamada a `video_render` (desde la v0.6.0):
 
-1. Renderiza la escena en directo en un único render target de captura RGBA reutilizable.
-2. Convierte ese frame RGBA a **NV12** (Y + planos UV a media resolución, promediados por bloques,
-   BT.601) mediante un pequeño shader propio compilado una sola vez con `gs_effect_create()` — libobs
-   no tiene ninguna API pública de compute/dispatch (comprobado directamente contra `graphics.h`), así
-   que un shader de píxeles normal de dos pasadas es el único mecanismo público para esta conversión.
-3. Lanza una **lectura asíncrona de GPU a CPU** hacia uno de 2 pares rotatorios de staging surfaces
-   (`gs_stage_texture` + un `gs_stagesurface_map` *diferido* un frame después, para que el hilo de CPU
-   nunca se bloquee esperando una copia que acaba de empezar).
-4. Copia los bytes Y/UV ya terminados en el slot de escritura actual de un **ring buffer en RAM del
-   sistema** (`std::vector<Slot>`, `Slot::pixels` — NV12, 1.5 bytes/píxel, no los 4 de RGBA).
-5. Sube el slot que tiene `delaySeconds` de antigüedad a 2 pequeñas texturas de reproducción
-   reutilizables y lo dibuja mediante la técnica inversa del mismo shader (NV12→RGBA).
+1. Como mucho una vez por celda de captura (un intervalo de reloj de `1e9 × fps_den / fps_num` ns,
+   dos en el peldaño de degradación a mitad de fps, §4.7), renderiza la escena en directo en un único
+   render target de captura RGBA reutilizable al tamaño actual del buffer — su proyección ortogonal
+   sigue abarcando el tamaño real de la escena, así que la GPU rasteriza la escena reducida.
+2. Convierte ese frame RGBA a **I420** — Y, más U y V a la mitad de ancho y de alto (promediados por
+   bloques, BT.601, rango de estudio) — en tres pequeñas pasadas a pantalla completa sobre tres render
+   targets R8, con un shader propio compilado una sola vez con `gs_effect_create()`. libobs no tiene
+   ninguna API pública de compute/dispatch (comprobado directamente contra `graphics.h`), así que las
+   pasadas normales de shader de píxeles son el único mecanismo público para esta conversión. (Hasta
+   la v0.5.0 era NV12, dos planos, desentrelazado en la CPU antes de cada compresión y reentrelazado
+   después de cada descompresión.)
+3. Lanza una **lectura asíncrona de GPU a CPU** hacia uno de 3 slots rotatorios de staging (tres
+   superficies R8 cada uno): `gs_stage_texture` ahora y `gs_stagesurface_map` dos capturas después,
+   para que el hilo gráfico nunca se bloquee esperando una copia que acaba de empezar. Los planos
+   mapeados se copian en un frame crudo de un pequeño pool y se entregan a los hilos de compresión
+   (§4.6).
+4. Reserva el siguiente slot de un **ring en RAM del sistema** (`FrameRing`, §4.6) para esa captura,
+   marcado con su hora de captura; un hilo de compresión comprime el frame (§4) y guarda el paquete en
+   la arena del ring.
+5. Elige el frame más nuevo capturado hace al menos `delay` segundos, ya descomprimido por adelantado
+   por el hilo de descompresión, lo sube a 3 pequeñas texturas de reproducción **solo cuando cambia**
+   (el resto de vistas de la escena solo lo vuelven a dibujar) y lo dibuja con la técnica inversa del
+   mismo shader (`DrawI420`).
+
+Un delay de 0 s se salta todo esto desde la v0.6.0: el vídeo pasa sin retraso, sin ring y sin códec.
+El mínimo del dock es 1 y un filtro que gestiona el dock ignora cualquier otro valor (§3.3), así que
+esto solo se alcanza en un filtro que el dock todavía no gestiona (uno añadido a mano).
 
 Solo existe un **número pequeño y fijo de objetos de GPU**, sin importar cuántos segundos se estén
-almacenando — un render target de captura, los dos render targets de conversión, 2 pares de staging
-surfaces, 2 texturas de reproducción. Esto sustituyó a un diseño anterior (una textura de GPU
+almacenando — un render target de captura, tres render targets de planos, 3 slots de staging de tres
+superficies, 3 texturas de reproducción. Esto sustituyó a un diseño anterior (una textura de GPU
 persistente por cada frame almacenado) después de que el feedback en directo cuestionara si de verdad
 hacía falta tanta VRAM, y después de un crash real de "Device Remove/Reset" del juego al pulsar
 Disable, que elevó el coste de mantener docenas de texturas grandes de GPU vivas a la vez — no
@@ -118,7 +135,8 @@ Así que `AudioDelayFilter` (un filtro solo `OBS_SOURCE_AUDIO`) se adjunta en su
 de audio hoja individual** dentro de la escena en directo (micrófono, audio de escritorio, etc.), una
 instancia por fuente, cada una ejecutando la misma lógica de ring buffer con ventana de delay que el
 vídeo, en espacio de muestras (`ring_[channel][frame]`). El vídeo y el audio usan el mismo
-`delaySeconds`, así que ambos llegan sincronizados.
+`delaySeconds`, así que ambos llegan sincronizados; cuando el presupuesto de RAM recorta el ring de
+vídeo, ambos usan en su lugar el mismo delay efectivo en segundos enteros (§3.3).
 
 ### 3.3. `BufferModeController` — la máquina de estados
 
@@ -191,7 +209,107 @@ reinicia el historial de ese ring cada vez que sus segundos configurados cambian
 una corrección en `OnFillTimerElapsed()` provoca un silencio breve (bastante menos de un segundo)
 justo cuando el Programa cambia a la escena wrapper delayed, mientras el ring de audio se vuelve a
 llenar hasta la duración ahora coincidente — un cambio claramente mejor que quedar desincronizado
-el resto de la sesión.
+el resto de la sesión. (Límite conocido hasta la v0.6.0: la consulta devolvía el tramo del ring
+redondeado hacia abajo a segundos enteros, mientras que `Render()` limitaba el delay de vídeo al
+tramo sin redondear, así que cuando el presupuesto de RAM recortaba el ring el vídeo y el audio
+podían quedar hasta ~1s separados. La v0.6.0 lo cierra, ver más abajo. La consulta tampoco salta ya
+al hilo gráfico.)
+
+**v0.6.0: apagar los filtros de delay que dejó encendidos una sesión anterior.** Los filtros se
+guardan encendidos en la colección de escenas cuando OBS se cierra con el delay Active, así que en
+el siguiente arranque la escena en directo quedaba con delay permanente mientras el dock mostraba
+`Inactive`. La v0.5.0 añadió `ObsFrontendBridge::DisableAllDelayFilters()` en
+`FrontendEvent::FinishedLoading` (solo con el controlador en `Inactive`), pero enumeraba con
+`obs_enum_sources()`, que nunca devuelve filtros (libobs 31.1.1: solo inputs no privados y grupos),
+así que no apagaba nada. Ahora reúne todas las fuentes que pueden llevar uno de nuestros filtros —
+inputs y grupos (`obs_enum_sources`), las escenas del lienzo principal (`obs_enum_scenes`) y las
+fuentes de audio globales de los canales de salida (`obs_get_output_source`) —, recorre sus filtros
+con `obs_source_enum_filters` y solo entonces apaga los que coinciden, fuera de todo lock de libobs
+(`obs_source_set_enabled()` emite una señal cuyos handlers pueden tomar esos locks). Se ejecuta en
+`FrontendEvent::FinishedLoading` y en `FrontendEvent::SceneCollectionChanged` (una colección a la que
+se cambia puede traerlos igual que la que se carga al arrancar), en ambos casos solo con el
+controlador en `Inactive`, justo después de la migración de nombres del §3.7.
+
+**v0.6.0: cambiar de colección de escenas desactiva el delay.** La escena contenedora y los filtros
+pertenecen a la colección en la que se crearon, así que con el delay en marcha un cambio dejaba el
+dock diciendo "Delay activo" mientras la colección nueva funcionaba sin ningún delay. En
+`OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING` (`FrontendEvent::SceneCollectionChanging`: cambiar,
+nueva, eliminar), con la colección antigua todavía cargada,
+`BufferModeController::StopForSceneCollectionChange()` detiene el delay como `Disable()` — filtros
+apagados, el Programa de vuelta en la escena que había antes de Activar —, así que la colección
+antigua se guarda así, y pasa a `Inactive` con `Status.CollectionChanged` ("El delay se desactivó al
+cambiar de colección de escenas…") y un WARN. OBS 31 no envía `COLLECTION_CHANGING` al duplicar o
+renombrar, solo `COLLECTION_CHANGED` con la copia ya cargada: entonces se hace la misma parada (la
+primera, antes de la migración y la limpieza de arriba), que apaga los filtros de la copia, y solo
+cambia el Programa si la copia se abrió en la escena contenedora, que si no mostraría la escena en
+directo sin delay.
+
+**v0.6.0: un único delay en segundos enteros para vídeo y audio (diseño A.4).**
+`bufferfit::Compute()` devuelve `effectiveDelaySeconds`: el delay pedido cuando el ring lo guarda
+entero, y si no `floor((frames − 1 − holgura) / fps)`, segundos enteros que conservan el cuarto de
+segundo de holgura contra el jitter de captura. `Render()` retrasa el vídeo exactamente eso
+(`effectiveDelaySeconds × 1e9`; solo si cabe menos de un segundo usa el tramo propio del ring), y el
+audio recibe el mismo valor. `get_effective_delay_seconds` ya no salta al hilo gráfico:
+`VideoDelayFilter::PlannedEffectiveDelaySeconds()` ejecuta el mismo `bufferfit::Compute()` en el hilo
+que llama, con el delay y el suelo de calidad que envió el dock (o, en un filtro que el dock todavía
+no gestiona, sus ajustes), la información de vídeo de OBS y el tamaño del objetivo — las mismas
+entradas que usa `EnsureRingSized()`. Así `SyncAudioDelayToVideoEffective()` da al audio el valor
+correcto desde `Enable()` y justo después de un ajuste que cambia el propio controlador, no un
+`Render()` más tarde; un cambio de 30 → 40 s ya no deja el audio en 30 s. El resultado se guarda en
+`BufferModeStatus::effectiveDelaySeconds`, la única copia, que el dock y el overlay muestran desde
+`Filling`: con 60 s pedidos y 41 s que caben, el chip pone "41 / 60 s" en ámbar, el mensaje es
+`Status.FillingTrimmed` y la ventana de llenado dura 41 s, todo lo que tiene que guardar el ring
+recortado. El tramo en sí usa aritmética racional a los `fps_num/fps_den` exactos: multiplicar por
+un intervalo de frame truncado podía redondear a 29s un tramo de 1800 frames a 60fps.
+
+**v0.6.0: rellenar detrás de la escena de carga cuando el buffer se reinicia.** Un redimensionado
+duro (§4.6) — el delay, la calidad mínima o los ajustes de vídeo de OBS cambiados mientras el ring
+guarda frames, o el interruptor de emergencia cambiado — vacía el ring, así que la escena
+contenedora no mostraría nada durante `delay` segundos. El filtro emite `buffer_restarted` en su
+fuente; `ObsFrontendBridge` se conecta a esa señal al activar el filtro y la pasa al hilo de UI como
+`FrontendEvent::BufferRestarted`; `BufferModeController` vuelve a poner la escena de carga en el
+Programa (manteniendo la escena en directo renderizando), resincroniza el audio y vuelve a
+`Filling`. `Enable()` y ese rellenado incrementan `BufferModeStatus::fillGeneration`, y el dock solo
+rearma su temporizador de llenado cuando cambia, así que otras actualizaciones de estado durante el
+llenado (activar o desactivar el overlay, cambiar su esquina) ya no reinician la cuenta atrás ni el
+paso a la escena contenedora. Para un cambio que hace el propio controlador (`SetDelaySeconds()` /
+`SetMinResolutionHeight()` en `Active`), predice el reinicio con `EstimateBufferFit()` y cambia el
+Programa antes de enviar el ajuste. Sin escena de carga, el Programa se queda en la escena
+contenedora en blanco, nunca en la escena en directo sin delay. Desde la v0.6.0 el dock bloquea las
+escenas en directo y de carga, los segundos y la calidad mínima en `Filling`/`Active` (un control
+deshabilitado también sale del orden de tabulación), y los filtros solo aplican los valores del dock
+(abajo), así que en la práctica los reinicios vienen de resets de vídeo de OBS.
+
+**v0.6.0: el dock es el único sitio donde se elige el delay.** Las propiedades de los propios
+filtros "(auto)" permitían saltarse el plugin (90 s en el diálogo del filtro de vídeo dejaban el
+vídeo a 90 s y el audio a 60; 0 s dejaba pasar la escena en directo mientras el dock decía "Delay
+activo"). Ahora:
+- Sus propiedades no tienen campos de delay ni de calidad, solo una nota (`Filter.VideoDelay.Managed`,
+  `Filter.AudioDelay.Managed`) de que los gestiona el dock.
+- `ObsFrontendBridge` envía el delay y el suelo de calidad del dock con los procs
+  `set_managed_delay_seconds` y `set_managed_min_resolution_height` de cada filtro. A partir de ahí
+  el filtro queda *gestionado*: `Update()` ignora un valor distinto en sus ajustes (el botón de
+  valores por defecto de OBS, un diálogo antiguo, obs-websocket) con un WARN por cada envío, y
+  `PlannedEffectiveDelaySeconds()` lee los valores gestionados. Un filtro todavía no gestionado
+  (añadido a mano, o cargado con una colección antes del primer Activar) sigue aplicando sus ajustes.
+- Con el delay en marcha, el puente guarda referencias débiles a los filtros que activó y escucha su
+  señal `enable`: uno desactivado desde fuera del dock (su icono del ojo en el diálogo de Filtros,
+  obs-websocket) se vuelve a activar al momento (como mucho se lo salta el frame que se está
+  renderizando), con un WARN por activación. Las mismas referencias débiles sirven para la consulta
+  de salud del dock una vez por segundo (sin recorrer la escena, sin llenar el log de WARN al
+  renombrar la escena en directo), los ajustes, la consulta del delay efectivo y para apagar los
+  filtros, así que Desactivar sigue funcionando tras renombrar la escena en directo.
+
+Limitación conocida: borrar a mano un filtro de delay "(auto)" con el delay en marcha no se detecta
+— la escena contenedora muestra entonces la escena en directo sin filtro, sin delay, hasta que el
+usuario desactiva y vuelve a activar el delay desde el dock (`Enable()` vuelve a crear el filtro).
+
+Limitación conocida, que ya existía antes de la v0.6.0: el plugin no vigila el Programa con el delay
+en `Active`. Si el usuario (o una acción de Stream Deck u obs-websocket) cambia el Programa a la
+propia escena en directo en vez de a la escena contenedora, la escena en directo se muestra y se
+emite tal cual, sin delay, porque el filtro de vídeo está en la escena contenedora. El Programa tiene
+que quedarse en la escena que eligió el plugin mientras el delay está en marcha; para cambiar de
+escena hay que desactivar antes el delay.
 
 ### 3.4. Liberar el ring de RAM al hacer Disable
 
@@ -200,46 +318,409 @@ no vuelve a ejecutarse una vez deshabilitado, así que nada reduciría/liberarí
 solo. `VideoDelayFilter` registra un proc handler `"release_buffers"` en su propio `obs_source_t`
 (`obs_source_get_proc_handler`); `ObsFrontendBridge::SetBufferFilterEnabled(false)` lo llama. Como esa
 llamada puede producirse desde cualquier hilo (en la práctica, el hilo del clic de botón del dock de
-Qt) mientras que el ring solo se toca desde el hilo de gráficos/vídeo, el propio `ring_.clear()` se
-encola en `OBS_TASK_GRAPHICS` mediante `obs_queue_task(..., wait=true)` en vez de ejecutarse in situ —
-se ejecuta estrictamente después de cualquier llamada a Render() todavía en curso, sin necesitar
-ningún lock.
+Qt) mientras que el ring solo se toca desde el hilo de gráficos/vídeo, la liberación se encola en
+`OBS_TASK_GRAPHICS` mediante `obs_queue_task(..., wait=true)` en vez de ejecutarse in situ — se
+ejecuta estrictamente después de cualquier llamada a Render() todavía en curso, sin necesitar ningún
+lock.
 
-### 3.5. Dimensionado del buffer: primero el suelo de calidad, después la duración
+Desde la v0.6.0 esa tarea (`ReleaseBuffersTask`) registra la última ventana de telemetría del ciclo
+(§4.5) y después llama a `StopCycle(true)`: el ring, la referencia que tiene cada trabajo en cola y el
+almacenamiento del pool de frames crudos pasan al hilo liberador del pipeline de códec (§4.6), cada
+hilo de códec cierra sus propios contextos, y `ReleaseSizedGpuObjects()` libera los render targets de
+captura y de planos, las superficies de staging y las texturas de reproducción — ~100 MB de RAM
+(medidos) y ~37 MB de VRAM (estimados) a 1440p que antes seguían ocupados con el delay desactivado.
+Reabrirlos en el siguiente Enable cuesta del orden de un milisegundo. Cambio de contrato: `wait=true`
+garantiza ahora que el ring está desenganchado del filtro, no que su memoria ya haya vuelto al
+sistema — el hilo liberador la libera milisegundos después. El hilo gráfico nunca libera la arena
+(cientos de MB, decenas de ms) ni espera a un hilo.
+
+### 3.5. Dimensionado del buffer: techo de salida, después suelo de calidad, después duración
 
 El usuario elige dos cosas, ambas de libre elección, nunca restringidas:
 
 - **Delay (segundos)** — de 1 a 60 en el spinner del dock (un límite de cordura de la interfaz; el
   límite real es la aritmética de RAM de abajo).
-- **Calidad mínima** — 480p / 720p / 1080p. La altura capturada del vídeo retrasado nunca baja de
-  esto, pase lo que pase.
+- **Calidad mínima** — 480p / 720p / 1080p / 1440p (2K) / 2160p (4K). El suelo para la reducción por
+  RAM de abajo: antes que guardar el vídeo retrasado por debajo de esta altura, el plugin guarda
+  menos segundos. Eso sí, desde la v0.6.0 nunca eleva el buffer por encima de la resolución de
+  salida de OBS (regla 1 de abajo): con una salida de 720p el buffer es 720p aunque el mínimo sea
+  1080p, porque guardar más filas de las que OBS emite no aporta nada. También es el suelo de la
+  degradación automática (§4.7). Con el suelo a la altura de la salida (p. ej. 1440p con una salida
+  1440p), la reducción por RAM recorta segundos en vez de filas, y a la degradación solo le queda el
+  peldaño de mitad de fps.
 
 `EnsureRingSized()` calcula un **presupuesto de RAM** a partir de la RAM total del sistema
 (`GlobalMemoryStatusEx` en Windows; sin implementar en otras plataformas, donde se usa un valor de
-respaldo conservador) — el 50% de la RAM total, acotado entre un suelo de 1GB y un techo de 24GB. Si
-los segundos pedidos × el suelo de calidad elegido no caben en ese presupuesto, el plugin acorta la
-**duración realmente almacenada** en vez de bajar nunca de la calidad elegida. El dock muestra una
-estimación en vivo y no bloqueante de qué logrará realmente una combinación dada de (segundos,
-calidad) *antes* de que el usuario pulse Enable — "aconsejar según el hardware, pero a su elección":
-esta estimación nunca bloquea ni recorta las elecciones del usuario, solo avisa.
+respaldo conservador) — el 50% de la RAM total, acotado entre un suelo de 1GB y un techo de 24GB.
+
+Desde la v0.6.0 el dimensionado en sí es una función pura, `bufferfit::Compute()`
+(`src/buffer-fit.hpp`/`.cpp`, sin libobs ni FFmpeg para poder probarla con tests unitarios), a la
+que llaman con la misma entrada `EnsureRingSized()` (que redimensiona el ring de verdad) y
+`VideoDelayFilter::EstimateBufferFit()` (la estimación del dock), así que lo que predice el dock es
+lo que ocurre. Su entrada es el tamaño del objetivo, la geometría del lienzo
+(`obs_video_info::base_*`) y de la salida (`output_*`), los `fps_num/fps_den` exactos, el delay, la
+calidad mínima, el presupuesto de RAM y el ratio de compresión asumido (§4.3). Aplica tres reglas,
+en orden:
+
+1. **Techo de salida (v0.6.0).** El buffer nunca guarda más píxeles de los que emite la mezcla
+   principal de OBS (Ajustes → Vídeo → Resolución de salida (escalada)). Lo que esté por encima lo
+   descarta el propio reescalado de salida de OBS, pero le costaba CPU al plugin: la codificación y
+   decodificación MJPEG (§4.2) escalan más o menos linealmente con los píxeles y se ejecutaban en el
+   hilo gráfico de OBS hasta la v0.6.0. Un usuario con un lienzo 2560x1440 y una salida 1920x1080 a
+   60fps veía "Encoding overloaded" en OBS con v0.5.0, que guardaba el buffer al tamaño del lienzo;
+   en un benchmark fuera de OBS con el mismo FFmpeg y el mismo pipeline, un buffer 2560x1440 cuesta
+   14,3/17,4ms p50/p95 de codificación + decodificación por frame (codificador de un hilo). El techo
+   es una escala uniforme, `capScale = min(1, max(outW/baseW, outH/baseH))`: conserva la relación de
+   aspecto del lienzo y nunca baja de la salida en ningún eje (inclinándose por la calidad cuando las
+   relaciones de aspecto de lienzo y salida difieren). Solo
+   se aplica cuando el objetivo tiene el tamaño del lienzo (el caso normal de la escena en directo) y
+   la geometría se conoce; cualquier otro objetivo se deja sin límite, la opción conservadora.
+2. **Suelo de calidad.** Si el delay completo no cabe en el presupuesto en el techo, la escala se
+   reduce, pero nunca por debajo de `minResolutionHeight` filas — y ese suelo nunca supera el techo.
+   La reducción se calcula contra el coste continuo y después se baja de fila en fila de la fuente
+   hasta que el frame redondeado cabe de verdad, así que un ring reducido por RAM sigue guardando el
+   delay completo y el resultado es monótono respecto al presupuesto y al tamaño de salida. Las
+   alturas se redondean con `llround` y se fuerzan pares (croma 4:2:0), con un mínimo de 2. Los
+   anchos son el múltiplo de 8 más cercano que no supere la fuente (`AlignedWidth()`, mínimo 8), en
+   todas las reglas y en todos los peldaños de degradación, así que cada fila de cada plano I420 ocupa
+   un número entero de palabras de 4 bytes: libobs-opengl mapea una superficie de staging con
+   `linesize = width` mientras que `glReadPixels()` rellena cada fila hasta 4 bytes, lo que torcía
+   cualquier otro ancho en Linux y macOS.
+3. **Duración al final.** Si ni siquiera el suelo cabe, el ring recibe menos frames: el plugin acorta
+   la **duración realmente almacenada** en vez de bajar del suelo.
+
+El número de frames usa el ritmo exacto: `ceil(delay × fps_num / fps_den)` más un cuarto de segundo
+de holgura (el jitter de captura nunca debe dejar el slot más antiguo más joven que el delay) más un
+slot, así que 30s a 60000/1001 necesitan 1815 slots en vez de un recuento truncado a 59fps. La celda
+de captura es `1e9 × fps_den / fps_num` ns (16.683.333ns a 59,94fps); antes de la v0.6.0 era
+`1e9 / 59` en ese caso, lo que perdía casi un frame real por segundo.
+
+El dock muestra una estimación en vivo y no bloqueante de qué logrará realmente una combinación
+dada de (segundos, calidad) — duración y resolución del buffer, techo incluido — *antes* de que el
+usuario pulse Enable — "aconsejar según el hardware, pero a su elección": esta estimación nunca
+bloquea ni recorta las elecciones del usuario, solo avisa. `EnsureRingSized()` registra
+`buffering at WxH (capped to OBS output WxH, canvas WxH)` siempre que se aplica el techo, y un WARN
+si el ring tiene que reconstruirse mientras guarda frames (ajustes de vídeo de OBS, delay o calidad
+cambiados con el delay activo — el ring vuelve a llenarse desde vacío).
+
+**Válvula de escape: `buffer_output_cap` (v0.6.0).** Un ajuste oculto del plugin:
+`"buffer_output_cap": false` en `buffer-mode-settings.json` (la carpeta de configuración del plugin
+que da `obs_module_get_config_path()`; en Windows
+`%APPDATA%\obs-studio\plugin_config\obs-trigglow-dynamic-delay\`) quita la regla 1 y dimensiona
+como v0.5.0: resolución de la fuente, reducida solo por RAM, nunca por debajo de la calidad mínima.
+No es idéntico byte a byte, eso sí: el ritmo exacto y el cuarto de segundo de holgura redondeado
+hacia arriba dan un slot más que v0.5.0 a 25/30/50fps, y cuando falta RAM la reducción fila a fila
+de la regla 2 puede quedar hasta 2px por debajo o por encima del tamaño de v0.5.0. Existe para
+soporte — por ejemplo quien graba a resolución de lienzo y prefiere esa calidad a costa de CPU —,
+así que no tiene propiedad en el filtro ni control en el dock. `plugin-main.cpp` lo lee solo al
+cargar, de forma estricta: solo un `false` literal de JSON quita el límite (se comprueba con
+`obs_data_item_gettype() == OBS_DATA_BOOLEAN`); ausente, `true` o `null` (libobs lo descarta al
+cargar) lo dejan activado, y cualquier otro tipo — `"false"` como texto, `0` — también, con un WARN.
+Un archivo de ajustes que existe pero no es JSON válido se renombra (o, si no se puede, se copia) a
+`buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` con un WARN que da las dos rutas antes de
+usar los valores por defecto, así que el guardado al salir nunca lo sustituye en silencio; si no
+funciona ninguna de las dos cosas, el archivo no se toca al salir. `BufferModeController` lo envía al
+filtro en cada `Enable()` mediante `ObsFrontendBridge::SetBufferFilterOutputCap()`, así que el
+archivo de ajustes siempre gana sobre lo que el filtro guardó con la colección de escenas, y la
+estimación del dock también lo usa. `SaveBufferSettings()` reescribe el archivo desde cero al salir
+de OBS y solo vuelve a escribir la clave cuando es `false` (el archivo del resto de usuarios queda
+igual), y por eso mismo hay que editarlo con OBS cerrado. Las líneas de log `settings loaded` y
+`enabled` indican `output_cap=on|off`, y el log de dimensionado y la línea `perf check` (§4.5) dicen
+cuándo está desactivado. El interruptor de emergencia `codec_workers` (§4.6) se lee y se envía igual.
+Pasos para el usuario: `docs/TROUBLESHOOTING-es.md`.
+
+**Encoders por encima del buffer (v0.6.0).** Con el techo activo, una salida cuyo encoder de vídeo
+trabaja por encima del buffer — una grabación reescalada al lienzo, o una pista de Enhanced
+Broadcasting por encima de la salida — recibe vídeo diferido reescalado hacia arriba.
+`BufferModeController::WarnAboutEncodersAboveBuffer()` registra un WARN por encoder, tamaño y ciclo
+de delay (un encoder que se reinicia a otro tamaño vuelve a avisar), con el nombre del encoder y de
+la salida, ambas resoluciones, el tamaño sin límite y el ajuste `buffer_output_cap`, y añade que
+quitar el límite cuesta CPU y RAM y puede acortar el delay si falta RAM (con la cifra real cuando el
+buffer sin límite no guardaría el delay completo). Revisa cada slot de encoder de vídeo
+(`MAX_OUTPUT_VIDEO_ENCODERS`) de cada salida activa, y solo cuando quitar el límite guardaría de
+verdad más. Se ejecuta solo en el hilo de UI — en `Enable()`, al llenarse el buffer y en los eventos
+de frontend de inicio de streaming / grabación / replay buffer —, nunca desde el hilo gráfico, porque
+`obs_enum_outputs()` mantiene `outputs_mutex`.
+
+Qué encoders ven el lienzo principal (`ObsFrontendBridge::ListActiveVideoEncoders()`; la decisión
+es la función pura de `src/encoder-check.*`): en libobs 31.1.1 un encoder renderiza el `video_t` que
+recibió y `obs_encoder_parent_video()` lo devuelve, pero un encoder reescalado en GPU (Ajustes →
+Salida → Avanzado → Reescalar salida, y todas las pistas de Enhanced Broadcasting, que además fijan
+un formato preferido) se pasa al arrancar a una mezcla propia de la misma vista al tamaño escalado
+(`maybe_set_up_gpu_rescale()` en `obs-encoder.c`), un `video_t` que ninguna API pública relaciona
+con su lienzo. Así que:
+
+- `obs_get_video()` → el lienzo principal (exacto).
+- el vídeo de otro lienzo con nombre (`obs_enum_canvases()` + `obs_canvas_get_video()`, p. ej. un
+  lienzo vertical) → no es el lienzo principal (exacto).
+- cualquier otra mezcla → el lienzo principal si el tamaño del encoder tiene la relación de aspecto
+  del lienzo o de la salida (tolerancia del 2%, suficiente para los tamaños pares que ofrece OBS,
+  como 852x480); si no, no. El WARN dice cuándo se ha basado en esto.
+
+Límites de esa heurística: un encoder reescalado en GPU de otro lienzo, de un lienzo privado o de la
+vista de un plugin con la misma relación de aspecto que el lienzo principal (un segundo lienzo 16:9)
+se toma por el principal — un WARN que no aplica —, y un encoder del lienzo principal reescalado a
+otra relación de aspecto (estirado) se pasa por alto. Un lienzo vertical (9:16) con un lienzo
+principal 16:9 siempre se distingue.
+
+**Tests (v0.6.0).** `tests/buffer_fit_tests.cpp` prueba `bufferfit::Compute()` sin OBS: lienzo =
+salida, 1440p → 1080p, 4K → 1080p, salida mayor que el lienzo, relaciones de aspecto distintas, un
+suelo por encima de la salida, reducción por RAM dentro de rango, un suelo activo, redondeo, anchos
+múltiplos de 8, dimensiones impares, entradas degeneradas, un objetivo que no es el lienzo, delay
+cero, 59,94fps, el delay efectivo en segundos enteros, el límite desactivado y barridos de
+presupuesto/salida. `tests/encoder_check_tests.cpp` prueba la decisión del WARN de encoders
+(`encodercheck`), con los buffers calculados por `bufferfit::Compute()` con y sin límite:
+coincidencia de relación de aspecto, un encoder del lienzo sin escalar y escalado en CPU, encoders
+reescalados en GPU por encima/igual/por debajo del buffer, pistas de Enhanced Broadcasting, lienzos
+verticales (720x1280, 1080x1920) y un lienzo principal vertical, y un buffer al que el límite no
+afecta (límite desactivado, salida = lienzo, limitado por RAM). `buffer_fit_tests` cubre además los
+suelos 1440p y 2160p (una salida 1440p con un suelo 1440p se queda en 2560x1440 y recorta el delay a
+los segundos enteros que caben). Otras siete suites cubren el resto del código sin OBS:
+`ui_tokens_tests` (contraste WCAG en las paletas de OBS 31), `auto_names_tests` (§3.7),
+`overlay_layout_tests` (§3.6), `frame_arena_tests`, `frame_ring_tests` y `degradation_policy_tests`
+(§4.6, §4.7), y `pipeline_stress_tests` (§4.6). Desactivados por defecto, así que el empaquetado del
+plugin no cambia. Dos formas de compilarlos (`tests/CMakeLists.txt`):
+
+```
+# Desde el build del propio plugin (mismos flags de compilación que el plugin):
+cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
+cmake --build <dir> --config RelWithDebInfo
+ctest --test-dir <dir> -C RelWithDebInfo --output-on-failure
+
+# Por separado, sin descargar ninguna dependencia de OBS/Qt/FFmpeg:
+cmake -S tests -B build_tests
+cmake --build build_tests --config RelWithDebInfo
+ctest --test-dir build_tests -C RelWithDebInfo --output-on-failure
+```
+
+El job `unit-tests` de CI (`.github/workflows/build-project.yaml`) ejecuta la forma por separado en
+Ubuntu, Windows y macOS, y bloquea el job de release si fallan.
+
+### 3.6. El overlay del directo (v0.6.0)
+
+Mientras el delay está `Active` y "Mostrar overlay de delay en el directo" está marcado, la escena
+contenedora muestra una insignia "DELAY 30 s" con el delay que de verdad se aplica
+(`BufferModeStatus::effectiveDelaySeconds`). Desde la v0.6.0 es **una única imagen que pinta el
+propio plugin** (`src/overlay-badge.*`, QPainter solo en el hilo de UI: placa tinta, regla de marca,
+marca de Dynamic Delay, la Archivo empaquetada o, si no está, la fuente de interfaz del sistema, y
+bajo la placa, fuera de ella y debajo de la marca, el texto pequeño `Overlay.Signature`,
+"By Trigglow" en todos los idiomas, en la Geist Mono empaquetada a 11 px, mist al 75 % con un halo
+oscuro muy suave y sin caja: 7,3 px en un directo a 720p), guardada como un PNG por cada valor de
+segundos en la carpeta de configuración del plugin (`overlay/delay-badge-r3-<N>s.png`, 500x180, 2,5
+veces el diseño de 200x72 -- la placa de 200x58 y debajo la línea de la firma sobre píxeles
+transparentes -- para que siga nítida) y mostrada por una sola fuente de imagen, **Trigglow Delay
+Badge (auto)**. El `r3` es `overlaylayout::kRenderVersion`, que sube cada vez que cambia el dibujo:
+un PNG que dejó en esa carpeta una compilación anterior no se muestra nunca, y el primer dibujo de
+la sesión lo borra. Sustituye al PNG de la insignia más una fuente de texto aparte en Segoe UI de la
+v0.5.x (solo Windows, con desplazamientos mágicos para alinear las dos); su texto ya no se puede
+editar, y la fuente de texto antigua se borra en cuanto se encuentra.
+
+Colocación (`src/overlay-layout.*`, pura, `tests/overlay_layout_tests.cpp`): a un 2,2% del lado
+corto del lienzo de la esquina elegida (24 px a 1080p), conservando la proporción del lado corto que
+tiene a 1080p, así que se lee igual a 720p, 1440p y 4K y no se extiende por un lienzo vertical de
+1080x1920. Toda la imagen respeta ese margen: en una esquina superior la placa queda en él, en una
+inferior, la firma. Lo último que aplicó el plugin (esquina, tamaño del lienzo, posición, escala,
+alto de la insignia) se guarda en los ajustes privados del elemento de escena: el plugin la vuelve a
+colocar solo cuando cambia la esquina en el dock, o cuando cambia el tamaño del lienzo o el alto de
+la insignia (`kDesignHeight`, 58 antes de la firma) y el elemento sigue donde lo puso el plugin. Se
+conserva la posición o el tamaño que el usuario haya puesto en OBS. Si ya existe una fuente de
+imagen con ese nombre, se reutiliza en vez de añadir copias "... 2".
+
+### 3.7. Nombres de los objetos que gestiona el plugin (v0.6.0)
+
+OBS los busca por su nombre, así que son constantes fijas en inglés y ASCII, nunca traducidas
+(`src/auto-names.*`): la escena contenedora **Trigglow Delay Buffer (auto)**, el filtro de vídeo
+**Trigglow Buffer Mode Delay (auto)**, un filtro de audio por fuente
+`Trigglow Audio Delay (auto) - <fuente>`, y el overlay **Trigglow Delay Badge (auto)**. Hasta la
+v0.5.x terminaban en "(no tocar)" / "(auto, no tocar)" en todos los idiomas.
+
+`ObsFrontendBridge::MigrateLegacyAutoNames()` renombra las colecciones antiguas una sola vez, en su
+sitio (se conservan posición, filtros y ajustes), en `FinishedLoading` y `SceneCollectionChanged` con
+el controlador en `Inactive`. Toda búsqueda acepta también los nombres antiguos (`LookupNames()`),
+así que una colección cuyo nombre nuevo ya estaba ocupado sigue funcionando con el antiguo. La escena
+contenedora, con cualquiera de los dos nombres, nunca se ofrece como escena en directo ni de carga.
+Consecuencias documentadas para el usuario (`CHANGELOG-es.md`, `docs/TROUBLESHOOTING-es.md`): las
+acciones que se refieren a estos objetos por su nombre (Stream Deck, obs-websocket) hay que
+actualizarlas, y volver a la v0.5.0 o anterior después del cambio de nombre crea un juego
+"(no tocar)" junto al "(auto)" (la versión antigua desactiva los filtros "(auto)" al cargar, así que
+se quedan inertes).
+
+### 3.8. Cliente de cuenta, Trigi y soporte (v0.6.0)
+
+Esta sección cubre solo la parte del plugin. Cómo responde trigglow.com (sus límites, el propio
+asistente, cuánto tiempo guarda los datos) vive fuera de este repositorio; el plugin solo reacciona a
+las respuestas y códigos de error documentados, y nunca muestra el texto de error del servidor.
+
+**Un único camino de red.** `win-http.*` es el único código que abre conexiones: WinHTTP en Windows;
+en macOS y Linux `Available()` es falso y toda llamada devuelve "no disponible" al instante (allí no
+hay inicio de sesión, Trigi ni reportes hasta la v0.6.1). Cada petición es HTTPS con TLS 1.2 o
+superior, nunca sigue una redirección (un 3xx es un error, así que un token Bearer no puede rebotar a
+otro host), no envía cookies ni el inicio de sesión automático de Windows, tiene timeouts por paso y
+un límite total (una ventana de recepción más larga para las respuestas y los resúmenes de Trigi),
+pone un tope al tamaño de la respuesta, rechaza valores de cabecera que pudieran inyectar líneas y no
+escribe nada en el log por sí mismo. `api-client.*` va encima: peticiones solo a `api.trigglow.com`,
+un `User-Agent` `TrigglowDynamicDelay/<X.Y.Z> (OBS plugin; <windows|macos|linux>)` con la versión
+real, cabeceras JSON, el cuerpo `{ "error": "<código>" }` traducido a estados del plugin,
+`Retry-After` y la lista fija de páginas que el plugin puede abrir (inicio de sesión, soporte,
+privacidad y la página del plugin en www.trigglow.com, este repositorio en GitHub), comprobadas por
+prefijo. Las peticiones que crean algo (una conversación, una pregunta, un resumen, un ticket, un
+adjunto) nunca se reintentan solas. Un build de prueba local solo puede apuntar a otro host con la
+opción de CMake `TRIGGLOW_ALLOW_API_HOST_OVERRIDE`, que CI rechaza.
+
+**Inicio de sesión (vinculación v2; `auth-client.*`, `auth-manager.*`, `token-store.*`).**
+1. El inicio devuelve un código de enlace (va en la URL de la página), un código corto de usuario que
+   se muestra en el dock, un secreto de sondeo que se queda en memoria, la página que hay que abrir,
+   una caducidad y un intervalo de sondeo. Cada valor se comprueba (formato, el prefijo de la página,
+   caducidad e intervalo acotados) antes de abrir nada; si alguno no encaja, el inicio de sesión
+   falla de forma limpia y no se prueba ningún flujo anterior.
+2. La página se abre en el navegador del sistema y el dock muestra el código de usuario. El plugin
+   sondea con el secreto en el cuerpo de la petición al intervalo indicado hasta la caducidad:
+   pendiente, aprobado (el token se entrega una sola vez), denegado ("No he sido yo"), caducado; "más
+   despacio" alarga el intervalo y los errores de red siguen sondeando hasta la caducidad. Cancelar
+   olvida el enlace y el secreto en local.
+3. El token es opaco (el plugin nunca lo interpreta) y solo sirve para las llamadas propias del
+   plugin. En Windows se guarda con `CryptProtectData` para el usuario actual, sin interfaz, aparte de
+   los ajustes del plugin, escrito en un fichero temporal y movido a su sitio. Se guarda el nombre
+   visible; el email, no. Si no se puede descifrar, se borra y el plugin queda sin sesión.
+4. En cada carga: una comprobación de la cuenta, y una renovación antes de cualquier otra llamada con
+   sesión cuando toca (el token nuevo se guarda antes de usarlo). `401 token_rotated` vuelve a leer el
+   token guardado o renueva, y reintenta una vez; cualquier otro 401 termina la sesión (se borra el
+   almacenamiento; Trigi conserva el texto que se estaba escribiendo) salvo que para entonces haya
+   guardado un token más nuevo; `403 suspended` o `account_inactive` conserva el token pero bloquea
+   Enable; los errores de red, los 5xx o un servidor antiguo mantienen la sesión, y Enable funciona
+   sin conexión. La caducidad local nunca bloquea Enable: decide el servidor cuando responde. Una
+   renovación que necesita una llamada de "Reportar un problema" se hace en una tarea de
+   `AuthManager` que solo cancela la descarga del plugin, y su token se guarda en cuanto el servidor
+   responde: cerrar el diálogo a mitad no puede perder el token nuevo (el antiguo, usado otra vez,
+   parecería robado al servidor, que entonces termina la sesión).
+5. Cerrar sesión envía la revocación en segundo plano con un timeout corto y borra el almacenamiento
+   local sea cual sea el resultado. Gana a todo lo que siga esperando al servidor (una renovación, el
+   cambio de la v0.5.x, una espera de inicio de sesión): el almacén cuenta los cierres de sesión, un
+   token conseguido a través de uno nunca se guarda, y además se revoca. Así un cierre de sesión
+   nunca se deshace en el siguiente arranque.
+6. Migración desde la v0.5.x: cuando solo existe el inicio de sesión antiguo en texto plano, se cambia
+   una vez por un token del plugin; si sale bien, el fichero antiguo se sobrescribe con ceros y se
+   borra; un 401 lo borra y termina la sesión; los errores de red, los 5xx, un servidor antiguo o un
+   límite lo conservan para el siguiente arranque (Enable sigue funcionando mientras tanto, pero Trigi
+   y los tickets con sesión no usan el inicio de sesión antiguo). Si ya hay un inicio de sesión
+   cifrado (o uno ilegible), un fichero antiguo que haya quedado se sobrescribe y se borra al cargar.
+
+Ni el dock ni el log muestran nunca el enlace, los códigos, el secreto ni el token.
+
+**Trigi (`support-client.*`, `support-service.*`, `trigi-page.*`, `trigi-states.*`).**
+- Solo se muestra en Windows, con sesión, cuando la comprobación de la cuenta dice que Trigi está
+  disponible y la versión del plugin es al menos la mínima que indica (comparación numérica
+  `X.Y.Z`). Si no, el diálogo se abre en el formulario de ticket; sin sesión ofrece "Inicia sesión
+  para preguntar a Trigi".
+- El aviso del primer uso (versión 1) hay que aceptarlo antes de la primera pregunta. La versión
+  aceptada se guarda en local, y una versión mayor vuelve a mostrar el aviso.
+- La conversación se crea de forma perezosa, con la primera pregunta; abrir el diálogo no hace
+  ninguna llamada a Trigi. Su cuerpo de creación lleva exactamente el idioma, el cliente
+  (`obs_dynamic_delay`, versión, SO), la versión del aviso y, solo si la casilla está marcada, los
+  datos técnicos. El ID de la conversación solo vive en memoria.
+- Como mucho hay una petición de Trigi en vuelo; un contador de generación descarta las respuestas de
+  una conversación anterior o de un diálogo cerrado. Las llamadas van como trabajos en segundo
+  plano (abajo) y vuelven al hilo de UI; nada se ejecuta en el hilo gráfico de OBS.
+- Tres formas de respuesta: una respuesta (texto más una acción opcional), un rechazo o "no
+  disponible". Una acción hacia un ticket de Dynamic Delay o hacia una persona se convierte en "Crear
+  ticket con esta conversación"; un ticket de cualquier otra categoría, en "Abrir soporte en
+  trigglow.com". Los eventos de valoración, "resuelta", "abandonada" (se envía en segundo plano al
+  cerrar un diálogo con preguntas y sin ticket) y paso a una persona no esperan respuesta.
+- Los errores se traducen en estados de la página (`trigi-states.*`, probado sin Qt): sin conexión y
+  "ha tardado demasiado" con reintento manual, error del servidor, límite (Enviar desactivado durante
+  la cuenta atrás de `Retry-After`), sesión terminada, conversación cerrada (una nueva con la
+  siguiente pregunta), Trigi apagado (se abre el formulario con el texto), versión demasiado antigua
+  (el formulario más "Descargar la actualización"), cuenta no activa. Una pregunta que no llegó se
+  marca como "No enviado".
+- **Datos técnicos v1** (`support-diagnostics.*`, `diagnostics-collector.*`): opcionales,
+  desmarcados por defecto y recordados en local, con vista previa del JSON exacto. Solo números,
+  booleanos y valores fijos (versiones, arquitectura, renderizador, fabricante de la GPU a partir del
+  ID numérico del adaptador, RAM total, familia del codificador, estado y ajustes del delay,
+  lienzo/salida, fps, contadores de retraso de OBS, salud del pipeline, hasta 5 códigos de problemas
+  recientes), cada número acotado a su rango y con 2 decimales como mucho, 1 KB como máximo. El tipo
+  no tiene ningún campo que pueda guardar un nombre, una ruta, una URL, una clave, un usuario, el
+  nombre de la GPU, un ID de hardware ni una IP. La instantánea se toma en el hilo de UI sin esperar al
+  hilo gráfico y se envía una vez, al crear la conversación. Un campo o código nuevo implica la
+  versión 2, que solo se envía si el servidor dice que la acepta.
+- **Render** (`chat-text.*`, sin Qt, con tests): quita los caracteres de control salvo el salto de
+  línea, los de dirección bidi, los emojis y pictogramas y el UTF-8 inválido; recorta a 4.000
+  caracteres; parte el texto en líneas (párrafo, viñeta `- `, paso `N. `) y segmentos (texto,
+  `**negrita**`, `` `código` ``); los encabezados y las vallas de código se quedan como texto. La
+  página construye el texto enriquecido solo con segmentos escapados, `<b>` y `<span class="code">`
+  (`trigi-widgets.*`), nunca con formatos de texto automáticos ni Markdown, nunca con enlaces
+  externos, y su documento nunca carga un recurso. Las URLs de una respuesta se quedan como texto.
+
+**Tickets y el log de OBS (`report-bug-dialog.*`, `bug-report.*`, `log-redact.*`).**
+- Con sesión: un ticket de la categoría `dynamic_delay` con asunto, mensaje (que termina en un pie
+  visible y editable con las versiones del plugin, de OBS y del SO) y, tras una conversación, un
+  enlace a ella. Solo se lee el ID del ticket, que ni se muestra ni se escribe en el log. Después, si
+  la casilla está marcada, el log va como una sola parte `text/plain` llamada `obs-log.txt`; si eso
+  falla, el ticket ya existe y el diálogo ofrece "Guardar log".
+- Invitado: el diálogo pregunta primero si trigglow.com exige una comprobación humana a los
+  invitados; si la exige (o se rechaza un ticket de invitado por ese motivo), no muestra el
+  formulario de invitado sino "inicia sesión o usa el formulario web", sin reintentar. El adjunto de
+  invitado envía su clave de acceso en una cabecera, nunca en la URL, y después el ticket se abre en
+  el navegador.
+- El log: solo el log actual del OBS en el que corre el plugin (que solo se localiza en Windows).
+  Ninguna llamada de libobs ni del frontend da ese fichero, y el más reciente de una carpeta de logs
+  puede ser de otro OBS (uno portable, una segunda instancia), así que al cargar el plugin escribe
+  una línea con una marca aleatoria y después solo lee el fichero, entre las carpetas de logs de este
+  OBS, que la contiene; si no aparece, no se adjunta nada. El log se lee y se redacta en memoria,
+  línea a línea, con escáneres lineales en vez de `std::regex` (`src/log-redact.hpp` enumera las
+  reglas): URLs de stream, cualquier otra URL (se conserva el host), nombres de usuario en rutas de
+  Windows/macOS/Linux (también perfiles movidos, recursos de red y carpetas de OneDrive de empresa),
+  enlaces de overlay, emails (también con acentos y con la '@' codificada), valores tras nombres con
+  forma de clave (`client_secret`, `x_api_key`, claves JSON), cabeceras de credenciales, JWT,
+  direcciones IPv4/IPv6, tokens largos, grupos con forma de clave de stream y base64, y además, en lo
+  posible, nombres de dispositivos y títulos de ventanas entre comillas; las marcas de tiempo, las
+  versiones y los atajos se mantienen. Si pasa de 4,5 MB después de redactar, se quedan los primeros
+  256 KB, una marca y el final. La casilla "Adjuntar el registro (log) de OBS" empieza desmarcada y
+  solo se puede marcar después de ver la vista previa (las primeras y las últimas 200 líneas), que
+  avisa de que pueden quedar nombres de escenas, fuentes, dispositivos de audio y ventanas. Ya no se
+  escribe ninguna copia, y las que dejaron versiones anteriores en `%TEMP%\Trigglow` se borran al
+  cargar.
+
+**Trabajos en segundo plano y descarga del plugin (`background-tasks.*`, `cancel-token.*`,
+`ui-tasks.*`).** Cada trabajo de red (la comprobación de la sesión, la renovación y el cambio desde
+la v0.5.x, la espera del inicio de sesión, Trigi, los tickets y sus adjuntos, la lectura del log
+para un ticket o una vista previa, la comprobación de actualizaciones) va en su propio hilo con un
+token de cancelación, dentro de un grupo cuyo dueño es `AuthManager`, un diálogo de soporte o el
+dock. WinHTTP funciona en modo asíncrono, así que cancelar un trabajo corta su llamada al momento
+(una respuesta de Trigi puede tardar hasta 90 s), y un timeout es un estado propio ("Trigi ha
+tardado demasiado") en vez de "sin conexión". Los resultados llegan al hilo de UI por una única cola
+que vacía el plugin; destruir un dueño cancela sus trabajos y descarta sus resultados, también los
+que ya estaban en cola. `obs_module_unload()` lo cancela todo, rechaza trabajos nuevos y espera como
+mucho 2 s; en Windows cada hilo de trabajo guarda una referencia a la DLL y termina con
+`FreeLibraryAndExitThread()`, así que ningún código del plugin se ejecuta después de que OBS lo
+descargue. Medido contra un sustituto local que retenía una respuesta de Trigi 90 s: la descarga
+tardó como mucho 7 ms. Revocar el token al cerrar sesión y avisar a trigglow.com de que una
+conversación con Trigi se abandonó no tienen dueño: solo la descarga los cancela. Lo prueba
+`background_tasks_tests`.
+
+**Qué llega al log de OBS.** `[auth-manager]` signed in, signed out, session ended, token renewed,
+migrated legacy login; `[trigi]` session started, message sent (longitud, datos técnicos sí o no),
+reply (código HTTP, longitud, acción), refused, unavailable, rate limited, errores HTTP por código;
+`[support]` ticket created (con o sin el log). Nunca el token, el enlace, los códigos ni el secreto,
+IDs de conversaciones o de tickets, la clave de acceso de un ticket, el texto de las preguntas o las
+respuestas, los datos técnicos, un email o un nombre, ni rutas absolutas.
 
 ## 4. v0.3.0: compresión real MJPEG del ring de RAM
 
-La aritmética del presupuesto de RAM del §3.5 anterior sigue asumiendo un ring NV12 sin comprimir
-para el mecanismo central del §3 — eso era exacto para v0.2.0, pero a partir de v0.3.0 cada slot del
-ring (`VideoDelayFilter::Slot`, `src/video-delay-filter.hpp`) se comprime además con MJPEG al
-capturarlo y se descomprime al reproducirlo, en las plataformas donde eso está disponible. Esta
-sección describe ese pipeline; la descripción del bucle de captura/reproducción y el pool fijo de
-objetos de GPU del §3 no cambia en lo demás.
+La aritmética del presupuesto de RAM del §3.5 anterior sigue asumiendo un ring sin comprimir para el
+mecanismo central del §3 — eso era exacto para v0.2.0, pero a partir de v0.3.0 cada frame del buffer
+se comprime además con MJPEG al capturarlo y se descomprime al reproducirlo, en las plataformas donde
+eso está disponible. Esta sección describe ese pipeline; desde la v0.6.0 se ejecuta en hilos propios
+(§4.6) sobre un ring de cabeceras de slot y una arena por bloques, en vez de dentro de `Render()`
+sobre un buffer por slot.
 
 **Alcance de plataforma:** solo donde está definido `TRIGGLOW_HAVE_FFMPEG` — Windows y Linux, vía un
 build de FFmpeg vendorizado, de release fijada, de BtbN LGPL-shared (`avcodec`/`avutil`/`swresample`;
 nunca "latest", para mantener los builds reproducibles). Todavía no existe un build estático de
-FFmpeg de confianza equivalente para macOS, así que macOS no forma parte de esto: sigue funcionando
-exactamente igual que en v0.2.0, sin comprimir. En cualquier sitio donde el codec no esté disponible
-(macOS hoy, o un build sin FFmpeg enlazado), todos los caminos de código de abajo caen
-automáticamente al comportamiento NV12 sin comprimir de antes de v0.3.0 — la compresión es una
-adición sobre el mecanismo existente, nunca un requisito nuevo para que funcione.
+FFmpeg de confianza equivalente para macOS, así que macOS no forma parte de esto: guarda los frames
+sin comprimir (I420 en crudo desde la v0.6.0, `MakeRawCodec()`). En cualquier sitio donde el códec no
+esté disponible (macOS hoy, o un build sin FFmpeg enlazado), todos los caminos de código de abajo
+caen automáticamente al almacenamiento sin comprimir — la compresión es una adición sobre el
+mecanismo existente, nunca un requisito nuevo para que funcione.
 
 ### 4.1. Por qué MJPEG, todo intra
 
@@ -261,49 +742,86 @@ concreta, no como un codec de entrega de propósito general.
 
 ### 4.2. Flujo de codificación/decodificación
 
-El paso de captura en `VideoDelayFilter::Render()` no cambia hasta la lectura asíncrona de GPU a CPU
-(§3.1, pasos 1–3): los bytes Y/UV recogidos en el tick actual terminan en `scratchNv12_`, el NV12
-crudo de un frame completo, reutilizado cada tick como espacio de scratch. A partir de ahí:
+El códec está detrás de una pequeña interfaz, `VideoCodec` (`src/codec-pipeline.hpp`): una instancia
+por hilo, que solo ese hilo abre, usa y cierra. En las plataformas con `TRIGGLOW_HAVE_FFMPEG` es
+`MjpegCodec` (`src/mjpeg-codec.*`); en el resto, `MakeRawCodec()` guarda los frames sin comprimir.
 
-- **Codificar (captura):** `EncodeScratchNv12Into()` de-interleava el plano UV de NV12 de
-  `scratchNv12_` en dos buffers de scratch U y V separados y compactos (`encodeScratchU_`/
-  `encodeScratchV_`) — el codificador de MJPEG quiere 4:2:0 planar, y NV12 es semi-planar (UV
-  interleaved), un layout de memoria distinto. Esos planos se copian en un `AVFrame` reutilizado
-  (`encodeFrame_`, `AV_PIX_FMT_YUV420P` con `AVCOL_RANGE_JPEG`) y se pasan por `encoderCtx_`, el
-  `AVCodecContext` de MJPEG abierto por `EnsureCodecContextsOpen()` al `bufferWidth_`/`bufferHeight_`
-  actual del ring, con calidad fija vía `AV_CODEC_FLAG_QSCALE` (`qmin`/`qmax` fijados ambos a
-  `kMjpegQuality = 5` — un punto dulce de MJPEG comúnmente citado, visualmente cercano a lossless
-  mientras sigue comprimiendo de forma significativa; todavía no es un ajuste del dock). Los bytes del
-  paquete resultante se copian en `pixels` del `Slot` destino, con `usedBytes` puesto al tamaño del
-  paquete y `compressed = true`.
-- **Decodificar (reproducción):** `DecodeSlotIntoScratchNv12()` hace lo inverso — pasa el paquete
-  MJPEG del slot (`src.compressed` debe ser true) por `decoderCtx_` y escribe los planos decodificados
-  de vuelta en `scratchNv12_` como bytes NV12 planos, listos para la subida de reproducción existente
-  con `gs_texture_set_image()` (§3.1, paso 5) exactamente como si ese slot nunca se hubiera
-  comprimido.
-- **Fallback:** cualquiera de las dos funciones devuelve `false` (destino intacto) si el contexto del
-  codec correspondiente no está abierto — no encontrado en el FFmpeg enlazado, o `avcodec_open2()`
-  falló a esta resolución — o si un frame concreto genuinamente falla al codificar/decodificar.
-  Quienes las llaman entonces guardan/leen `scratchNv12_` en crudo, exactamente el mismo camino de
-  código que usan siempre las plataformas sin `TRIGGLOW_HAVE_FFMPEG`. La compresión, por tanto, nunca
-  es un requisito duro para que el ring funcione — solo una optimización de RAM añadida encima.
+- **Codificar:** los planos I420 leídos de vuelta de la GPU (§3.1, paso 3) se copian en un `AVFrame`
+  reutilizado (`AV_PIX_FMT_YUV420P`, etiquetado `AVCOL_RANGE_MPEG` — el rango de estudio que escribe
+  el shader; el codificador MJPEG de FFmpeg solo acepta esa etiqueta con `strict_std_compliance =
+  FF_COMPLIANCE_UNOFFICIAL`, y son solo metadatos: un comentario de 14 bytes, planos decodificados
+  idénticos) y se pasan por un `AVCodecContext` MJPEG con calidad fija vía `AV_CODEC_FLAG_QSCALE`
+  (`qmin` = `qmax` = `kMjpegQuality = 5` — un punto dulce de MJPEG comúnmente citado, visualmente
+  cercano a sin pérdidas mientras sigue comprimiendo de forma significativa; no es un ajuste del
+  dock). El codificador se reabre de forma perezosa cuando cambian el tamaño del frame o el número de
+  hilos de slice (del orden de 1 ms, en el hilo que comprime). El hilo de compresión copia el paquete
+  en la arena del ring y publica el slot (§4.6).
+- **Decodificar:** el hilo de descompresión fija (pin) el slot, copia su paquete, lo suelta y lo
+  decodifica fuera de todo lock. El frame decodificado es el propio `AVFrame` del decodificador, que se
+  sube plano a plano con su propio stride (sin copia ni reentrelazado) y vuelve al pool de buffers de
+  FFmpeg al soltarlo.
+- **Fallback:** si el codificador no se puede abrir a ese tamaño o un frame falla al comprimirse, el
+  frame se guarda en crudo (I420 compacto) en la arena; los frames en crudo se cuentan
+  (`rawFallback`) y se muestran sin decodificar. La compresión, por tanto, nunca es un requisito duro
+  para que el ring funcione — solo una optimización de RAM añadida encima.
 
-### 4.3. Asignación presupuestada, solo-crecimiento
+**Dónde se ejecuta esto y cuánto cuesta (v0.6.0).** Hasta la v0.5.0 tanto la codificación como la
+decodificación se ejecutaban de forma síncrona dentro de `Render()`, en el hilo gráfico de OBS — el
+hilo que tiene que terminar cada frame en 1/fps (16,7ms a 60fps) — y a la resolución del lienzo:
+14,3/17,4ms p50/p95 por frame a 1440p, 8,6/10,4ms a 1080p (benchmark fuera de OBS, mismo FFmpeg).
+Desde la v0.6.0 se ejecutan en los hilos de códec (§4.6), y el hilo gráfico solo conserva las pasadas
+de conversión, la copia de la lectura y la subida: ~1,2–1,7/1,6–2,1ms p50/p95 por frame a 1440p60 en
+el benchmark de hilos fuera de OBS (Ryzen 7 7700X), con compresión ~8,8/10,4ms y descompresión
+~6,2/7,5ms en sus propios hilos.
+
+- **Hilos de slice, de forma explícita.** Un contexto de compresión puede usar 1, 2 o 4 hilos de
+  slice (`thread_type = FF_THREAD_SLICE`, `thread_count = k`); cuántos lo decide la política de
+  degradación (§4.7), y en modo síncrono (§4.6) empieza en `clamp(hardware_concurrency() / 4, 1, 4)`
+  — 4 en una CPU de 8 núcleos/16 hilos, 1 en una de 4 hilos — porque ahí reducen el tiempo real de la
+  compresión en el hilo gráfico (compresión a 1080p de 5,1 a 1,8ms p50 con 4 slices, el mismo CPU
+  total, paquetes ~3,5% más grandes). `thread_type` hay que fijarlo de forma explícita: con solo
+  `thread_count > 1`, FFmpeg elige threading por frames para MJPEG (`QSCALE` se salta su excepción de
+  un solo hilo), `receive_packet()` devuelve entonces `EAGAIN` y todos los frames se guardarían en
+  crudo. Si `active_thread_type` sigue indicando threading por frames, el codificador se reabre con un
+  solo hilo (WARN). El decodificador se queda en `thread_count = 1` (el decodificador MJPEG de n9.0 no
+  tiene threading). La línea de log `MJPEG encoder open` indica tamaño, qscale, tablas de Huffman,
+  hilos de slice pedidos y concedidos, `active_thread_type` y las CPU lógicas.
+- **Tablas de Huffman estándar.** El codificador se abre con `huffman=default` (`av_opt_set()` sobre
+  sus opciones privadas) en vez de las tablas "óptimas" que FFmpeg usa por defecto, que necesitan una
+  segunda pasada por frame. Con más de un slice FFmpeg ya usa las tablas estándar, así que esto importa
+  para los contextos de un solo slice con los que empieza el pipeline de hilos: un 10-17% menos de
+  tiempo de compresión (p50-p95, 1440p, n9.0.2 vendorizado) a cambio de paquetes un 3-3,5% más
+  grandes. La codificación Huffman no pierde información, así que los frames decodificados son
+  idénticos, y cada paquete sigue llevando sus tablas (DHT). La línea de log de apertura dice
+  `huffman=default`, o por qué no se pudo fijar.
+- **Cada frame se decodifica y se sube como mucho una vez.** `Render()` se ejecuta una vez por vista
+  de la escena (Programa, vista previa, proyectores, multiview). El hilo de descompresión decodifica
+  cada frame una vez, y `Render()` solo sube un frame decodificado si no está ya en las texturas de
+  reproducción; el resto de vistas solo las vuelven a dibujar. Si el frame que toca no está listo
+  (descartado, todavía comprimiéndose o no descomprimido a tiempo), se vuelve a dibujar el último
+  frame subido en este ciclo (un "hold") en vez de nada; el siguiente frame se sigue eligiendo por
+  antigüedad, así que un hold es un tirón de un frame, nunca una deriva del delay. Mientras el ring se
+  está llenando no se dibuja nada. La caché de reproducción se invalida al final de cada ciclo y en
+  cada redimensionado, así que un hold nunca puede mostrar un frame de un ciclo anterior ni una
+  textura destruida.
+
+### 4.3. Memoria: slots presupuestados (v0.3.0–v0.5.0) y después una arena por bloques (v0.6.0)
 
 Comprimir los bytes almacenados dentro de un slot solo compensa en la práctica si la propia
 asignación de memoria del slot también se reduce — de lo contrario, un `usedBytes` más pequeño dentro
 de un vector `pixels` que sigue siendo de tamaño completo es una victoria de papel, no una real.
 `EnsureRingSized()` ahora asigna `pixels` de cada slot a un tamaño **presupuestado** —
 `frameBytes / kAssumedCompressionRatio` — en vez del techo NV12 bruto completo.
-`kAssumedCompressionRatio` es una constante conservadora, elegida de antemano deliberadamente: `3.0`
-en plataformas `TRIGGLOW_HAVE_FFMPEG` (elegida conservadora porque el contenido de captura de OBS
-está desproporcionadamente lleno de justo lo que peor comprime — bordes afilados de UI/HUD, texto en
-pantalla — aunque MJPEG sobre vídeo natural a menudo lo hace mucho mejor), y `1.0` (sin ninguna
-compresión asumida) en cualquier otro sitio, lo que mantiene la asignación de esa plataforma idéntica
-al comportamiento anterior a v0.3.0.
+`kAssumedCompressionRatio` es una constante conservadora, elegida de antemano deliberadamente. Valía
+`3.0` en plataformas `TRIGGLOW_HAVE_FFMPEG` cuando se introdujo (elegida conservadora porque el
+contenido de captura de OBS está desproporcionadamente lleno de justo lo que peor comprime — bordes
+afilados de UI/HUD, texto en pantalla — aunque MJPEG sobre vídeo natural a menudo lo hace mucho
+mejor), y vale `5.0` desde v0.4.0 (ver la nota de reajuste de abajo); en cualquier otro sitio vale
+`1.0` (sin ninguna compresión asumida), lo que mantiene la asignación de esa plataforma idéntica al
+comportamiento anterior a v0.3.0.
 
 `EncodeScratchNv12Into()` y el fallback de almacenamiento en crudo hacen crecer el `pixels` de un
-slot más allá de su presupuesto con un simple `resize()` cada vez que un frame concreto necesita
+slot más allá de su presupuesto (`Slot::EnsureCapacity()`) cada vez que un frame concreto necesita
 genuinamente más espacio del asumido — contenido difícil de comprimir, o el codec no disponible/
 fallido para ese frame. Ese crecimiento es **permanente** durante el resto de la vida del slot: la
 capacidad nunca se reduce de vuelta, para evitar pagar un realloc+memcpy en cada frame. Esto es un
@@ -311,6 +829,35 @@ trinquete deliberado de un solo sentido, no un bug — en el peor caso, un slot 
 asumido de forma consistente termina creciendo hasta el tamaño bruto completo (idéntico a
 almacenarlo todo sin comprimir), y la única forma de liberar ese crecimiento es liberar todo el ring
 (`Disable()`, o un cambio de resolución que reasigna `ring_` desde cero).
+
+**Arena por bloques (v0.6.0).** Los buffers por slot tenían dos costes más. Se rellenaban con ceros
+al dimensionarlos (`assign(budgetedBytes, 0)`), lo que tocaba todas las páginas del ring de golpe en
+el hilo gráfico: ~1,9GB residentes a 1440p60 y un parón de ~381ms (unos 23 frames perdidos) en el
+primer `Render()` tras `Enable()`. Y liberar el ring suponía un `VirtualFree` por slot (1816 a
+1440p60, 87ms medidos, 141ms en el log de un usuario), también en el hilo gráfico. Desde la v0.6.0 los
+datos viven en una `FrameArena` (`src/frame-arena.*`): los paquetes se asignan uno detrás de otro en
+bloques, sin rellenar con ceros, y un paquete nunca cruza dos bloques. Cada bloque cuenta sus
+asignaciones vivas; cuando el ring ha sobrescrito todos los frames que tenía un bloque, el bloque se
+recicla entero. Como el ring libera los frames más o menos en el orden en que los escribió, la
+memoria comprometida y la residente se quedan cerca de la ventana real de paquetes más uno o dos
+bloques: ~576-768MB para 30s a 1440p60 en la simulación fuera de OBS (de contenido normal a pesado),
+frente a 1923MB residentes antes. Las asignaciones y liberaciones pueden venir de cualquier hilo y en
+cualquier orden (los hilos de compresión asignan, el ring libera al reutilizar un slot). `Free()`
+nunca llama al sistema: los bloques vacíos van a una lista de reserva, y `Trim()`, la única llamada
+que devuelve memoria (las reservas por encima de dos), se ejecuta en el hilo liberador (§4.6).
+Dimensionado (`ArenaConfigFor()`): bloques de alrededor de 1/16 de los bytes esperados del ring,
+entre 4 y 32MiB y nunca menos de dos frames en crudo (sitio para el fallback a crudo); un límite duro
+en el presupuesto de RAM (o en lo que se dimensionó el ring, si es más), por encima del cual una
+asignación falla y el frame se descarta (`drops arena`) en vez de que la memoria crezca sin control.
+`kAssumedCompressionRatio` ahora solo decide cuántos segundos caben en el presupuesto y el tamaño
+esperado de la arena; ya no se reserva nada por slot.
+
+**Reajuste de v0.4.0.** `kAssumedCompressionRatio` vale `5.0` en plataformas
+`TRIGGLOW_HAVE_FFMPEG` desde v0.4.0, tras la primera medición real (una sesión en directo de
+30s/1080p60 con gameplay mantuvo un ratio estable de ~11-15x, y ningún slot creció nunca por encima
+del presupuesto de 3.0). Sigue siendo conservador a propósito: viene de una sesión y un juego, y un
+slot que necesite más simplemente crece. Ver `CHANGELOG-es.md`, v0.4.0, y el comentario de la
+constante en `src/video-delay-filter.cpp`.
 
 ### 4.4. Resultado medido, y qué queda abierto
 
@@ -325,8 +872,238 @@ contenido de gameplay real sostenido. El único ratio registrado hasta ahora (`l
 primera codificación exitosa tras `EnsureCodecContextsOpen()`) vino de un frame mayormente estático de
 escena de carga y no es representativo del contenido real — no debería leerse como un número típico
 o esperado. La afirmación honesta es que el ratio de compresión real depende mucho de lo que haya en
-pantalla y sigue siendo una medición abierta, no que el `3.0` de `kAssumedCompressionRatio` (ni
-ningún otro número concreto) sea lo que logra realmente el gameplay.
+pantalla y sigue siendo una medición abierta, no que el valor de entonces de
+`kAssumedCompressionRatio` (`3.0`, ni ningún otro número concreto) sea lo que logra realmente el
+gameplay.
+
+*Actualización:* la línea periódica `compression check` de v0.4.0 dio la primera medición real con
+gameplay (~11-15x, ver la nota de reajuste del §4.3), y desde la v0.6.0 el ratio forma parte de la
+línea `pipeline check` (§4.5), medido en la sesión de cada usuario. Sigue siendo un dato por sesión y
+tipo de contenido, no una garantía.
+
+### 4.5. v0.6.0: telemetría `perf check` y `pipeline check`
+
+Para que un reporte de rendimiento se pueda comprobar en el log del usuario en vez de suponerlo,
+`VideoDelayFilter` escribe dos líneas INFO cada 10 segundos de render (`kPerfLogIntervalNs`), durante
+`Filling` y `Active`. Sustituyen a la línea `compression check` de cada 300 frames:
+
+```
+perf check (periodic, 10.0s): buf=1920x1080 (capped to OBS output 1920x1080, canvas 2560x1440)
+fps=60.00 | render p50/p95/max=…ms own=… readback=… upload=… | calls=…/s captures=…/s uploads=…/s
+holds=N (late decode N, dropped N, encoding N) | obs frames+N lagged+N skipped+N
+
+pipeline check (periodic): mode=workers rung=0/4 capture=1920x1080@60.00fps enc=1x1 L=3 S=3 |
+enc0 p50/p95/max=…ms busy=…% enc1=… busy=…% dec=… busy=…% | drops reserve=N backpressure=N arena=N
+capture=N rawFallback=N encFail=N decFail=N staleEnc=N decJumps=N staleDec=N | queue enc max=N
+avg=… dec ahead avg=… min=N | ratio=…x arena=…MB committed (live …MB, peak …MB, N blocks of …MB,
+limit …MB) ring=N slots (ready N, dropped N, in flight N, pinned N)
+```
+
+(dos líneas en el log; partidas aquí.)
+
+- **`perf check` — el hilo gráfico.** La resolución del buffer a calidad completa y el motivo —
+  `capped to OBS output WxH, canvas WxH`, `not capped, source WxH, output WxH` o
+  `cap off (buffer_output_cap=false), …` — con `, reduced for RAM` cuando entró en juego la regla 2
+  del §3.5; los fps exactos; tiempo real (`os_gettime_ns`) de la llamada completa a `Render()`
+  (`render`), de la parte propia del plugin (`own`: todo menos renderizar la escena en directo en la
+  textura de captura, que OBS renderizaría de todos modos — lo que juzga la política de degradación,
+  §4.7), de la lectura de staging con su copia y de la subida de texturas; llamadas a `Render()`,
+  capturas y subidas por segundo; holds (§4.2) separados por el estado del slot que tocaba (Ready pero
+  no decodificado a tiempo, Dropped, todavía Encoding); y los incrementos de los contadores propios de
+  OBS en la misma ventana — frames totales (`obs_get_total_frames`), frames perdidos por retraso de
+  renderizado (`obs_get_lagged_frames`) y frames saltados por retraso de codificación
+  (`video_output_get_skipped_frames`).
+- **`pipeline check` — los hilos y la memoria.** Modo (`workers`, o `sync` con el interruptor de
+  emergencia, §4.6), peldaño de degradación y el último, el tamaño y el ritmo que se capturan ahora,
+  contextos de compresión × hilos de slice, descompresión anticipada (`L`) y slots de staging (`S`);
+  p50/p95/max por frame y proporción ocupada de cada contexto de compresión y del descompresor;
+  descartes (sin slot libre, compresión atrasada, arena en su límite, lectura fallida), fallbacks a
+  crudo, fallos de códec, compresiones obsoletas por un slot reutilizado, saltos del descompresor,
+  frames decodificados descartados por obsoletos tras una pausa del render; profundidad de la cola de
+  compresión y frames decodificados por adelantado; ratio de compresión; memoria comprometida, viva y
+  pico de la arena, bloques, tamaño de bloque y límite; y los estados de los slots del ring.
+- **Muestras:** p50/p95 mediante `std::nth_element` sobre un array fijo de 4096 muestras por serie,
+  máximo exacto. Sin asignaciones por frame ni por ventana. Las tasas de frames descartados y
+  repetidos de la última ventana alimentan también el aviso de degradación del dock (§4.7).
+- **Ventanas:** una pausa de más de 1s entre llamadas a `Render()` (filtro oculto, OBS atascado)
+  cierra antes la ventana actual (`resumed after a pause`), para no diluir sus tasas por segundo. La
+  última ventana parcial se registra al desactivar el delay (`filter disabled`, desde la tarea
+  `release_buffers`), al ponerlo a 0s (`delay set to 0`) y al destruirse el filtro con el delay
+  activo, p. ej. al cerrar OBS (`filter destroyed`; seguro en el destructor porque OBS solo destruye
+  una fuente después de desengancharla, y las líneas solo leen miembros propios del filtro). Antes de
+  la v0.6.0 el filtro en la práctica nunca se destruía: `ObsFrontendBridge` perdía una referencia a él
+  en cada `Enable()` (`obs_source_get_filter_by_name()` devuelve una referencia nueva); ahora cada
+  búsqueda la guarda en un `OBSSourceAutoRelease`, y el destructor, que libobs ejecuta en su hilo de
+  destrucción, espera a que terminen los hilos de códec y después entra en el contexto gráfico para
+  liberar los objetos de GPU. Las ventanas de menos de 1s se descartan.
+- **Otras líneas:** `delay pipeline: …` al empezar cada ciclo (modo, tamaño del buffer, slots, delay,
+  contextos de compresión × slices, descompresión anticipada, slots de staging, la escalera de
+  degradación hasta su último peldaño, tamaño de bloque y límite de la arena); un WARN por cada cambio
+  de peldaño (§4.7); `settings loaded` y `enabled` con `output_cap=on|off codec_workers=on|off`.
+
+Cómo leer cada campo desde el lado del usuario: `docs/TROUBLESHOOTING-es.md`, "Cómo leer las líneas
+del log".
+
+### 4.6. v0.6.0: hilos de códec, ring y arena
+
+Invariantes del diseño: el delay de vídeo es exacto por reloj de pared, los frames se eligen por
+antigüedad de captura, y vídeo y audio comparten un único delay en segundos enteros (§3.3); "nunca
+corta": en `Active` el ring solo se vacía por un cambio real de geometría; todo lo que es `gs_*` se
+queda en el hilo gráfico (los hilos de códec nunca tocan la GPU); y cada `AVCodecContext` lo usa un
+solo hilo, que también lo abre y lo cierra. `src/codec-pipeline.*`, `src/frame-ring.*` y
+`src/frame-arena.*` son C++ puro (std::thread, sin OBS, con el códec inyectado), así que los tests los
+manejan sin OBS ni FFmpeg.
+
+**Hilos.**
+
+| Hilo | Hace | Nunca hace |
+|---|---|---|
+| Hilo gráfico de OBS (`Render()`) | Renderiza y convierte la captura, recoge el slot de staging que se lanzó dos capturas antes en un frame crudo de un pool (`kMaxEncodeContexts + 2` frames), reserva el slot del ring, envía el trabajo de compresión; elige el frame decodificado que toca, lo sube si es nuevo y lo dibuja; ejecuta la política de degradación cada 250ms | Comprimir, descomprimir, (des)entrelazar, liberar el ring, esperar a un hilo |
+| Hilos de compresión (1-2, `trigglow-enc-N`) | Sacan trabajos de una cola FIFO acotada, comprimen fuera de todo lock con su propio contexto de códec, copian el paquete en la arena y publican el slot | Tocar la GPU, compartir un contexto de códec |
+| Hilo de descompresión (1, `trigglow-dec`) | Decodifica en orden de captura hasta `L = 3` frames por delante de lo que hay en pantalla, a partir del objetivo de reproducción que publica el hilo gráfico (`ahora − delay`, predecible por el reloj); salta directamente al frame que toca cuando se queda atrás; en los últimos 250ms de la ventana de llenado se le apunta a los frames más antiguos (`PrimeDecode()`), para que el primer frame retrasado esté listo cuando toca; guarda `L + 2` frames decodificados | Decodificar frames que nunca se van a mostrar |
+| Liberador (1, `trigglow-reap`) | Libera lo que nunca debe liberarse en el hilo gráfico ni frenar una compresión: rings desenganchados y sus arenas (600-770MB a 1440p, decenas de ms), el pool de frames crudos tras Disable, frames decodificados descartados al desenganchar; ejecuta el `Trim()` de la arena | Cualquier otra cosa |
+
+**Ring y estados de slot.** `FrameRing` es un número fijo de cabeceras de slot más la arena. Cada
+slot está `Free`, `Reserved`, `Encoding`, `Ready` o `Dropped`, y quien es dueño de un estado es el
+único que toca los datos del slot en él: el hilo gráfico reserva (`Free/Ready/Dropped → Reserved`, en
+orden de captura, con una generación nueva y única entre rings), un hilo de compresión lo toma y lo
+publica (`Reserved → Encoding → Ready`) solo si la generación sigue coincidiendo, y el descompresor
+fija un slot `Ready` para copiar su paquete sin el lock. `captureNs` se asigna al reservar, así que las
+marcas de tiempo nunca decrecen del slot más antiguo al más nuevo termine en el orden que termine la
+compresión, y la búsqueda binaria de la reproducción sigue siendo válida con slots
+`Reserved/Encoding/Dropped` por medio; para mostrar se elige el slot `Ready` más nuevo en el objetivo
+o antes, mirando hacia atrás unos pocos slots no listos (una repetición de un frame anterior, nunca
+uno del futuro). Un mutex protege solo las cabeceras y los índices, y se mantiene para trabajo
+O(1)/O(log n); las copias, compresiones, descompresiones y liberaciones ocurren fuera de él, y nunca
+se anida con los locks del pipeline ni de la arena.
+
+**Contrapresión.** Sin frame crudo libre (la compresión va atrasada): el hilo gráfico descarta la
+captura **más nueva** — no se desperdicia nada ya hecho, la cola nunca crece, y la reproducción por
+antigüedad simplemente repite el frame anterior. Sin slot libre (un hilo de compresión o el
+descompresor un ring entero por detrás), o con la arena en su límite: igual, el frame se descarta.
+Todo se cuenta (`drops …`) y, si se mantiene, es tarea de la política de degradación (§4.7). Tras una
+pausa del render (más de 4 intervalos de captura desde la llamada de reproducción anterior), los
+frames decodificados que se quedaron muy por detrás del que toca se descartan sin mostrarse
+(`staleDec`) y se mantiene el frame en pantalla hasta que el descompresor, que salta al frame que
+toca, lo tiene listo — en vez de enseñar durante un momento frames cientos de ms más viejos que el
+delay.
+
+**Ciclo de vida.** El primer `Render()` tras Enable dimensiona el ring (`EnsureRingSized()`),
+construye la escalera de degradación y engancha un `FrameRing` nuevo al pipeline; los hilos se crean
+de forma perezosa la primera vez y viven lo que el filtro, esperando en variables de condición (sin
+coste en reposo). Disable: §3.4. Un **redimensionado duro** — nuevo tamaño de buffer, número de slots,
+intervalo de frame, delay efectivo o valor del interruptor de emergencia con frames en el ring —
+termina el ciclo (el ring viejo al liberador) y empieza uno nuevo, con un WARN y la señal
+`buffer_restarted` (§3.3). Un **cambio suave** — un peldaño de degradación o el paralelismo de
+compresión — conserva el mismo ring y el mismo número de slots, así que el tramo y el audio no se
+tocan: los slots de staging y los frames crudos llevan su propio tamaño, cada compresor reabre su
+contexto de forma perezosa, el decodificador MJPEG se adapta al tamaño de cada frame y las texturas de
+reproducción se recrean cuando cambia el tamaño del frame subido. Destrucción (hilo de destrucción de
+OBS, nunca el hilo gráfico): parar y esperar a los hilos (cada uno cierra su códec; la espera dura
+como mucho una compresión o descompresión, o la liberación de un ring) y después liberar los objetos
+de GPU dentro de un contexto gráfico.
+
+**Interruptor de emergencia: `codec_workers` (oculto).** `"codec_workers": false` en
+`buffer-mode-settings.json` pone el pipeline en modo síncrono: `SubmitEncode()` y
+`AcquireForDisplay()` ejecutan el códec en línea en el hilo gráfico, como hasta la v0.5.0 pero con
+slices, sobre el mismo ring y la misma arena; el liberador sigue liberando la memoria fuera del hilo
+gráfico (y si no puede arrancar, la memoria se libera en línea). La degradación sigue activa, y añade
+hilos de slice antes de bajar de peldaño. Mismas reglas que `buffer_output_cap` (§3.5): solo se lee
+al cargar OBS con `ReadHiddenSwitch()`, solo un `false` literal de JSON lo desactiva (cualquier otro
+tipo lo deja activado con un WARN y desaparece del archivo al salir), solo se vuelve a escribir
+cuando es `false`, se envía al filtro en cada `Enable()`
+(`ObsFrontendBridge::SetBufferFilterCodecWorkers()`), sin propiedad en el filtro ni control en el
+dock. Un valor distinto del del pipeline en marcha crea un pipeline nuevo en el siguiente ciclo (los
+hilos del anterior se esperan en el destructor, nunca en el hilo gráfico). Si no se puede arrancar un
+hilo de códec, el pipeline pasa solo a modo síncrono. Aparece como `codec_workers=on|off` en las
+líneas `settings loaded` y `enabled`, y como `mode=` en `pipeline check`.
+
+**Medido** (benchmark de hilos `bench-workers` fuera de OBS, Ryzen 7 7700X, FFmpeg n9.0.2
+vendorizado, contenido sintético tipo gameplay, 20s por ejecución, un contexto de compresión y un
+slice, p50/p95 en ms):
+
+| Caso | Total en el hilo gráfico | Compresión | Descompresión | Ocupación compresión / descompresión | Núcleos de CPU en total |
+|---|---|---|---|---|---|
+| 1440p60 normal | 1,2–1,7 / 1,6–2,1 | 8,8–9,6 / 10,4–11,2 | 6,2–6,5 / 7,5–7,6 | 53–57% / 37–39% | ~1,0 |
+| 1440p60 pesado | 1,3 / 1,6 | 10,0–10,3 / 12,5–12,7 | 6,7–6,8 / 8,1–8,3 | 61–62% / 41–42% | ~1,1 |
+| 1080p60 normal | 0,6 / 0,9 | 5,1 / 6,2 | 3,6 / 4,3 | 30% / 22% | ~0,5 |
+| 1440p60, modo síncrono, 4 slices | 10,6 / 12,2 | — | — | — | ~1,0 |
+
+Las cifras del hilo gráfico son una aproximación (copias a memoria normal); la lectura más la subida
+reales en D3D11 midieron 0,47/0,58ms a 1440p en una RX 7800 XT. Todavía no se ha medido en directo
+dentro de OBS, ni en GPU NVIDIA.
+
+**Tests.** `frame_arena_tests` (asignación secuencial, liberaciones desordenadas, reciclado de
+bloques, el límite, datos de tamaño excesivo, `Trim()`, un régimen FIFO estable, una ejecución con
+varios hilos comprobando el contenido), `frame_ring_tests` (máquina de estados, generaciones, fallos
+de reserva, selección por antigüedad con slots descartados por medio, descompresión anticipada,
+liberación de datos) y `pipeline_stress_tests`: un hilo gráfico simulado a 250fps (con el retraso de
+staging de 2 frames) que en momentos al azar desengancha y vuelve a enganchar (Disable,
+redimensionado duro), cambia el paralelismo, el tamaño del frame (cambio suave de peldaño) y el ritmo
+de captura, con un códec falso que marca cada frame con su hora de captura. Comprobaciones duras: un
+frame mostrado nunca es más joven que el objetivo de reproducción, las horas de captura mostradas
+solo crecen, el contenido de cada frame coincide con su marca de tiempo, sin bloqueos (watchdog), sin
+fugas en la arena, todos los rings se liberan y ninguno en el hilo gráfico simulado. También cubre una
+pausa del render de 300ms y un descompresor 2,5 capturas lento.
+
+### 4.7. v0.6.0: degradación automática
+
+`src/degradation-policy.*` (pura, `tests/degradation_policy_tests.cpp`) decide, solo a partir de
+números, cuánto paralelismo tienen los compresores y en qué **peldaño de calidad** se captura el
+buffer, para que un equipo que no da más baje la calidad de la imagen retrasada en vez de retrasar a
+OBS o cortar el delay.
+
+**Los dos mandos.**
+- *Paralelismo* (contextos de compresión × hilos de slice): con hilos de códec `1×1 → 2×1 → 2×2 →
+  2×4`; en modo síncrono `1 → 2 → 4` slices en el único contexto. El paso de partida se predice según
+  la resolución: el primero cuyo p95 de compresión previsto (`1,1 × (0,3 + 2,3 ms por megapíxel)`,
+  dividido entre 1,6 por cada duplicación de slices) no pase del 70% de lo que tienen los contextos
+  por frame — 1440p60 empieza en 1×1 y 4K60 en 2×1; el modo síncrono empieza en
+  `clamp(hardware_concurrency() / 4, 1, 4)` slices.
+- *Peldaño de calidad*: el peldaño 0 es el buffer dimensionado (§3.5); después pasos de ×0,83 en
+  escala hasta la calidad mínima del usuario en píxeles del buffer (el mismo suelo que usó
+  `bufferfit`; el propio suelo es el último peldaño de resolución, nunca por debajo); y después ese
+  suelo capturado a la mitad de fps (una celda de captura de cada dos), solo cuando la salida va a
+  48fps o más. Los anchos son múltiplos de 8 y las alturas pares. Cada peldaño es un cambio suave
+  (§4.6): mismo ring, mismo número de slots, así que el delay nunca se mueve; en el peldaño a mitad de
+  fps el tramo en tiempo no cambia y la reproducción por antigüedad muestra cada frame dos veces.
+
+**Evaluación.** Cada 250ms, sobre ventanas de los últimos 2s (0,5s para la regla inmediata), y solo
+2s después del cambio anterior (enfriamiento). Cada métrica necesita al menos 20 muestras (10 para la
+regla inmediata) o se ignora.
+
+| Disparador (bajada, un paso) | Condición | Acción |
+|---|---|---|
+| Hilo gráfico | Trabajo propio del plugin (`own`, §4.5): p95 > 40% del intervalo de frame, o p95 > 25% mientras OBS perdió frames en la ventana, o p50 de los últimos 0,5s > 50% (comprobado 0,5s después de un cambio) | Síncrono: primero más slices, después un peldaño más bajo. Con hilos: un peldaño más bajo (lo que queda en el hilo gráfico escala con los píxeles) |
+| Compresión (con hilos) | p95 > 80% de lo que tienen los contextos por frame (`p95 / (intervalo de captura × contextos)`), o > 2% de capturas descartadas | Primero más paralelismo, un peldaño más bajo cuando está al máximo |
+| Descompresión (con hilos) | p95 > 80% del intervalo de captura, o > 5% de los frames que tocan no decodificados a tiempo | Un peldaño más bajo (el decodificador MJPEG no tiene threading) |
+| Subida (un paso) | La carga prevista un paso más arriba (p95 medido × proporción de píxeles, o × 1,6 por cada división a la mitad de los slices, × 1,1 de margen) se mantiene ≤ 25% del intervalo de frame en el hilo gráfico y ≤ 50% en los hilos de códec, durante 30s seguidos | Primero la calidad (`higher rung`), después se devuelve el paralelismo hasta el paso de partida |
+
+El descompresor va `delay` segundos por detrás de la captura, así que justo después de un cambio de
+peldaño todavía decodifica frames del peldaño anterior: cada frame va etiquetado con el peldaño en que
+se capturó, y las métricas de descompresión solo cuentan cuando vienen del peldaño actual — ningún
+segundo paso por una carga a la que el primero todavía no ha llegado en el descompresor, y ninguna
+subida con las cifras del peldaño anterior. En el último peldaño con la carga todavía demasiado alta
+no se hace nada más (sin oscilaciones, sin cortes); las capturas se siguen descartando y contando.
+
+**Aviso.** Cada cambio de peldaño es un WARN (`delay buffer lower rung (encode, load 85%): now WxH at
+F fps capture, rung N of M (…) -- last 2s: … The delay itself is unchanged.`); los cambios de
+paralelismo son INFO. El filtro guarda un `PipelineHealth` (`src/pipeline-health.hpp`: peldaño,
+peldaño máximo, tamaño actual y completo, fps de captura y de salida, contextos y slices de
+compresión, causa de la última bajada, frames descartados y repetidos por minuto en la última ventana
+de telemetría, un contador de cambios) bajo un pequeño mutex; su proc `get_pipeline_state` solo lo
+copia, sin saltar nunca al hilo gráfico, así que un render con retraso no puede bloquear la interfaz.
+El dock lo consulta una vez por segundo en `Filling`/`Active` (con la referencia débil al filtro que
+guarda el puente, §3.3) y, mientras el peldaño está por encima de 0, muestra "Calidad del buffer
+reducida" en la tarjeta de estado: qué se redujo (la resolución frente al tamaño completo, los fps de
+captura o ambos), la causa (el hilo gráfico de OBS, comprimir o descomprimir los fotogramas) y que el
+delay sigue intacto, más los fotogramas repetidos o descartados por minuto cuando hay alguno. La
+línea de estimación de RAM bajo los campos (peldaño 0, "En la RAM solo caben 41 s de 60 s…") se
+oculta mientras tanto, porque el aviso ya dice lo que guarda el buffer. Los lectores de pantalla lo
+oyen una vez: el nombre accesible de la tarjeta solo cambia con el estado y cuando el aviso aparece o
+se va, lo que se redujo va en su descripción, y con Qt 6.8+ un `QAccessibleAnnouncementEvent` lee el
+aviso cuando aparece o cambia su causa, y `Dock.Health.Restored` cuando se va con el delay todavía en
+marcha (con Qt anterior cambia el nombre de la tarjeta).
 
 ## 5. Alcance de v0.2.0, tal y como se distribuye realmente
 
@@ -388,20 +1165,70 @@ como un problema resuelto, hasta que se vuelva a probar específicamente para ve
 ## 8. Arquitectura
 
 ```
-plugin-main.cpp              → obs_module_load/unload, cableado de todos los componentes
+plugin-main.cpp              → obs_module_load/unload, cableado de todos los componentes, archivo de
+                                ajustes (buffer_output_cap / codec_workers ocultos, copia .invalid)
 buffer-mode-controller.*      → la máquina de estados descrita en §3.3 (Inactive/Filling/Active/Error)
 obs-frontend-bridge.*         → la única capa que toca obs-frontend-api.h + el cableado de filtros/escenas
-video-delay-filter.*          → §3.1 -- el ring buffer en RAM/NV12 y su pequeño pool fijo de objetos de GPU
-                                (§4 -- compresión MJPEG de v0.3.0, solo Windows/Linux)
+video-delay-filter.*          → §3.1 -- captura, conversión I420, lectura, reproducción y el pequeño
+                                pool fijo de objetos de GPU; dueño del ring, del pipeline de códec y
+                                de la política de degradación (§4.5 -- telemetría perf check /
+                                pipeline check)
+codec-pipeline.*              → §4.6 -- hilos de compresión/descompresión y el liberador (v0.6.0)
+mjpeg-codec.*                 → §4.2 -- MJPEG sobre el FFmpeg vendorizado, una instancia por hilo
+                                (solo Windows/Linux)
+frame-ring.*                  → §4.6 -- ring de cabeceras de slot con máquina de estados (v0.6.0)
+frame-arena.*                 → §4.3 -- arena por bloques para los datos de los frames (v0.6.0)
+degradation-policy.*          → §4.7 -- degradación automática, pura (v0.6.0)
+pipeline-health.hpp           → §4.7 -- lo que lee el dock sobre el pipeline (v0.6.0)
+perf-stats.*                  → §4.5 -- series de percentiles de tamaño fijo y ventanas móviles
+buffer-fit.*                  → §3.5 -- aritmética pura de dimensionado del ring (techo de salida, suelo
+                                de calidad, presupuesto de RAM, fps exactos, delay efectivo en segundos
+                                enteros), sin libobs/FFmpeg
+encoder-check.*               → §3.5 -- decisión pura del WARN de "encoder por encima del buffer"
+                                (qué encoders ven el lienzo principal), sin libobs
 audio-delay-filter.*          → §3.2 -- ring de delay de audio por fuente hoja
+overlay-badge.*               → §3.6 -- pinta el overlay del directo como un único PNG (QPainter, hilo de UI)
+overlay-layout.*              → §3.6 -- colocación pura del overlay en el lienzo
+auto-names.*                  → §3.7 -- nombres de los objetos gestionados y su migración
 hardware-info.*               → consulta de la RAM total del sistema (sustituye a la antigua consulta VRAM/DXGI)
+win-http.* / api-client.*     → §3.8 -- el único camino HTTPS endurecido y el cliente de
+                                api.trigglow.com (Windows; "no disponible" en macOS/Linux hasta la
+                                v0.6.1)
+json.*                        → §3.8 -- lector/escritor JSON estricto y acotado
+auth-manager.* / auth-client.* → §3.8 -- inicio de sesión (vinculación v2), renovación, cierre de
+                                sesión, cambio desde la v0.5.x, reglas de 401/403; la puerta de
+                                cuenta (docs/ACCOUNT_GATE.md)
+token-store.*                 → §3.8 -- el inicio de sesión del plugin, cifrado con CryptProtectData
+support-client.* / support-service.* → §3.8 -- llamadas de Trigi y de tickets; hilos, una petición
+                                de Trigi a la vez, elecciones locales, líneas de log
+support-diagnostics.* / diagnostics-collector.* → §3.8 -- los datos técnicos v1 opcionales
+chat-text.*                   → §3.8 -- saneado y parser puros de las respuestas de Trigi
+trigi-page.* / trigi-widgets.* / trigi-states.* → §3.8 -- la página de Trigi, su vista segura y
+                                sus decisiones de estado
+report-bug-dialog.*           → §3.8 -- "Reportar un problema": Trigi, tickets con cuenta y de
+                                invitado
+bug-report.* / log-redact.*   → §3.8 -- el log actual de OBS, leído y redactado en memoria
+update-checker.*              → comprobación de la última release de GitHub; solo abre las
+                                releases de este repo
+background-tasks.* / cancel-token.* / ui-tasks.* → §3.8 -- trabajos en segundo plano cancelables,
+                                sus dueños y el cierre acotado al descargar el plugin
 scene-combo-box.*             → combo box del dock poblado desde obs_frontend_get_scene_names()
 settings-ui.*                 → el dock de Qt (escena en directo/de carga, segundos, calidad, estimación
-                                de ajuste, Enable/Disable, cuenta atrás de llenado en vivo)
+                                de ajuste, Enable/Disable, cuenta atrás de llenado en vivo, campos
+                                bloqueados, aviso de degradación)
+ui-tokens.* / ui-theme.*      → colores derivados de la paleta de OBS (WCAG AA), hoja de estilos,
+                                fuentes empaquetadas e iconos SVG recoloreados
 hotkeys.*                     → registro de las 3 hotkeys nativas de OBS, conectadas a
                                 Enable()/Disable()/Toggle() de BufferModeController
 logging.*                     → envoltorio de logging con prefijo de componente
 delay-controller.*            → §6 -- lógica heredada del modo reconexión, presente pero sin usar
+tests/                        → 19 suites, solo se compilan con -DTRIGGLOW_BUILD_TESTS=ON o por
+                                separado (cmake -S tests): buffer_fit, encoder_check, ui_tokens,
+                                auto_names, overlay_layout, frame_arena, frame_ring,
+                                degradation_policy, pipeline_stress, background_tasks, json,
+                                log_redact, chat_text, support_diagnostics, api_client,
+                                token_store, auth_client, support_client, trigi_states (las del
+                                cliente, con un sustituto de red guionizado)
 ```
 
 Principio de diseño: **`BufferModeController` es el único dueño del estado**. Tanto el dock como las

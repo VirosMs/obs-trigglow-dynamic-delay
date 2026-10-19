@@ -16,9 +16,13 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#include <filesystem>
 #include <memory>
+#include <vector>
 
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 
 extern "C" {
@@ -36,10 +40,15 @@ extern "C" {
 #include "audio-delay-filter.hpp"
 #include "auth-manager.hpp"
 #include "buffer-mode-controller.hpp"
+#include "bug-report.hpp"
 #include "hotkeys.hpp"
+#include "i18n.hpp"
 #include "logging.hpp"
 #include "obs-frontend-bridge.hpp"
+#include "overlay-badge.hpp"
 #include "settings-ui.hpp"
+#include "ui-tasks.hpp"
+#include "ui-theme.hpp"
 #include "video-delay-filter.hpp"
 
 OBS_DECLARE_MODULE()
@@ -77,6 +86,10 @@ constexpr const char *kBufferSettingsFile = "buffer-mode-settings.json";
 // that still needs a home.
 struct PluginState {
 	trigglow::ObsFrontendBridge bridge;
+	// Renders the live overlay's PNGs (one per seconds value) into the
+	// plugin's config folder; the bridge asks it through
+	// SetOverlayImageProvider(). Outlives bufferController (declared before it).
+	std::unique_ptr<trigglow::ui::DelayBadgeFiles> badgeFiles;
 	// Constructed before bufferController so Enable() can be wired to gate on
 	// it from the moment it's created (see SetAuthorizationCheck below) --
 	// see docs/ACCOUNT_GATE.md for why this gate exists at all.
@@ -88,22 +101,121 @@ struct PluginState {
 	// only as a non-owning reference for potential future use (e.g. forcing
 	// a refresh), never deleted from this side.
 	trigglow::TrigglowDelayDock *dock = nullptr;
+	// False only when buffer-mode-settings.json exists, couldn't be parsed and
+	// couldn't be set aside either (see LoadBufferSettings): then the file is
+	// left untouched on exit instead of being replaced by the defaults.
+	bool saveSettingsOnExit = true;
 };
 
 PluginState *g_state = nullptr;
 
-void LoadBufferSettings(trigglow::BufferModeController &controller)
+// Registers the bundled Archivo/Geist Mono (data/fonts) for the plugin's own
+// widgets and the overlay -- never as OBS's UI font -- and logs ONE line
+// either way. Without them every role falls back to OBS's UI font.
+void LoadBrandFonts()
+{
+	char *rawDir = obs_module_file("fonts");
+	const QString dir = rawDir ? QString::fromUtf8(rawDir) : QString();
+	bfree(rawDir);
+	const trigglow::ui::BrandFontsReport report = trigglow::ui::LoadBrandFonts(dir);
+	// The folder relative to the plugin, never its absolute path: OBS's log is
+	// attached to support tickets, and a portable OBS lives under the user's
+	// profile folder.
+	const QByteArray where = dir.isEmpty() ? QByteArray("(no data/fonts folder)")
+					       : QByteArray("the plugin's data/fonts folder");
+	const QByteArray loaded = report.loaded.join(QStringLiteral(", ")).toUtf8();
+	const QByteArray missing = report.missing.join(QStringLiteral(", ")).toUtf8();
+	if (!report.failed.isEmpty()) {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "brand fonts: could not register %s in %s (loaded: %s); those roles use OBS's UI "
+				  "font",
+				  report.failed.join(QStringLiteral(", ")).toUtf8().constData(), where.constData(),
+				  loaded.isEmpty() ? "none" : loaded.constData());
+	} else if (!report.missing.isEmpty()) {
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "brand fonts not bundled in %s (missing: %s; loaded: %s): using OBS's UI font",
+				  where.constData(), missing.constData(),
+				  loaded.isEmpty() ? "none" : loaded.constData());
+	} else {
+		TRIGGLOW_LOG_INFO(kComponent, "brand fonts loaded from %s: %s", where.constData(), loaded.constData());
+	}
+}
+
+// Moves an unreadable settings file out of the way (rename, or copy if that
+// fails) to "<file>.<yyyyMMdd-HHmmss>.invalid" next to it, so the defaults
+// SaveBufferSettings() writes on exit never silently replace what the user (or
+// support) put there. Returns the new path, or an empty string if neither
+// worked.
+QString SetAsideInvalidSettingsFile(const QString &path)
+{
+	const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
+	QString target = path + QLatin1Char('.') + stamp + QStringLiteral(".invalid");
+	// Never overwrite an earlier copy (two bad starts in the same second).
+	for (int n = 2; QFileInfo::exists(target); ++n)
+		target = path + QLatin1Char('.') + stamp + QLatin1Char('-') + QString::number(n) +
+			 QStringLiteral(".invalid");
+	if (QFile::rename(path, target) || QFile::copy(path, target))
+		return target;
+	return {};
+}
+
+// "buffer_output_cap" and (v0.6.0) "codec_workers" are hidden support
+// switches with no UI anywhere (see BufferModeController::LoadSettings): only
+// a literal JSON false turns one off. Absent (or JSON null, which libobs
+// drops on load) or true keeps it on, and so does any other type ("false" as
+// a string, 0...), with a WARN: a typo must never quietly change how the
+// buffer works. `what` names the feature for that WARN.
+bool ReadHiddenSwitch(obs_data_t *data, const char *key, const char *what)
+{
+	obs_data_item_t *item = obs_data_item_byname(data, key);
+	if (!item)
+		return true;
+	bool on = true;
+	if (obs_data_item_gettype(item) == OBS_DATA_BOOLEAN) {
+		on = obs_data_item_get_bool(item);
+	} else {
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "\"%s\" in %s is not a JSON boolean -- keeping %s on. Only a literal false (no "
+				  "quotes) turns it off; this value is dropped from the file when OBS closes",
+				  key, kBufferSettingsFile, what);
+	}
+	obs_data_item_release(&item);
+	return on;
+}
+
+// False when the settings file exists but can't be parsed AND couldn't be set
+// aside: the caller must then not overwrite it on exit.
+bool LoadBufferSettings(trigglow::BufferModeController &controller)
 {
 	char *rawPath = obs_module_get_config_path(obs_current_module(), kBufferSettingsFile);
 	QString path = rawPath ? QString::fromUtf8(rawPath) : QString();
 	bfree(rawPath);
 	if (path.isEmpty())
-		return;
+		return true;
 
-	obs_data_t *data = obs_data_create_from_json_file(path.toUtf8().constData());
-	if (!data) {
+	const QByteArray pathUtf8 = path.toUtf8();
+	if (!QFileInfo::exists(path)) {
 		TRIGGLOW_LOG_INFO(kComponent, "no existing settings file, using defaults");
-		return;
+		return true;
+	}
+	obs_data_t *data = obs_data_create_from_json_file(pathUtf8.constData());
+	if (!data) {
+		// Exists but isn't readable JSON (hand-edited, truncated...). libobs
+		// already logged the parse error; keep the file for whoever edited it.
+		// File names only: the full path carries the Windows user name.
+		const QString setAside = SetAsideInvalidSettingsFile(path);
+		if (setAside.isEmpty()) {
+			TRIGGLOW_LOG_WARN(kComponent,
+					  "settings file %s is not valid JSON and could not be renamed or copied -- "
+					  "using defaults this session and leaving the file untouched on exit",
+					  kBufferSettingsFile);
+			return false;
+		}
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "settings file %s is not valid JSON -- moved it to %s next to it and using "
+				  "defaults (the file is written again when OBS closes)",
+				  kBufferSettingsFile, QFileInfo(setAside).fileName().toUtf8().constData());
+		return true;
 	}
 
 	uint32_t delaySeconds = static_cast<uint32_t>(obs_data_get_int(data, "delay_seconds"));
@@ -117,15 +229,25 @@ void LoadBufferSettings(trigglow::BufferModeController &controller)
 
 	bool showOverlay = obs_data_has_user_value(data, "show_overlay") ? obs_data_get_bool(data, "show_overlay")
 									 : true;
+	// false brings back v0.5.0's buffer sizing. Read only here, at load.
+	const bool bufferOutputCap = ReadHiddenSwitch(data, "buffer_output_cap", "the output-resolution cap");
+	// v0.6.0 kill switch: false runs the MJPEG encode/decode on OBS's
+	// graphics thread again (no codec worker threads). Read only here, at load.
+	const bool codecWorkers = ReadHiddenSwitch(data, "codec_workers", "the codec worker threads");
 
 	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
 				loadingScene ? loadingScene : "", showOverlay,
-				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")));
-	obs_data_release(data);
+				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")), bufferOutputCap,
+				codecWorkers);
 
-	TRIGGLOW_LOG_INFO(kComponent, "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\")",
+	TRIGGLOW_LOG_INFO(kComponent,
+			  "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\", output_cap=%s, "
+			  "codec_workers=%s)",
 			  delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
-			  loadingScene ? loadingScene : "");
+			  loadingScene ? loadingScene : "", bufferOutputCap ? "on" : "off",
+			  codecWorkers ? "on" : "off");
+	obs_data_release(data);
+	return true;
 }
 
 void SaveBufferSettings(const trigglow::BufferModeController &controller)
@@ -148,10 +270,18 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 	obs_data_set_string(data, "loading_scene", snapshot.loadingSceneName.c_str());
 	obs_data_set_bool(data, "show_overlay", snapshot.showOverlay);
 	obs_data_set_int(data, "overlay_corner", snapshot.overlayCorner);
+	// This file is rewritten from scratch here, so the hidden switch has to
+	// be written back or a support-set false would be lost on the next exit.
+	// Only when off: everyone else's file stays exactly as before.
+	if (!snapshot.bufferOutputCap)
+		obs_data_set_bool(data, "buffer_output_cap", false);
+	if (!snapshot.codecWorkers)
+		obs_data_set_bool(data, "codec_workers", false);
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 
-	TRIGGLOW_LOG_INFO(kComponent, "settings saved to %s", path.toUtf8().constData());
+	// File name only: the full path carries the Windows user name.
+	TRIGGLOW_LOG_INFO(kComponent, "settings saved (%s in the plugin's OBS config folder)", kBufferSettingsFile);
 }
 
 } // namespace
@@ -177,10 +307,45 @@ bool obs_module_load(void)
 	trigglow::VideoDelayFilter::Register();
 	trigglow::AudioDelayFilter::Register();
 
+	// Background jobs (sign-in, Trigi, tickets, the update check): before
+	// anything below can start one. Stopped first thing in
+	// obs_module_unload().
+	trigglow::uitasks::Start();
+
 	g_state = new PluginState();
+
+	// Before the dock and the first overlay image use them.
+	LoadBrandFonts();
+	// Resolved here: obs_current_module() is only valid during obs_module_load().
+	{
+		char *rawDir = obs_module_get_config_path(obs_current_module(), "overlay");
+		g_state->badgeFiles =
+			std::make_unique<trigglow::ui::DelayBadgeFiles>(rawDir ? QString::fromUtf8(rawDir) : QString());
+		bfree(rawDir);
+		g_state->bridge.SetOverlayImageProvider([files = g_state->badgeFiles.get()](uint32_t seconds) {
+			const QString label = QString::fromUtf8(Str("Overlay.Label"));
+			const QString value = QString::fromUtf8(Str("Overlay.Value")).arg(seconds);
+			const QString signature = QString::fromUtf8(Str("Overlay.Signature"));
+			return files->PathFor(seconds, label, value, signature).toStdString();
+		});
+	}
 
 	g_state->authManager = std::make_unique<trigglow::AuthManager>();
 	g_state->authManager->Init();
+	// Log copies that versions before 0.6.0 left in %TEMP% (0.6.0 keeps the
+	// redacted log in memory only).
+	trigglow::DeleteLeftoverSupportLogCopies();
+	// Marks this OBS's log, so "Report a problem" attaches it and never
+	// another OBS's (a portable one keeps its logs next to its own config).
+	{
+		std::vector<std::filesystem::path> logFolders;
+		logFolders.push_back(trigglow::ObsLogFolderFrom(g_state->authManager->ConfigDir()));
+		if (char *profile = obs_frontend_get_current_profile_path()) {
+			logFolders.push_back(trigglow::ObsLogFolderFrom(std::filesystem::u8path(profile)));
+			bfree(profile);
+		}
+		trigglow::MarkCurrentObsLog(std::move(logFolders));
+	}
 
 	g_state->bufferController = std::make_unique<trigglow::BufferModeController>(g_state->bridge);
 	// Free account gate (see docs/ACCOUNT_GATE.md): both the dock's Enable
@@ -190,10 +355,11 @@ bool obs_module_load(void)
 	// outlives BufferModeController (constructed first above, destroyed
 	// last in obs_module_unload()'s PluginState teardown), so this is always
 	// valid for as long as bufferController itself is.
+	// A suspended or inactive account (HTTP 403 from the server) blocks it too.
 	g_state->bufferController->SetAuthorizationCheck(
-		[auth = g_state->authManager.get()] { return auth->IsLoggedIn(); });
+		[auth = g_state->authManager.get()] { return auth->CanEnable(); });
 
-	LoadBufferSettings(*g_state->bufferController);
+	g_state->saveSettingsOnExit = LoadBufferSettings(*g_state->bufferController);
 
 	g_state->hotkeys = std::make_unique<trigglow::DelayHotkeys>(*g_state->bufferController);
 	g_state->hotkeys->Init();
@@ -208,17 +374,25 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+	// Before anything is torn down: aborts every network call still in
+	// flight (a Trigi answer can take up to 90 s), drops every result not yet
+	// delivered and waits for those threads, at most 2 s in all. Nothing of
+	// this plugin runs on another thread, or from Qt's event queue, after OBS
+	// unloads it.
+	trigglow::uitasks::Shutdown();
+
 	if (!g_state)
 		return;
 
-	SaveBufferSettings(*g_state->bufferController);
+	if (g_state->saveSettingsOnExit)
+		SaveBufferSettings(*g_state->bufferController);
 
 	// Hotkeys must be torn down before we free the controller they point
 	// back into.
 	if (g_state->hotkeys)
 		g_state->hotkeys->Shutdown();
-	// Cancels any in-flight login poll timer before teardown -- see
-	// AuthManager::Shutdown().
+	// Cancels any in-flight login poll timer before teardown (its network
+	// calls already ended above) -- see AuthManager::Shutdown().
 	if (g_state->authManager)
 		g_state->authManager->Shutdown();
 	g_state->bridge.Shutdown();

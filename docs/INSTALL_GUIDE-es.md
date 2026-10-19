@@ -11,10 +11,10 @@ desactualizados.
 
 ## 1. Descarga
 
-Consigue `obs-trigglow-dynamic-delay-0.3.2-windows-x64-setup.exe` desde la
+Consigue `obs-trigglow-dynamic-delay-0.6.0-windows-x64-setup.exe` desde la
 [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). ¿Prefieres
 instalarlo a mano? El `.zip` de esa misma release solo trae los archivos del plugin — ver
-"Installing the compiled plugin in OBS" en `README-es.md`.
+"Instalar el plugin" en `README-es.md`.
 
 ## 2. Windows SmartScreen: por qué aparece y cómo continuar
 
@@ -96,3 +96,29 @@ El panel aparece mostrando `● Inactive` — ya puedes elegir una escena en dir
 "Using the plugin" en `README-es.md` para qué configurar a continuación.
 
 ![Panel de Trigglow Dynamic Delay, estado Inactive](images/obs-panel-3-dock.png)
+
+## 6. Inicia sesión una vez
+
+`Activar delay` necesita una cuenta gratuita de trigglow.com, con la sesión iniciada una vez desde
+el dock (solo en Windows en la v0.6.0; macOS y Linux tendrán inicio de sesión en la v0.6.1):
+
+1. Pulsa **Iniciar sesión** en el dock. El navegador abre trigglow.com; inicia sesión ahí o crea una
+   cuenta gratuita.
+2. El dock muestra un código ("La página debe mostrar el código KD7F-29QM."; el tuyo será otro).
+   Comprueba que la página muestra el mismo código y pulsa **Confirmar**. Si los códigos no
+   coinciden, o no lo has iniciado tú, pulsa **No he sido yo**.
+3. Unos segundos después el dock dice "Conectado como …". No hace falta volver a iniciar sesión en
+   el siguiente arranque.
+
+Si no se abre el navegador, pulsa **Copiar enlace** y pégalo en tu navegador. Más detalles en la
+sección "Iniciar sesión desde el dock" de `docs/TROUBLESHOOTING-es.md`.
+
+## Actualizar desde una versión anterior
+
+Instala la versión nueva encima de la anterior, igual que antes (con OBS cerrado): tus escenas,
+ajustes y atajos se conservan. **Desde la v0.5.x o anterior, actualizar es obligatorio**: el inicio
+de sesión de esas versiones se apaga cuando se publica la v0.6.0, y las sesiones que ya tienen dejan
+de funcionar tras un periodo de transición. En el primer arranque tu inicio de sesión pasa
+solo al formato nuevo; si el dock te pide iniciar sesión, hazlo una vez (paso 6). Desde la v0.6.0
+los objetos que gestiona el plugin terminan en "(auto)" en vez de "(no tocar)": ver
+`CHANGELOG-es.md` si una acción de Stream Deck u obs-websocket los usa por su nombre.

@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 extern "C" {
@@ -70,6 +71,8 @@ private:
 
 	void Update(obs_data_t *settings);
 	obs_audio_data *FilterAudio(obs_audio_data *audio);
+	// Sets configuredDelaySeconds_, logging a real change. Under managedMutex_.
+	void ApplyDelaySeconds(uint32_t seconds);
 
 	// Resizes ring_ for the given channel count/sample rate and the current
 	// configuredDelaySeconds_. No-op if already correctly sized.
@@ -93,9 +96,23 @@ private:
 	static obs_properties_t *GetProperties(void *data);
 	static void GetDefaults(obs_data_t *settings);
 
+	// "set_managed_delay_seconds(in int seconds)" proc handler: how
+	// ObsFrontendBridge pushes the delay audio must use (the video's
+	// effective one). Like VideoDelayFilter's: from then on Update() ignores
+	// any other delay_seconds in the settings (one WARN per push), so OBS's
+	// Defaults button or obs-websocket can't put audio out of step with the
+	// video. Applies on the caller's thread.
+	static void SetManagedDelaySecondsProc(void *data, calldata_t *params);
+
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
 	// Written by Update() (UI thread), read by FilterAudio() (audio thread).
 	std::atomic<uint32_t> configuredDelaySeconds_{0};
+	// See SetManagedDelaySecondsProc(). managedMutex_ guards both flags and
+	// keeps the proc's value and its write into the settings together
+	// against Update().
+	std::mutex managedMutex_;
+	bool managed_ = false;
+	bool warnedForeignSettings_ = false;
 	// Bumped by Update() whenever the "reset_token" setting changes (the
 	// bridge does this on every Enable); consumed by the audio thread.
 	std::atomic<bool> resetRequested_{false};

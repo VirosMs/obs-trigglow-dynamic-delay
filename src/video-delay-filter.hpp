@@ -18,7 +18,18 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include "buffer-fit.hpp"
+#include "codec-pipeline.hpp"
+#include "degradation-policy.hpp"
+#include "frame-ring.hpp"
+#include "perf-stats.hpp"
+#include "pipeline-health.hpp"
+
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <vector>
 
 extern "C" {
@@ -27,65 +38,54 @@ extern "C" {
 #include <media-io/audio-io.h> // audio_output_get_channels/sample_rate() — used to size the audio ring
 }
 
-#ifdef TRIGGLOW_HAVE_FFMPEG
-// v0.3.0 real compression (docs/ROADMAP.md) -- only defined on platforms
-// CMakeLists.txt actually links FFmpeg for (Windows/Linux; not macOS yet,
-// see that file). Every use below is guarded the same way, with a raw-NV12
-// fallback so this file still compiles and works (just uncompressed) on
-// macOS.
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavutil/frame.h>
-}
-#endif
-
 // Delays video by a configured number of seconds, with the streaming OUTPUT
 // never touched — no reconnection, ever, at any point. A standard OBS
 // VIDEO-ONLY filter, attached automatically by BufferModeController to the
 // live scene via ObsFrontendBridge — the user never opens OBS's own Filters
 // dialog for it.
 //
-// Video mechanism (rewritten 2026-08-25 from "one persistent GPU texture per
-// buffered frame" to a hybrid RAM+fixed-GPU-object design, after live
-// feedback asked whether VRAM was really required and a real "Device
-// Remove/Reset" game crash raised the cost of holding dozens of large GPU
-// textures alive at once): the ring buffer itself lives in ordinary system
-// RAM (Slot::pixels below, one plain byte vector per buffered frame), stored
-// as NV12 rather than RGBA since 2026-08-26 (see Slot's comment -- ~2.7x
-// less RAM for the same buffered duration/quality). There are only ever a
-// small FIXED number of actual GPU objects, regardless of how many seconds
-// are buffered:
-//   1. captureTexrender_ -- one reusable RGBA render target the live frame
-//      is rendered into each tick (same one every frame, just reset/reused).
-//   2. nv12Effect_ + yTexrender_/uvTexrender_ -- a tiny custom shader
-//      (see kNv12EffectSource in the .cpp) that converts captureTexrender_'s
-//      RGBA into Y/UV planes via two full-screen-quad passes -- this is the
-//      GPU-side half of the NV12 conversion.
-//   3. stagingSlots_[kStagingSlotCount] -- a small (2) rotating pool of
-//      Y+UV gs_stagesurf_t pairs used for ASYNC GPU->CPU readback
-//      (gs_stage_texture + a deferred gs_stagesurface_map one frame later,
-//      so the CPU never stalls waiting on the copy the way mapping the SAME
-//      frame's staging surface immediately would).
-//   4. yPlaybackTexture_/uvPlaybackTexture_ -- reusable upload textures:
-//      whichever RAM slot is `delaySeconds` old gets pushed into these via
-//      gs_texture_set_image, then nv12Effect_'s "DrawNV12" technique
-//      samples both and writes RGBA straight to the output.
-// Memory is still the hard constraint, not CPU: even at NV12's 1.5
-// bytes/pixel, 1920x1080@60fps is still ~178MB PER SECOND of buffered
-// history. EnsureRingSized() picks a buffer budget from the machine's total
-// system RAM (src/hardware-info.hpp) and never captures below a
-// configurable minimum resolution (quality floor, user-chosen) -- if the
-// full requested delay doesn't fit the budget at that floor, the ACTUAL
-// buffered duration shortens instead (flipped 2026-08-25 after live feedback
-// that always honoring the full duration made long delays look terrible).
+// Video mechanism: the ring buffer lives in ordinary system RAM, never in
+// VRAM (2026-08-25, after a real "Device Remove/Reset" game crash raised the
+// cost of holding dozens of large GPU textures alive), and only a small FIXED
+// set of GPU objects exists however many seconds are buffered:
+//   1. captureTexrender_ -- the live frame is rendered into it each capture.
+//   2. effect_ + planeTexrenders_ -- a tiny custom shader (kEffectSource in
+//      the .cpp) converts that RGBA into three planes, Y (full size), U and V
+//      (half width and height), I420, one full-screen-quad pass each. Since
+//      v0.6.0 the planes come back separately (I420) instead of NV12, so the
+//      CPU never (de)interleaves chroma in either direction (perf2 #5).
+//   3. stagingSlots_[kStagingSlotCount] -- a rotating pool of staging
+//      surfaces for ASYNC GPU->CPU readback: each capture is mapped two
+//      captures after it was staged, so the map never stalls on the GPU.
+//   4. playbackTextures_ -- the delayed frame's three planes, uploaded only
+//      when the frame changes; the shader's "DrawI420" technique turns them
+//      back into RGBA.
+// Frames are stored MJPEG-compressed (v0.3.0, TRIGGLOW_HAVE_FFMPEG platforms:
+// Windows/Linux; raw I420 elsewhere) in a FrameRing whose payloads live in a
+// block FrameArena (v0.6.0: commit/resident memory follows the real packet
+// sizes, and freeing it is one call per 32 MiB block).
 //
-// v0.3.0 (2026-08-27, TRIGGLOW_HAVE_FFMPEG platforms only -- Windows/Linux
-// for now, see CMakeLists.txt): each ring slot additionally gets MJPEG-
-// encoded before storage and decoded back on playback (EncodeScratchNv12Into
-// / DecodeSlotIntoScratchNv12 below), cutting real RAM use further on top of
-// the NV12 win above. Falls back to storing raw NV12 (identical to the
-// pre-v0.3.0 behavior) if the encoder isn't open/available or fails on a
-// given frame -- never a hard requirement for the buffer to work at all.
+// v0.6.0 (buffer pipeline design part B): encode and decode run on worker
+// threads (CodecPipeline, see codec-pipeline.hpp for the thread model). The
+// graphics thread only renders, converts, reads back, hands the frame to the
+// encoders, and on playback uploads whatever decoded frame is due. The ring is
+// read by AGE (capture timestamp vs. now - delay), so a frame that isn't
+// ready in time is a repeated frame, never a shift of the delay. Under load
+// the buffer degrades in steps that never shorten the delay (degradation-
+// policy.hpp): more encode threads, then a lower capture resolution (never
+// below the user's quality floor), then half the capture frame rate. The
+// hidden "codec_workers" setting (false) is the kill switch back to doing the
+// codec work on the graphics thread (same ring, no codec threads; memory is
+// still freed on the pipeline's reaper thread).
+//
+// Memory is the hard constraint, not CPU: EnsureRingSized() picks a buffer
+// budget from the machine's total system RAM (src/hardware-info.hpp) and
+// never reduces below a configurable minimum resolution for RAM (quality
+// floor, user-chosen) -- if the full requested delay doesn't fit the budget
+// at that floor, the ACTUAL buffered duration shortens instead. Since v0.5.1
+// it also never buffers above OBS's output resolution (src/buffer-fit.hpp).
+// Since v0.6.0 a shortened delay is a whole number of seconds that video and
+// audio both use (bufferfit::Result::effectiveDelaySeconds, design A.4).
 //
 // FilterAudio()/EnsureAudioRingSized() below are a COMPLETE, implemented
 // audio ring buffer (same delay-window logic as video, in sample-space) --
@@ -112,6 +112,14 @@ class VideoDelayFilter {
 public:
 	static const char *Id();
 
+	// Signal "void buffer_restarted(ptr source)" on the filter's own source,
+	// emitted on the graphics thread when a hard resize threw away buffered
+	// frames -- a delay or quality change, a reset of OBS's video settings --
+	// so the delayed view stays blank until the new ring fills.
+	// ObsFrontendBridge forwards it to BufferModeController, which shows the
+	// loading scene meanwhile.
+	static constexpr const char *kBufferRestartedSignal = "buffer_restarted";
+
 	// Registers this filter type with OBS. Call once from obs_module_load().
 	static void Register();
 
@@ -126,11 +134,14 @@ public:
 
 	// What EnsureRingSized() would actually do for a given
 	// (requestedDelaySeconds, minResolutionHeight) at the live scene's real
-	// (sourceWidth, sourceHeight, fps) -- same math, exposed as a pure
-	// query so the dock can warn the user BEFORE they press Enable, not
-	// just after. Never restricts their choice: this is purely informational,
-	// "aconsejar segun el hardware, pero a su eleccion" per the 2026-08-25
-	// live feedback that asked for exactly this.
+	// (sourceWidth, sourceHeight) and OBS's current video settings (canvas
+	// base*, output*, exact fpsNum/fpsDen), with the output-resolution cap on
+	// or off (capToOutput, the hidden buffer_output_cap setting) -- the same
+	// bufferfit::Compute() call, exposed as a pure query so the dock can warn
+	// the user BEFORE they press Enable, not just after. Never restricts their
+	// choice: this is purely informational, "aconsejar segun el hardware, pero
+	// a su eleccion" per the 2026-08-25 live feedback that asked for exactly
+	// this.
 	struct BufferFitEstimate {
 		uint32_t width = 0;
 		uint32_t height = 0;
@@ -139,121 +150,132 @@ public:
 		// -- the quality floor didn't leave room for the full duration at
 		// the current RAM budget.
 		bool fitsFullDuration = true;
+		// v0.6.0 (design A.4): the delay video and audio will both really use,
+		// in whole seconds (the requested delay when it fits).
+		uint32_t effectiveSeconds = 0;
 	};
 	static BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight,
-						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t fps);
+						   uint32_t sourceWidth, uint32_t sourceHeight, uint32_t baseWidth,
+						   uint32_t baseHeight, uint32_t outputWidth, uint32_t outputHeight,
+						   uint32_t fpsNum, uint32_t fpsDen, bool capToOutput);
 
 private:
-	// One buffered historical frame, plain RAM -- NOT a GPU object. See this
-	// file's header comment: the ring itself lives here, in system memory;
-	// the only GPU objects involved (captureTexrender_, stagingSlots_,
-	// yPlaybackTexture_/uvPlaybackTexture_ below) are a small FIXED set
-	// shared by every slot, not one-per-slot. Stored as NV12 (Y plane, then
-	// interleaved U/V --
-	// yBytes = bufferWidth_*bufferHeight_, uvBytes = yBytes/2), not RGBA:
-	// 1.5 bytes/pixel instead of 4 (2026-08-26, after live feedback that
-	// RGBA storage alone was eating ~98% of system RAM for a 30s@1080p
-	// buffer) -- ~2.7x less RAM for the same buffered duration/quality, at
-	// the cost of two small extra GPU conversion passes per frame (see
-	// nv12Effect_ below). Chroma subsampling requires even
-	// bufferWidth_/bufferHeight_ -- EnsureRingSized() enforces that.
-	//
-	// v0.3.0 Phase 1 (2026-08-27): on platforms with TRIGGLOW_HAVE_FFMPEG,
-	// only `pixels[0..usedBytes)` is meaningful, and it's an MJPEG packet
-	// rather than raw NV12 bytes -- `compressed` says which. Both fields are
-	// simply unused (pixels always fully raw NV12) on platforms without
-	// FFmpeg.
-	//
-	// v0.3.0 Phase 2 (2026-08-27): `pixels` no longer starts at the raw NV12
-	// worst-case size on FFmpeg platforms -- EnsureRingSized() allocates it
-	// at a smaller BUDGETED size instead (frameBytes / kAssumedCompressionRatio),
-	// which is what actually realizes the RAM reduction Phase 1 only assumed
-	// on paper (a compressed packet's smaller usedBytes never shrank the
-	// actual allocation there). EncodeScratchNv12Into() and the raw fallback
-	// in Render() both grow a slot's `pixels` past the budget with a plain
-	// `resize()` whenever one particular frame genuinely needs more room
-	// than assumed (hard-to-compress content, or FFmpeg unavailable/failed
-	// entirely) -- and that growth is PERMANENT for the slot's lifetime
-	// (capacity is never shrunk back down), to avoid paying a
-	// realloc+memcpy on every single frame. Worst case, every slot
-	// eventually grows to the full raw size (identical to Phase 1's
-	// behavior) if content consistently compresses worse than assumed;
-	// that's an accepted, safe degradation, not a bug.
-	struct Slot {
-		std::vector<uint8_t> pixels;
-		size_t usedBytes = 0;
-		bool compressed = false;
-		bool valid = false; // false until first successfully captured.
-		// Wall-clock capture time (os_gettime_ns). Playback picks the slot by
-		// AGE, not by "N slots back", so the delay stays exact even when
-		// Render() runs at a different rate than the configured fps.
-		// kPendingTimestamp while the async readback is still in flight.
-		uint64_t timestampNs = 0;
+	// One in-flight (or just-finished) async GPU->CPU readback: the three
+	// planes of one capture, staged and harvested together. Sized per slot,
+	// so a capture staged at one degradation rung is still read back right
+	// after the next capture switched to another size.
+	struct StagingSlot {
+		gs_stagesurf_t *surfaces[3] = {nullptr, nullptr, nullptr}; // Y, U, V (GS_R8).
+		uint32_t width = 0;                                        // Luma size the surfaces were created for.
+		uint32_t height = 0;
+		bool pending = false;               // From gs_stage_texture() until harvested.
+		FrameRing::Reservation reservation; // The ring slot this capture goes to.
 	};
 
-	// One in-flight (or just-finished) async GPU->CPU readback -- BOTH
-	// planes of one frame, staged and harvested together in lockstep since
-	// they always come from the same source frame. See kStagingSlotCount's
-	// comment for why there are exactly two of these.
-	struct StagingSlot {
-		gs_stagesurf_t *ySurface = nullptr;  // GS_R8, full bufferWidth_ x bufferHeight_.
-		gs_stagesurf_t *uvSurface = nullptr; // GS_R8G8, half resolution (chroma subsampled).
-		bool pending = false;       // true from gs_stage_texture() until the deferred harvest reads it back.
-		size_t targetRingIndex = 0; // Which ring_ slot the pending readback belongs to.
-		uint64_t captureNs = 0;     // When that frame was captured (becomes Slot::timestampNs).
+	// G-side telemetry for one "perf check" window (kPerfLogIntervalNs in the
+	// .cpp). The encode/decode side comes from CodecPipeline::WindowStats.
+	struct PerfWindow {
+		uint64_t startNs = 0;           // Start of the first Render() measured (0 = window empty).
+		uint64_t lastSampleNs = 0;      // End of the last Render() measured.
+		PerfSeries render;              // Whole Render() call (main path), EnsureRingSized() included.
+		PerfSeries own;                 // The same minus rendering the scene itself: the plugin's own work.
+		PerfSeries readback;            // Staging maps + memcpy into the RawFrame + unmaps (Y, U, V).
+		PerfSeries upload;              // The three gs_texture_set_image() calls.
+		uint64_t calls = 0;             // Render() calls that reached the main path.
+		uint64_t captures = 0;          // 1/fps cells captured (ring reservations attempted).
+		uint64_t uploads = 0;           // Delayed frames uploaded.
+		uint64_t holds = 0;             // A new frame was due but the previous one was redrawn...
+		uint64_t holdsLateDecode = 0;   // ...because it was encoded but not decoded in time,
+		uint64_t holdsDropped = 0;      // ...because it was dropped,
+		uint64_t holdsEncoding = 0;     // ...because it was still being encoded.
+		uint64_t reserveFailures = 0;   // Captures lost: the next ring slot was busy.
+		uint64_t backpressureDrops = 0; // Captures lost: no free RawFrame (encoders behind).
+		uint64_t captureFailures = 0;   // Captures lost: render/staging failed.
+		// OBS's own counters (obs_get_total_frames/obs_get_lagged_frames,
+		// video_output_get_skipped_frames) at the window's first and last
+		// sample; the line logs the deltas.
+		uint64_t obsTotalFramesStart = 0;
+		uint64_t obsLaggedFramesStart = 0;
+		uint64_t obsSkippedFramesStart = 0;
+		uint64_t obsTotalFramesLast = 0;
+		uint64_t obsLaggedFramesLast = 0;
+		uint64_t obsSkippedFramesLast = 0;
+		void Reset();
 	};
 
 	explicit VideoDelayFilter(obs_source_t *filterSource);
 	~VideoDelayFilter();
 
 	void Update(obs_data_t *settings);
+	// Set configuredDelaySeconds_ / configuredMinResolutionHeight_, logging a
+	// real change. Under managedMutex_.
+	void ApplyDelaySeconds(uint32_t seconds);
+	void ApplyMinResolutionHeight(uint32_t heightPixels);
+	// The set_managed_* procs: the dock's value for `key` (kSettingDelaySeconds
+	// or kSettingMinResolutionHeight), applied right away and written into the
+	// filter's settings; from then on Update() ignores any other value there.
+	void SetManagedSetting(const char *key, uint32_t value);
 	void Tick(float secondsSinceLastTick);
 	void Render();
 	obs_audio_data *FilterAudio(obs_audio_data *audio);
 	uint32_t GetWidth() const;
 	uint32_t GetHeight() const;
 
-	// Resizes ring_ (RAM-budget-capped) for the given target resolution and
-	// current output frame rate. No-op if the ring is already correct for
-	// this width/height/frame count. Must be called from within a
-	// video_render (or otherwise graphics-context-active) call: a resolution
-	// change also tears down and lazily-recreates the fixed GPU object pool
-	// (via ReleaseGpuObjects()), since gs_stagesurf_t/gs_texture_t can't be
-	// resized in place the way gs_texrender_t can.
+	// Reads obs_get_video_info() into fpsNum_/fpsDen_/frameIntervalNs_ and the
+	// mix geometry. From the constructor (before the filter renders) and from
+	// Tick(). False (members untouched) if OBS has no video info yet.
+	bool RefreshVideoInfo();
+
+	// Sizes the delay cycle (ring, pipeline, degradation ladder) for the given
+	// target resolution, delay, quality floor and frame rate. No-op if the
+	// current ring already matches. A real change -- OBS video settings, delay
+	// or quality changed, or the kill switch flipped -- is a "hard resize": the
+	// old ring goes to the reaper thread to be freed and a new one fills from empty.
+	// Graphics thread only (it can destroy resolution-sized GPU objects).
 	void EnsureRingSized(uint32_t width, uint32_t height);
-	void ReleaseRing();            // Frees the CPU-side ring_ (Slot::pixels) only.
+	// Ends the current cycle: the pipeline drops queued work and decoded
+	// frames and hands the ring (ours included) to its reaper thread, which
+	// frees it. Graphics thread only; never waits on a worker, never frees it here.
+	void StopCycle(bool releaseCodecs);
 	void ReleaseGpuObjects();      // Frees the ENTIRE GPU pool, effect included -- destructor only.
-	void ReleaseSizedGpuObjects(); // Frees just the resolution-sized objects -- also used on resize.
+	void ReleaseSizedGpuObjects(); // Frees the resolution-sized objects (resize, Disable).
+	// Forgets the frame in the playback textures (what a "hold" redraws).
+	void InvalidatePlaybackCache();
+
+	// Capture (one per 1/fps cell): harvest the staging slot staged two
+	// captures ago into a RawFrame for the encoders, reserve a ring slot,
+	// render + convert the target and stage it.
+	void CaptureFrame(obs_source_t *target, uint32_t sourceWidth, uint32_t sourceHeight, uint64_t nowNs);
+	void HarvestStagingSlot(StagingSlot &slot, uint64_t nowNs);
+	// Playback: upload the newest decoded frame not younger than now - delay
+	// (when it changed) and draw it, or redraw the last one.
+	void DrawDelayed(uint32_t sourceWidth, uint32_t sourceHeight, uint64_t nowNs);
+	bool EnsureEffect();
+	bool EnsurePlaybackTextures(uint32_t width, uint32_t height);
+
+	// Adaptive degradation (B.8): every kPolicyEvalIntervalNs, feeds the
+	// trailing-window metrics to policy_ and applies its decision.
+	void MaybeEvaluateDegradation(uint64_t nowNs);
+	void ApplyDegradation(const degradation::Decision &decision, const degradation::Sample &sample);
+	void ApplyCurrentRung();
+	void ClearPolicyWindows();
+	// Copies the current state into health_ (under healthMutex_).
+	void PublishHealth(bool running);
+
+	// Telemetry. BeginRenderSample() closes the window early after a pause in
+	// rendering; FinishRenderSample() records one Render() call and logs the
+	// window every kPerfLogIntervalNs; LogPerfWindow() writes the "perf check"
+	// and "pipeline check" lines and resets the window. Graphics thread only
+	// (also the destructor, when nothing renders any more).
+	void BeginRenderSample(uint64_t renderStartNs);
+	void FinishRenderSample(uint64_t renderStartNs);
+	void LogPerfWindow(const char *reason);
 
 	// Resizes audioRing_ for the given channel count/sample rate and the
 	// current configuredDelaySeconds_. Plain CPU memory (no graphics
 	// context needed, unlike EnsureRingSized). No-op if already correctly
 	// sized.
 	void EnsureAudioRingSized(uint32_t channels, uint32_t samplesPerSec);
-
-#ifdef TRIGGLOW_HAVE_FFMPEG
-	// Opens encoderCtx_/decoderCtx_ (MJPEG, all-intra -- see this file's
-	// header comment) at the CURRENT bufferWidth_/bufferHeight_. Called from
-	// EnsureRingSized() on resolutionChanged, alongside the GPU pool
-	// recreation those same dimensions drive -- codec contexts are just as
-	// tied to a fixed frame size as gs_stagesurf_t/gs_texture_t are. No-op
-	// if already open at the right size.
-	void EnsureCodecContextsOpen();
-	void ReleaseCodecContexts();
-
-	// Encodes scratchNv12_ (this tick's freshly-harvested raw NV12 frame)
-	// into `dst.pixels`/`usedBytes`/`compressed`. Returns false (dst
-	// untouched) if the encoder isn't open or genuinely failed to produce a
-	// packet this tick -- callers fall back to storing scratchNv12_ raw in
-	// that case, same as platforms without TRIGGLOW_HAVE_FFMPEG do always.
-	bool EncodeScratchNv12Into(Slot &dst);
-
-	// Reverse: decodes `src` (an MJPEG packet, src.compressed must be true)
-	// back into scratchNv12_ as plain NV12 bytes, ready for the existing
-	// gs_texture_set_image() playback path exactly as if it had never been
-	// compressed. Returns false (scratchNv12_ untouched) on decode failure.
-	bool DecodeSlotIntoScratchNv12(const Slot &src);
-#endif
 
 	// --- obs_source_info callback trampolines (static: OBS calls C
 	// function pointers, not member functions) ---
@@ -272,142 +294,183 @@ private:
 	// "release_buffers" proc handler, registered on the filter's own
 	// obs_source_t in Create() -- ObsFrontendBridge::SetBufferFilterEnabled
 	// calls it when Disable() runs, since OBS bypasses a disabled filter's
-	// video_render entirely (Render() otherwise never runs again to shrink/
-	// free its RAM ring). ReleaseBuffersProc can be invoked from ANY thread
-	// (in practice the Qt dock's button-click thread), but ring_ is only
-	// ever touched from the graphics/video thread, so it hops onto that
-	// thread via obs_queue_task rather than clearing ring_ directly.
+	// video_render entirely (Render() otherwise never runs again to release
+	// anything). ReleaseBuffersProc can be invoked from ANY thread (in
+	// practice the Qt dock's button-click thread), but the ring, the pipeline
+	// and the GPU objects belong to the graphics thread, so it hops onto that
+	// thread via obs_queue_task. Since v0.6.0 the task only DETACHES the ring
+	// and the RawFrame pool (the pipeline's reaper thread frees their RAM a
+	// moment later), closes the codecs (each worker closes its own) and frees
+	// the GPU objects (perf2 #4): wait=true now means "released from the
+	// filter", not "RAM already returned".
 	static void ReleaseBuffersProc(void *data, calldata_t *params);
 	static void ReleaseBuffersTask(void *param);
 
 	// "get_effective_delay_seconds" proc handler -- lets
 	// ObsFrontendBridge::GetVideoEffectiveDelaySeconds() find out what this
-	// filter is ACTUALLY delaying by right now (ring_.size()/currentFps_),
-	// which can be less than configuredDelaySeconds_ if the RAM budget
-	// didn't fit the full requested duration at the chosen quality floor
-	// (EnsureRingSized). Added 2026-08-27 after a real live report of audio
-	// lagging noticeably behind video on long/high-quality delays:
-	// AudioDelayFilter always buffers the full requested seconds (it's cheap
-	// PCM, never RAM-shortened), so BufferModeController needs this to know
-	// when it must clamp audio's delay down to match what video can really
-	// deliver -- see BufferModeController::SyncAudioDelayToVideoEffective.
-	// Same cross-thread pattern as ReleaseBuffersProc: ring_/currentFps_ are
-	// only safe to read from the graphics thread, so this hops onto it and
-	// blocks (wait=true) rather than racing a Render() call in flight.
+	// filter is ACTUALLY delaying by right now (whole seconds), which can be
+	// less than configuredDelaySeconds_ if the RAM budget didn't fit the full
+	// requested duration at the chosen quality floor (EnsureRingSized). Added
+	// 2026-08-27 after a real live report of audio lagging noticeably behind
+	// video on long/high-quality delays: AudioDelayFilter always buffers the
+	// full requested seconds, so BufferModeController needs this to clamp
+	// audio's delay down to what video really delivers -- see
+	// BufferModeController::SyncAudioDelayToVideoEffective. Since v0.6.0
+	// (design A.4) video uses exactly this whole-second value too, so the two
+	// match. Since the QA fixes it's PlannedEffectiveDelaySeconds(), computed
+	// on the calling thread from the filter's settings as they are right now:
+	// before, it hopped to the graphics thread and read what the ring had been
+	// sized for, and a change of delay reached it only on the next Render()
+	// -- obs_source_update() defers a video filter's update to the next video
+	// tick -- so a 30 -> 40 s change left audio at 30 s.
 	static void GetEffectiveDelaySecondsProc(void *data, calldata_t *params);
-	static void GetEffectiveDelaySecondsTask(void *param);
+	// The whole-second delay the ring will have once Render() sizes it for the
+	// current settings, OBS video settings and target size: the same
+	// bufferfit::Compute() call as EnsureRingSized(). 0 without a target, video
+	// info or delay. Any thread.
+	uint32_t PlannedEffectiveDelaySeconds() const;
+
+	// "get_pipeline_state(in ptr health)" proc handler (v0.6.0, design B.8):
+	// copies the current PipelineHealth into *health. Doesn't hop to the
+	// graphics thread -- it only reads health_ under healthMutex_ -- so the
+	// dock can poll it without ever blocking on a lagging render.
+	static void GetPipelineStateProc(void *data, calldata_t *params);
+
+	// "set_managed_delay_seconds(in int seconds)" and
+	// "set_managed_min_resolution_height(in int height)" proc handlers: how
+	// ObsFrontendBridge pushes the dock's delay and quality floor (every
+	// Enable(), and on a change while the delay runs). They make this filter
+	// "managed": its delay and floor are the dock's from then on, whatever its
+	// settings say -- OBS's Defaults button, an older properties dialog or
+	// obs-websocket can no longer make it delay by another value, or pass the
+	// video through undelayed (0 s) while the dock says the delay is on.
+	// Called on the caller's thread (the UI): the values apply at once, like
+	// PlannedEffectiveDelaySeconds() reads them.
+	static void SetManagedDelaySecondsProc(void *data, calldata_t *params);
+	static void SetManagedMinResolutionHeightProc(void *data, calldata_t *params);
 
 	obs_source_t *filterSource_; // Not owned; valid for this object's lifetime.
-	uint32_t configuredDelaySeconds_ = 0;
-	// Floor on the ring's capture height, in pixels -- quality wins over
-	// duration: EnsureRingSized() never captures shorter than this, and
-	// shortens the ACTUAL buffered seconds instead if the full requested
-	// delay doesn't fit the RAM budget at this floor. Defaults to 720
+	// Written by Update() (UI thread), read by Render() (graphics thread).
+	std::atomic<uint32_t> configuredDelaySeconds_{0};
+	// Floor for the RAM reduction of the ring's capture height, in pixels --
+	// quality wins over duration: EnsureRingSized() never reduces below this
+	// for RAM (nor does the degradation ladder), and shortens the ACTUAL
+	// buffered seconds instead if the full requested delay doesn't fit the
+	// RAM budget at this floor. Not a floor above OBS's output resolution,
+	// though: since v0.5.1 the buffer never exceeds that (a 720p output
+	// buffers at 720p even with a 1080p minimum). Defaults to 720
 	// (kDefaultMinResolutionHeight); user-configurable via the dock.
-	uint32_t configuredMinResolutionHeight_ = 720;
+	std::atomic<uint32_t> configuredMinResolutionHeight_{720};
+	// Hidden "buffer_output_cap" setting (bufferfit::Input::capToOutput):
+	// false = v0.5.0 sizing, no cap at OBS's output resolution. Only ever set
+	// from the plugin settings file, through ObsFrontendBridge.
+	std::atomic<bool> configuredOutputCap_{true};
+	// Hidden "codec_workers" setting (v0.6.0 kill switch): false = encode and
+	// decode on the graphics thread (no codec threads), like v0.5.1. Only
+	// ever set from the plugin settings file, through ObsFrontendBridge.
+	std::atomic<bool> configuredCodecWorkers_{true};
+	// Managed by the dock (set_managed_* procs, see SetManagedSetting()):
+	// Update() keeps configuredDelaySeconds_ and configuredMinResolutionHeight_
+	// instead of applying the settings' values, and logs one WARN per push if
+	// they differ. managedMutex_ guards these two flags and keeps a proc's
+	// value and its write into the settings together against Update() (graphics
+	// thread) and PlannedEffectiveDelaySeconds() (UI).
+	mutable std::mutex managedMutex_;
+	bool managed_ = false;
+	bool warnedForeignSettings_ = false;
 
-	std::vector<Slot> ring_;
-	uint32_t bufferWidth_ = 0; // Resolution every ring_ slot and the fixed GPU pool are currently sized for.
+	// --- The current delay cycle (graphics thread) ---
+	std::shared_ptr<FrameRing> ring_;
+	std::unique_ptr<CodecPipeline> pipeline_;
+	bool pipelineThreaded_ = false; // What pipeline_ was created as.
+	// Pipelines replaced when the kill switch flipped mid-session: their
+	// threads are only joined in the destructor (never on the graphics thread).
+	std::vector<std::unique_ptr<CodecPipeline>> retiredPipelines_;
+	uint32_t bufferWidth_ = 0; // Rung 0: what bufferfit::Compute() chose.
 	uint32_t bufferHeight_ = 0;
-	size_t writeIndex_ = 0;
-	size_t bufferedCount_ = 0; // How many ring_ slots hold a real rendered frame so far.
-	// Index of the 1/fps wall-clock cell of the last capture. Render() can be
-	// called several times per OBS frame (preview, projectors, a second
-	// canvas, the keep-alive callback...) or slower than fps under load;
-	// capturing at most once per cell keeps the ring at <= fps slots/second.
+	uint32_t captureWidth_ = 0; // What's captured right now (the current rung).
+	uint32_t captureHeight_ = 0;
+	uint32_t captureDivisor_ = 1; // 2 on the half-frame-rate rung.
+	// Design A.4: the delay video uses (and audio is told), whole seconds.
+	// 0 until the ring is sized. Atomic only so the proc's task could read it
+	// from anywhere; it's written on the graphics thread.
+	std::atomic<uint32_t> effectiveDelaySeconds_{0};
+	uint64_t ringFrameIntervalNs_ = 0; // frameIntervalNs_ the current ring was sized with.
+	// Index of the capture cell (now / capture interval) of the last capture.
+	// Render() can be called several times per OBS frame (preview,
+	// projectors, a second canvas, the keep-alive callback...) or slower than
+	// fps under load; capturing at most once per cell keeps the ring at <= fps
+	// slots/second.
 	uint64_t lastCaptureCell_ = UINT64_MAX;
-	uint32_t currentFps_ = 30; // Updated from obs_get_video_info() each Tick().
+	// Exact frame rate and frame interval from obs_get_video_info()
+	// (RefreshVideoInfo(): constructor, then every Tick(); v0.5.1). The 30fps
+	// values below only stand if OBS had no video info at creation.
+	uint32_t fpsNum_ = 30;
+	uint32_t fpsDen_ = 1;
+	uint64_t frameIntervalNs_ = 1000000000ULL / 30;
+	// OBS main mix geometry, also from RefreshVideoInfo(): base_* is the
+	// canvas, output_* the scaled output. EnsureRingSized() never buffers
+	// above the output (bufferfit::OutputCapScale) unless configuredOutputCap_
+	// is false. 0 while OBS has no video info.
+	uint32_t mixBaseWidth_ = 0;
+	uint32_t mixBaseHeight_ = 0;
+	uint32_t mixOutputWidth_ = 0;
+	uint32_t mixOutputHeight_ = 0;
+	// What the current ring was sized from and to, for the perf check line.
+	bufferfit::Input lastFitInput_;
+	bufferfit::Result lastFit_;
 
-	// The fixed, small GPU object pool -- see this file's header comment.
-	// Independent of ring_.size(): a 5s buffer and a 60s buffer both use
-	// exactly this same set of objects, just with a bigger RAM ring_ behind
-	// them.
+	// --- Adaptive degradation (B.8), graphics thread ---
+	degradation::Policy policy_;
+	uint64_t nextPolicyEvalNs_ = 0;
+	// Trailing windows the policy reads (timestamps from os_gettime_ns).
+	RollingWindow renderRecent_;                // Render() own work per call (PerfWindow::own).
+	RollingWindow captureEvents_;               // One per capture attempt.
+	RollingWindow dropEvents_;                  // One per capture lost (busy slot, backpressure, staging).
+	RollingWindow dueEvents_;                   // One per new frame due in playback (tag: its capture rung).
+	RollingWindow missEvents_;                  // One per due frame encoded but not decoded in time (same tag).
+	RollingWindow laggedEvents_;                // OBS lagged-frame increments (value = frames).
+	uint64_t lastObsLaggedFrames_ = UINT64_MAX; // UINT64_MAX = not read yet.
+	uint64_t healthChanges_ = 0;
+	PipelineLoad lastCause_ = PipelineLoad::None;
+	double lastDropsPerMinute_ = 0.0; // From the last telemetry window, for the dock.
+	double lastHoldsPerMinute_ = 0.0;
+
+	// --- GPU objects (graphics thread) ---
 	gs_texrender_t *captureTexrender_ = nullptr; // RGBA: obs_source_video_render() renders in here first.
-	// nv12Effect_ converts captureTexrender_'s RGBA into Y (yTexrender_,
-	// GS_R8) and UV (uvTexrender_, GS_R8G8, half resolution) via two small
-	// full-screen-quad shader passes -- see video-delay-filter.cpp's
-	// kNv12EffectSource for the actual conversion math. Public libobs
-	// exposes no compute/dispatch API at all (checked 2026-08-25) and no
-	// built-in RGBA->NV12 conversion a plugin can call, but ordinary pixel
-	// shaders via a custom gs_effect_t are exactly how OBS's own filters
-	// (color correction, chroma key, etc.) do custom per-pixel work, so
-	// that's the mechanism used here too.
-	gs_effect_t *nv12Effect_ = nullptr;
-	gs_texrender_t *yTexrender_ = nullptr;
-	gs_texrender_t *uvTexrender_ = nullptr;
-	// Playback: nv12Effect_'s "DrawNV12" technique samples both of these
-	// (uploaded fresh from the delayed ring slot's RAM each frame) and
-	// writes out RGBA directly -- no separate RGBA reconstruction buffer.
-	gs_texture_t *yPlaybackTexture_ = nullptr;
-	gs_texture_t *uvPlaybackTexture_ = nullptr;
-	// 2, not more: double-buffering is enough headroom for a GPU->CPU copy
-	// to finish one frame later without the CPU ever having to stall on
-	// gs_stagesurface_map() waiting for it -- see Render()'s capture step.
-	static constexpr size_t kStagingSlotCount = 2;
+	// effect_ converts captureTexrender_'s RGBA into Y, U and V (GS_R8 each;
+	// U and V at half width and height) with one full-screen-quad pass per
+	// plane -- see kEffectSource in the .cpp. Public libobs exposes no
+	// compute/dispatch API and no RGBA->YUV conversion a plugin can call, but
+	// ordinary pixel shaders via a custom gs_effect_t are exactly how OBS's own
+	// filters do per-pixel work.
+	gs_effect_t *effect_ = nullptr;
+	gs_texrender_t *planeTexrenders_[3] = {nullptr, nullptr, nullptr};
+	// Playback: "DrawI420" samples these three and writes RGBA directly.
+	gs_texture_t *playbackTextures_[3] = {nullptr, nullptr, nullptr};
+	uint32_t playbackWidth_ = 0; // Luma size of playbackTextures_.
+	uint32_t playbackHeight_ = 0;
+	// The frame in playbackTextures_: what's redrawn (a "hold") when the frame
+	// due can't be shown yet. Only frames of the current cycle: cleared with
+	// the ring and with the textures.
+	bool havePlaybackFrame_ = false;
+	uint64_t lastShownCaptureNs_ = 0;
+	uint64_t lastDueCaptureNs_ = 0; // Newest frame due so far (hold accounting).
+	// 3 (v0.6.0, was 2): each capture is mapped two captures after it was
+	// staged, so even with the GPU saturated by a game gs_stagesurface_map()
+	// finds the copy done instead of stalling the graphics thread (design §1.1.7).
+	static constexpr size_t kStagingSlotCount = 3;
 	StagingSlot stagingSlots_[kStagingSlotCount];
-	uint64_t captureFrameCounter_ = 0; // Parity counter picking which staging slot kicks off vs. gets harvested.
+	size_t stagingNext_ = 0; // Slot the next capture is staged into.
 
-	// One frame's raw NV12 bytes (tightly packed, same layout as Slot::pixels
-	// used to always have) -- the harvest step below writes here every tick
-	// BEFORE either encoding it into a ring slot (TRIGGLOW_HAVE_FFMPEG) or
-	// copying it straight into one (fallback path). Also reused as the
-	// decode-output scratch buffer on playback, since it's never read and
-	// written in the same tick.
-	std::vector<uint8_t> scratchNv12_;
+	PerfWindow perf_;                        // Graphics thread only.
+	uint64_t sceneRenderNs_ = 0;             // This Render() call's obs_source_video_render(target) time.
+	CodecPipeline::WindowStats workerStats_; // Scratch for LogPerfWindow().
 
-#ifdef TRIGGLOW_HAVE_FFMPEG
-	// v0.3.0 real compression (docs/ROADMAP.md) -- MJPEG, all-intra: every
-	// frame is encoded independently with no P/B-frame prediction at all, so
-	// there's no GOP/keyframe-seek complexity to reconcile with a ring that
-	// resets abruptly (EnsureRingSized()) and reads/writes by plain index
-	// arithmetic. Costs compression ratio vs. a real GOP structure, but MJPEG
-	// frames are bitstream-independent by construction, matching this
-	// architecture's invariants exactly. Sized to bufferWidth_/bufferHeight_
-	// like the GPU pool -- opened in EnsureCodecContextsOpen(), torn down in
-	// ReleaseCodecContexts() (called from the same two places
-	// ReleaseSizedGpuObjects() is: resolutionChanged and the destructor).
-	AVCodecContext *encoderCtx_ = nullptr;
-	AVCodecContext *decoderCtx_ = nullptr;
-	// Reused every tick (av_frame_unref()/av_packet_unref() between calls,
-	// never reallocated) -- same "one small fixed pool, not one per frame"
-	// principle as the GPU objects above.
-	AVFrame *encodeFrame_ = nullptr;
-	AVPacket *encodePacket_ = nullptr;
-	AVFrame *decodeFrame_ = nullptr;
-	AVPacket *decodePacket_ = nullptr;
-	// MJPEG's encoder only accepts PLANAR 4:2:0 (Y, then a separate U plane,
-	// then a separate V plane) -- NV12 is semi-planar (Y, then interleaved
-	// UV), a different memory layout. These hold the de-interleaved U/V
-	// planes for one frame, reused every tick like everything else here.
-	std::vector<uint8_t> encodeScratchU_;
-	std::vector<uint8_t> encodeScratchV_;
-
-	// Real (not assumed) compression-ratio telemetry -- added 2026-09-07
-	// after a live report that RAM usage at 30s/1080p didn't visibly change
-	// even with EncodeScratchNv12Into()'s per-tick alloc/free churn removed,
-	// which pointed straight back at kAssumedCompressionRatio (video-delay-filter.cpp):
-	// the only real data point logged before this was EncodeScratchNv12Into()'s
-	// one-shot "first encode" line, captured on whatever frame happened to be
-	// live the instant Enable() was pressed -- usually the loading scene, a
-	// static graphic that compresses far better than real gameplay (exactly
-	// the "not representative" caveat docs/ROADMAP.md already flagged).
-	// These accumulate every successful encode for the life of the current
-	// codec context (reset in EnsureCodecContextsOpen(), same as
-	// loggedFirstEncode_) so a periodic log line (kCompressionLogIntervalFrames
-	// in video-delay-filter.cpp) can report a REAL cumulative ratio from
-	// whatever content was actually on screen, plus the ring's actual current
-	// memory footprint -- both needed before kAssumedCompressionRatio can be
-	// safely retuned with real numbers instead of another guess.
-	uint64_t encodeSampleCount_ = 0;
-	uint64_t encodeCompressedBytesTotal_ = 0;
-	uint64_t encodeRawBytesTotal_ = 0;
-	// How many times a slot has needed to grow past its budgeted allocation
-	// this cycle (dst.pixels.resize() in EncodeScratchNv12Into() past its
-	// current size) -- the direct signal for whether kAssumedCompressionRatio
-	// above is set too aggressively for real content. Reset alongside the
-	// three counters above.
-	uint64_t encodeGrowthCount_ = 0;
-#endif
+	// Dock-facing state (design B.8), written on the graphics thread, read by
+	// GetPipelineStateProc() from any thread.
+	mutable std::mutex healthMutex_;
+	PipelineHealth health_;
 
 	// audioRing_[channel][frame] — one flat sample buffer per channel, big
 	// enough for configuredDelaySeconds_ at samplesPerSec_. Resized by
@@ -435,14 +498,9 @@ private:
 	bool loggedNoTarget_ = false;
 	bool loggedZeroSize_ = false;
 	bool loggedFirstRender_ = false;
-#ifdef TRIGGLOW_HAVE_FFMPEG
-	// Proves a real frame actually got MJPEG-compressed (not just that the
-	// codec opened -- EnsureCodecContextsOpen() succeeding says nothing about
-	// whether EncodeScratchNv12Into() then actually succeeds per-frame).
-	// Reset in EnsureCodecContextsOpen() alongside opening fresh contexts, so
-	// a resolution change logs its own new compression ratio too.
-	bool loggedFirstEncode_ = false;
-#endif
+	bool loggedPassthrough_ = false; // Delay 0: passing the video through.
+	bool loggedEffectError_ = false;
+	bool loggedShortLinesize_ = false; // A staging map with rows shorter than the plane (never expected).
 };
 
 } // namespace trigglow

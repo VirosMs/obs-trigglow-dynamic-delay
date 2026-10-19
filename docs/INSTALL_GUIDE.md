@@ -10,10 +10,10 @@ otherwise unchanged, only that generic styling and the version number in the cor
 
 ## 1. Download
 
-Get `obs-trigglow-dynamic-delay-0.3.2-windows-x64-setup.exe` from the
+Get `obs-trigglow-dynamic-delay-0.6.0-windows-x64-setup.exe` from the
 [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). Prefer to
 install by hand instead? The `.zip` in the same release contains just the plugin files — see
-"Installing the compiled plugin in OBS" in `README.md`.
+"Installing the plugin" in `README.md`.
 
 ## 2. Windows SmartScreen: why it appears, and how to get past it
 
@@ -93,3 +93,29 @@ The dock appears, showing `● Inactive` — you're ready to pick a live scene a
 ("Using the plugin") for what to configure next.
 
 ![Trigglow Dynamic Delay dock, Inactive state](images/obs-panel-3-dock.png)
+
+## 6. Sign in once
+
+`Enable delay` needs a free trigglow.com account, signed in once from the dock (Windows only in
+v0.6.0; macOS and Linux get sign-in in v0.6.1):
+
+1. Press **Sign in** in the dock. Your browser opens trigglow.com; sign in there, or create a free
+   account.
+2. The dock shows a code ("The page must show the code KD7F-29QM."; yours is different). Check that
+   the page shows the same code and press **Confirm**. If the codes don't match, or you didn't start
+   it, press **It wasn't me**.
+3. The dock says "Signed in as …" a few seconds later. You don't need to sign in again on the next
+   start.
+
+If the browser doesn't open, **Copy link** and paste it into your browser. More in the "Signing in
+from the dock" section of `docs/TROUBLESHOOTING.md`.
+
+## Updating from an earlier version
+
+Install the new version over the old one, the same way (with OBS closed): your scenes, settings and
+hotkeys are kept. **From v0.5.x or earlier, updating is required**: the sign-in of those versions is
+switched off when v0.6.0 is published, and the sign-ins they already have stop working after a
+transition period. On the first start your sign-in moves to the new format by itself; if the dock
+asks you to sign in, do it once (step 6). Since v0.6.0 the objects the plugin manages end in
+"(auto)" instead of "(no tocar)": see `CHANGELOG.md` if a Stream Deck or obs-websocket action uses
+them by name.

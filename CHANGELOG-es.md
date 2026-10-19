@@ -2,6 +2,665 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.6.0 — 2026-10-19 (Early Access)
+
+El delay deja de competir con OBS por su hilo gráfico, se adapta a lo que da tu equipo sin cortarse
+nunca, y el plugin adopta el aspecto de trigglow.com. "Reportar un problema" empieza ahora por
+Trigi, el asistente de soporte con IA de Trigglow, el inicio de sesión pasa a un flujo más seguro
+con un inicio de sesión propio del plugin y cifrado, y el plugin pasa una revisión de seguridad y
+privacidad. Se preparó un hotfix de rendimiento v0.5.1 que nunca se publicó: todo lo que llevaba
+sale aquí. **Actualizar desde la v0.5.x es obligatorio** (ver "Antes de actualizar"). Esta entrada
+recoge primero lo que vas a notar, después el detalle técnico y al final las limitaciones conocidas.
+
+**Antes de actualizar:**
+- **Actualizar es obligatorio para seguir usando el delay.** El inicio de sesión de la v0.5.x y
+  anteriores se apaga cuando se publica esta versión: desde ese momento esas versiones ya no pueden
+  iniciar sesión en Trigglow, y las sesiones que ya tienen dejan de funcionar tras un periodo de
+  transición. El delay necesita una cuenta con la sesión iniciada, así que actualiza. Al instalar la
+  0.6.0 encima de tu versión, tu inicio de sesión pasa solo al formato nuevo en el primer arranque;
+  si el dock te pide iniciar sesión, hazlo una vez.
+- **El inicio de sesión, Trigi y el envío de reportes desde OBS solo funcionan en Windows en esta
+  versión**; macOS y Linux los tendrán en la v0.6.1 (ver "Limitaciones conocidas").
+- **Los objetos que gestiona el plugin pasan de "(no tocar)" a "(auto)"**, de forma automática.
+  **Apunta a los nombres nuevos cualquier acción de Stream Deck, obs-websocket u otro control remoto
+  que use los antiguos** (lista abajo).
+- **Volver a la v0.5.0 o anterior después de actualizar duplica esos objetos** (ver "Nombres" más
+  abajo).
+
+**Qué cambia para ti:**
+- **Trigi, el asistente de soporte con IA de Trigglow, en "Reportar un problema"** (Windows, con
+  sesión iniciada). Pregunta por Dynamic Delay y recibe la respuesta en el propio diálogo; si no lo
+  resuelve, **Crear ticket con esta conversación** se lo pasa al equipo con el contexto. La primera
+  vez, un aviso breve explica qué es Trigi y qué pasa con tus datos, y siempre puedes escribir al
+  equipo en su lugar. **El log de OBS nunca se envía a la IA.** Los datos técnicos de OBS son
+  opcionales y ves exactamente qué se envía antes de marcarlos.
+- **Inicio de sesión más seguro.** El dock muestra un código, y la página de trigglow.com debe
+  mostrar el mismo antes de que confirmes; **No he sido yo** en la página cancela la solicitud. El
+  plugin guarda su propio inicio de sesión, cifrado para tu usuario de Windows, y **Cerrar sesión**
+  también lo desconecta en trigglow.com. Tu inicio de sesión de la v0.5.x se pasa solo.
+- **Los reportes desde OBS van a tu cuenta si tienes la sesión iniciada**: sin nombre ni email que
+  escribir, y sigues el ticket en tu panel de soporte de trigglow.com. El log de OBS solo va si marcas
+  su casilla, cosa que puedes hacer después de verlo en **Ver qué se envía**: tu usuario de Windows,
+  URLs, claves, emails e IPs van ocultos, y el diálogo te dice qué puede seguir apareciendo.
+- **Se acabó el "Encoding overloaded" (sobrecarga al codificar) al activar el delay con un lienzo
+  mayor que la salida.** Reportado en directo con un lienzo 2560x1440 y una salida 1920x1080 a
+  60 fps. El buffer del delay se guarda ahora como mucho a la resolución de salida de OBS (Ajustes →
+  Vídeo → Resolución de salida (escalada)), así que puedes volver a tu lienzo grande.
+- **Salida 1440p a 60 fps soportada.** Comprimir y descomprimir los frames del buffer ya no ocurre
+  en el hilo gráfico de OBS (el que tiene que terminar a tiempo cada frame de tu stream) sino en
+  hilos propios del plugin. A 1440p60 el trabajo del plugin en ese hilo baja de ~14/17 ms a
+  ~1,2–1,7/1,6–2,1 ms por frame (p50/p95, microbenchmark fuera de OBS en una CPU de 8 núcleos/16
+  hilos).
+- **Calidad mínima 1440p (2K) y 2160p (4K)** en el dock, tras 480p, 720p y 1080p. Con una salida
+  1440p y un mínimo de 1440p el buffer se queda en 1440p cuando falta RAM (el delay se acorta,
+  igual que con 1080p) y cuando tu equipo no da más (solo se captura a la mitad de fps, con una
+  salida a 48 fps o más). Nunca supera la salida de OBS: con una salida 1080p el buffer es 1080p.
+  Así, un lienzo 2560x1440 puede salir a 1080p, o a 1440p60.
+- **Si tu equipo no da más, el delay sigue sin cortarse.** El plugin primero añade hilos de
+  compresión, después guarda el buffer a menos resolución (nunca por debajo de tu calidad mínima) y
+  solo entonces captura a la mitad de fps; vuelve a subir solo en cuanto hay margen. Mientras
+  tanto, el dock muestra un aviso ámbar con qué se redujo y por qué. Los segundos de delay no cambian
+  nunca.
+- **Menos RAM y sin parón al empezar el delay.** Unos 0,6–0,8 GB en vez de ~1,9 GB para 30 s a
+  1440p60 (simulación fuera de OBS). La memoria se toma a medida que llegan los frames en vez de
+  toda de golpe, y al desactivar el delay se libera fuera del hilo gráfico de OBS, junto con los
+  códecs y la memoria de vídeo que usaba el delay.
+- **Audio y vídeo comparten siempre el mismo delay**, en segundos enteros, también cuando la RAM no
+  da para el delay completo (antes podían quedar hasta ~1 s separados). El dock y el overlay del
+  directo muestran esa misma cifra.
+- **Los segundos de delay se bloquean mientras el delay está en marcha**, como las escenas y la
+  calidad mínima: "Desactiva el delay para cambiarlo." **El dock es el único sitio donde se elige el
+  delay**: los filtros "(auto)" ya no tienen campos de delay ni de calidad en sus propias
+  propiedades, ignoran los valores que se escriban desde fuera y se vuelven a activar solos si algo
+  los desactiva mientras el delay está en marcha.
+- **Cambiar de colección de escenas desactiva el delay**, y el dock dice por qué: la escena auxiliar
+  y los filtros pertenecen a la colección que has dejado. Vuelve a activarlo cuando quieras.
+- **La cuenta atrás y las cifras cuadran**: mientras el delay se llena, el dock cuenta los segundos
+  que de verdad se aplican ("41 / 60 s" cuando en la RAM solo caben 41), y la cuenta atrás ya no
+  vuelve a empezar al activar o desactivar el overlay o cambiar su esquina. La línea de RAM bajo los
+  campos se lee ahora como la estimación de RAM que es ("En la RAM solo caben 41 s de 60 s…"), en
+  segundos enteros.
+- **Nuevo diseño** del dock, el diálogo de reporte y el overlay del directo, alineado con
+  trigglow.com, sobre tu tema de OBS (oscuro, claro, alto contraste), con contraste AA y foco de
+  teclado visible. El overlay del directo es una sola imagen que pinta el plugin, firmada con un
+  pequeño "By Trigglow" bajo el icono.
+- **Correcciones**, entre otras: los filtros de delay que quedaron activos al cerrar OBS con el delay
+  Activo se desactivan al arrancar y al cambiar de colección de escenas; a 59,94 fps ya no se pierde
+  un frame por segundo; cambiar los ajustes de vídeo de OBS con el delay en marcha muestra la escena
+  de carga en vez de negro; renombrar la escena en directo ya no llena el log ni impide desactivar el
+  delay; cerrar OBS mientras Trigi responde o se envía un ticket ya no espera a la red.
+
+**Añadido / Trigi, el asistente de soporte con IA (Windows, con sesión iniciada):**
+- **"Reportar un problema" se abre en Trigi** cuando está disponible: en Windows, con la sesión
+  iniciada y con una versión del plugin que Trigi admita. Si no, el diálogo abre directamente el
+  formulario de ticket, como antes; sin sesión, ofrece **Inicia sesión para preguntar a Trigi** junto
+  al formulario.
+- **Primer uso: "Antes de empezar con Trigi".** El aviso dice que Trigi es una IA y puede
+  equivocarse; que Trigglow y un proveedor de IA indicado en la
+  [Política de Privacidad](https://www.trigglow.com/legal/privacy) procesan tus mensajes y, si lo
+  activas, los datos técnicos de OBS; que las conversaciones se guardan hasta 12 meses; que no
+  escribas contraseñas, claves de stream, URLs de overlay ni datos de pago; que el log de OBS nunca se
+  envía a la IA; y que siempre puedes escribir al equipo. **Entendido** o **Prefiero escribir al
+  equipo** (el formulario de ticket). No se envía nada hasta que lo aceptas y mandas tu primera
+  pregunta: abrir el diálogo no hace ninguna llamada a Trigi. Si una versión futura cambia el aviso,
+  vuelve a mostrarse.
+- **Datos técnicos de OBS opcionales.** **Incluir datos técnicos de OBS** está desmarcada hasta que la
+  marques (se recuerda tu elección), y **Ver qué se envía** muestra los datos exactos. Solo cifras y
+  estados, que se envían una vez al empezar una conversación: versiones de OBS y de Windows,
+  arquitectura, renderizador, fabricante de la GPU, RAM total, familia del codificador, el estado,
+  los segundos y la calidad mínima del delay, tamaño del lienzo y de la salida, fps, los frames
+  retrasados y saltados de OBS, la salud del buffer y los códigos de problemas recientes del plugin.
+  Nunca nombres de escenas, fuentes, filtros, codificadores ni salidas, rutas, URLs, datos de tu
+  emisión, tu nombre de usuario o tu email, el nombre de la GPU, IDs de hardware ni IPs
+  (`src/support-diagnostics.*`, `src/diagnostics-collector.*`, que nunca espera al hilo gráfico de
+  OBS).
+- **La conversación.** Enter envía, Ctrl+Enter o Mayús+Enter añade una línea, con un contador de
+  caracteres y la línea fija "Trigi es una IA y puede equivocarse. No compartas datos sensibles."
+  "Trigi está pensando…" muestra un spinner quieto si Windows pide menos movimiento, y "Está tardando
+  más de lo normal…" a los 15 s. **¿Te ha servido?** bajo cada respuesta: Sí cierra la conversación
+  como resuelta, No ofrece el ticket. **Borrar conversación** solo limpia la vista. Lo que ves en OBS
+  solo está en memoria y desaparece al cerrar el diálogo.
+- **De la conversación al ticket.** **Crear ticket con esta conversación** pide a Trigi un resumen
+  (o usa tus propias palabras si no puede) y abre el formulario ya relleno, para que lo revises y lo
+  edites, con la conversación enlazada para que el equipo tenga el contexto, el pie con las versiones
+  y la casilla del log. Si la respuesta trata de algo que no es Dynamic Delay, el botón es **Abrir
+  soporte en trigglow.com**.
+- **Cada estado dice qué hacer a continuación**: sin conexión, Trigi ha tardado demasiado,
+  trigglow.com no responde, demasiadas preguntas seguidas (Enviar queda desactivado con una cuenta
+  atrás), sesión terminada (se conserva lo que escribiste), conversación cerrada (se empieza una nueva
+  con tu siguiente pregunta), "Trigi no puede responder ahora" (con **Crear ticket**), Trigi apagado
+  (se abre el formulario sin más, con tu texto) y "Actualiza el plugin para usar Trigi" (con
+  **Descargar la actualización**). Una pregunta que no llegó se marca como "No enviado" y se puede
+  reintentar a mano; nada se reintenta solo.
+- **Render seguro.** Las respuestas se muestran como texto plano con negrita, `código`, viñetas y
+  pasos numerados, nada más, construidos a partir de texto escapado (`src/chat-text.*`,
+  `src/trigi-widgets.*`); los enlaces, imágenes y HTML de una respuesta se quedan como texto plano no
+  clicable, y la vista nunca carga nada. Los únicos enlaces son los botones fijos del propio plugin.
+- **Accesibilidad**: orden de tabulación lógico, un nombre para cada control, un anuncio del lector
+  de pantalla por respuesta y por cambio de estado (la cuenta atrás no se lee cada segundo),
+  contraste AA en oscuro, claro y alto contraste, y filas de botones que se apilan en diálogos
+  estrechos.
+- **En el log de OBS**, una línea por evento de Trigi (conversación iniciada, pregunta enviada con su
+  longitud y si llevaba datos técnicos, respuesta, no disponible, límite alcanzado, código HTTP);
+  nunca el texto de tus preguntas ni de las respuestas, IDs ni los datos técnicos.
+- Textos en inglés y español. Páginas y estados en `src/trigi-page.*` y `src/trigi-states.*`
+  (probados sin Qt), cliente en `src/support-client.*` y `src/support-service.*`.
+
+**Cambiado / Inicio de sesión:**
+- **Iniciar sesión** abre trigglow.com en tu navegador y el dock muestra un código: "La página debe
+  mostrar el código KD7F-29QM." La página muestra la app, su versión y su sistema, cuándo se hizo la
+  solicitud, el mismo código y, si la solicitud parece venir de una red distinta a la tuya, un aviso;
+  **Confirmar** o **No he sido yo**. **Copiar enlace** y **Cancelar** siguen en el dock. El secreto
+  con el que el plugin espera tu confirmación nunca sale de él ni va en una URL, y ni el enlace, ni
+  los códigos, ni el secreto se escriben en el log de OBS.
+- **Un inicio de sesión propio del plugin.** Cuando confirmas, el plugin recibe su propio token, que
+  solo sirve para lo que hace el plugin (comprobar tu cuenta, renovarse, cerrar sesión, Trigi y tus
+  propios tickets de Dynamic Delay), no para el resto de tu cuenta. Se renueva solo cuando
+  trigglow.com lo indica. En Windows se guarda cifrado con la protección de datos de Windows, solo
+  para tu usuario de Windows y aparte de los ajustes del plugin; tu email no se guarda. Si no se puede
+  descifrar (otro usuario de Windows, un perfil restaurado), se descarta y vuelves a iniciar sesión.
+- **Cerrar sesión lo revoca en trigglow.com** además de borrarlo de tu equipo (la copia local se
+  borra aunque no haya conexión). También puedes desconectar el plugin desde la web: Ajustes →
+  Sesiones activas → Apps conectadas.
+- **Los inicios de sesión de la v0.5.x se pasan solos** en el primer arranque de la 0.6.0: el inicio
+  de sesión antiguo se cambia una vez por el nuevo, y el fichero antiguo en texto plano se sobrescribe
+  y se borra (también si ya existe un inicio de sesión nuevo). Si no se puede conectar con
+  trigglow.com, se vuelve a intentar en el siguiente arranque y mientras tanto el delay sigue
+  funcionando.
+- **Cerrar sesión siempre se mantiene.** Cerrar sesión mientras el plugin renueva su token, cambia
+  un inicio de sesión de la v0.5.x o espera al navegador nunca hace que la sesión vuelva en el
+  siguiente arranque: un token que el servidor entregue después del cierre no se guarda, y además se
+  revoca. Cerrar "Reportar un problema" mientras renueva el token ya no pone en riesgo la sesión: la
+  renovación termina en segundo plano y su token se guarda.
+- **Una comprobación en cada arranque de OBS** (más una renovación cuando toca). Sin conexión sigues
+  con la sesión iniciada y el delay funciona; si tu cuenta está suspendida o no está activa, **Activar
+  delay** queda bloqueado con "Tu cuenta de Trigglow no está activa." y **Abrir trigglow.com**.
+- Mensajes nuevos en el dock: inicio de sesión cancelado desde la web, demasiados intentos, "Esta
+  versión del plugin ya no puede iniciar sesión. Actualiza el plugin." y la cuenta no activa.
+  `src/auth-client.*`, `src/token-store.*` y `src/api-client.*`; `docs/ACCOUNT_GATE.md` describe el
+  flujo.
+
+**Cambiado / Reportar un problema:**
+- **Tickets con tu cuenta.** Con la sesión iniciada, el ticket sale de tu cuenta (sin nombre ni
+  email que escribir), con un asunto opcional y un pie con las versiones del plugin, de OBS y de
+  Windows que ves y puedes editar. "Ticket enviado" ofrece **Ver ticket en trigglow.com**; las
+  respuestas llegan por email y a tu panel de soporte.
+- **El log de OBS, redactado y con tu consentimiento.** **Adjuntar el registro (log) de OBS** empieza
+  desmarcada y solo se puede marcar después de abrir **Ver qué se envía**, que muestra el log ya
+  redactado (sus primeras y últimas 200 líneas; se envía completo). La redacción (`src/log-redact.*`,
+  línea a línea, con tests) oculta el nombre de usuario en rutas de Windows, macOS y Linux (también
+  perfiles movidos, recursos de red y carpetas de OneDrive de empresa), las URLs de stream, cualquier
+  otra URL (solo se conserva el host), los enlaces de overlay, emails, claves, tokens, contraseñas,
+  cookies y cabeceras de credenciales, JWT, las direcciones IPv4 e IPv6 y las cadenas largas con forma
+  de token, y conserva las marcas de tiempo, las versiones y los atajos. Pueden seguir apareciendo
+  nombres de escenas, fuentes, dispositivos de audio y ventanas, y el diálogo lo avisa. Si después de
+  redactar pasa de 4,5 MB, se conservan el principio y el final.
+- **Solo el log de este OBS.** El plugin marca el log de su propio OBS al cargar y solo adjunta el
+  fichero con esa marca, nunca el log más reciente de otro OBS (uno portable o una segunda
+  instancia).
+- **Se acabaron las copias en `%TEMP%`.** El log se lee y se redacta en memoria, y las copias que
+  dejaron versiones anteriores en `%TEMP%\Trigglow` se borran al cargar el plugin.
+- Si el ticket se crea pero no se puede adjuntar el log, el diálogo lo dice y ofrece **Guardar log
+  redactado…** para que lo añadas desde la web.
+- **Sin sesión**, se mantiene el formulario de invitado (nombre, email, mensaje). Si trigglow.com
+  pide a los invitados una comprobación humana (captcha), que OBS no puede mostrar, el diálogo dice
+  "Para enviar el reporte desde OBS, inicia sesión. También puedes usar el formulario web." con
+  **Iniciar sesión**, **Abrir soporte web** y **Guardar log redactado…**, y nunca
+  reintenta solo. La clave de acceso del ticket de invitado va en una cabecera, no en la URL, y nunca
+  se escribe en el log.
+- En macOS y Linux el formulario aparece desactivado con un enlace al formulario web (allí todavía no
+  hay cliente HTTP).
+
+**Cambiado / Dock:**
+- **Aspecto de marca sobre tu tema de OBS.** Tarjetas, campos y fondos siguen el tema activo de OBS
+  (oscuro, claro, alto contraste de Windows); la marca entra por tarjetas cuadradas con hairlines,
+  titulares en Archivo y etiquetas y cifras en Geist Mono (empaquetadas, ver Empaquetado), iconos
+  SVG en lugar de glifos de texto y el degradado cian→magenta solo en la acción principal, la casilla
+  marcada y el estado Activo. Los colores se derivan de la paleta del tema en un único sitio
+  (`src/ui-tokens.*`, `src/ui-theme.*`): todo texto, placeholders incluidos, llega a WCAG AA (4,5:1)
+  y todo borde de campo y anillo de foco a 3:1 en las paletas de los temas de OBS 31 (Yami y sus
+  variantes Grey, Light, Classic, Acri y Rachni), comprobado en `tests/ui_tokens_tests.cpp`. El foco
+  de teclado se ve en todos los controles, y el área de desplazamiento del dock ya no es una primera
+  parada del tabulador invisible.
+- **Tarjeta de estado**: icono, titular y chip con los segundos en cada estado, nunca solo color.
+  Preparando delay muestra una barra de progreso con "12 / 30 s" y "Faltan 18 s"; Delay activo va
+  en cian con un escudo (adiós al verde, la web no tiene verde); los errores llevan regla roja e
+  icono de alerta. Preparando delay y Delay activo cuentan los segundos que de verdad se aplican,
+  los mismos que el overlay del directo: con 60 s pedidos y 41 s que caben en la RAM, el chip pone
+  "41 / 60 s" en ámbar, el mensaje "Guardando 41 s de directo…: de tus 60 s solo caben 41 en la RAM"
+  y la ventana de llenado dura 41 s. La cuenta atrás solo vuelve a empezar con una ventana de
+  llenado nueva: activar o desactivar el overlay o cambiar su esquina mientras se llena ya no la
+  reinicia (ni, con ella, el paso a la escena retrasada).
+- **Línea de estimación de RAM** bajo los campos de delay y calidad, redactada como lo que es: "En la
+  RAM caben los 30 s completos a 1920×1080", "En la RAM solo caben 41 s de 60 s a …", en los mismos
+  segundos enteros que el chip. Se oculta mientras se muestra el aviso de degradación (que entonces
+  dice qué guarda el buffer), y no aconseja "baja los segundos o la calidad mínima" mientras esos
+  campos están bloqueados.
+- **Aviso "Calidad del buffer reducida"** al pie de la tarjeta de estado mientras el buffer va por
+  debajo de la calidad completa: un icono de controles deslizantes y el título en ámbar, y después
+  qué se redujo (la resolución frente al tamaño completo, los fps de captura o ambos), por qué (el
+  hilo gráfico de OBS va muy cargado, comprimir o descomprimir los fotogramas consume mucha CPU) y
+  que el delay sigue intacto; si hay fotogramas repetidos o descartados por minuto, se indican
+  debajo. Desaparece en cuanto el buffer vuelve a la calidad completa, y con el delay desactivado no
+  se consulta nada. Los lectores de pantalla lo oyen una sola vez: cuando aparece, cuando cambia su
+  causa, y "El buffer vuelve a la calidad completa." cuando se va con el delay todavía en marcha
+  (anuncios de Qt 6.8+; con Qt anterior cambia el nombre de la tarjeta), no en cada peldaño.
+- **Bloqueados mientras el delay está en marcha:** los selectores de escena en directo y de carga,
+  los segundos de delay y la calidad mínima. Los segundos seguían editables con el delay Activo y se
+  aplicaban con cada tecla, cambiando el tamaño del buffer en pleno directo. Los campos bloqueados
+  pierden sus flechas, toman el fondo de la tarjeta y muestran un candado; una línea debajo,
+  "Desactiva el delay para cambiarlo.", es además su descripción accesible; el tabulador los salta
+  hasta que el delay se desactiva, y su valor sigue legible (texto atenuado, AA en todos los temas).
+- **Calidad mínima 1440p (2K) y 2160p (4K)**, tras 480p, 720p y 1080p. El tooltip dice que solo
+  cuentan con una salida así de grande; el dimensionado y la degradación ya admitían cualquier
+  suelo.
+- **Activar delay se explica**: mientras está deshabilitado, una lista indica si falta la cuenta
+  gratuita o la escena en directo.
+- **Selector de escena en directo**: no hay nada preseleccionado ("Elige una escena…") hasta que
+  eliges una, así que también se puede elegir la primera y el campo nunca muestra una escena que la
+  lista da por pendiente; una escena guardada que ya no existe cuenta como no elegida. La escena
+  auxiliar del plugin ya no se ofrece como escena en directo ni de carga.
+- **Los fallos de inicio de sesión ya no son mudos**: la tarjeta de cuenta dice si no se pudo
+  conectar con trigglow.com, si el enlace caducó, si el navegador no se abrió (con **Copiar
+  enlace**) o si la sesión terminó, y la espera se puede cancelar.
+- La rueda del ratón sobre la escena, los segundos o la calidad ya no los cambia si no tienen el
+  foco; desplaza el dock. El campo de segundos dibuja sus propias flechas, así que los temas sin
+  estilo para ese control (el tema System de OBS) ya no muestran dos puntos.
+- Los números siguen el idioma de OBS (`15.910 MB`, `41,2 s` en español), las resoluciones usan
+  `×` y las unidades espacio duro (`30 s`). En docks estrechos (menos de 300 px) el botón de cuenta
+  y el pie se apilan.
+- **Reportar un problema**: cabecera, etiquetas encima de su campo, errores bajo el campo con el
+  foco en él, errores de red en un banner y una fila de adjunto que dice si el log de OBS va con el
+  ticket. Los errores técnicos de red quedan en el log de OBS. Se abre con 460 px de ancho y se
+  puede estrechar hasta 340 px: Nombre y Email se apilan por debajo de 400 px y la nota del
+  navegador pasa encima de los botones; la ayuda del email va bajo el campo de email.
+- **Textos**: microcopy reescrito en inglés y español (tildes, sin `--`, sin glifos, tooltips más
+  cortos). En español los atajos se llaman "Trigglow: Activar/desactivar Dynamic Delay", "Trigglow:
+  Activar Dynamic Delay" y "Trigglow: Desactivar Dynamic Delay"; las asignaciones de teclas
+  existentes se conservan.
+
+**Cambiado / Overlay del directo:**
+- El overlay "DELAY 30 s" es ahora **una única imagen que pinta el propio plugin** (placa tinta,
+  regla de marca, marca de Dynamic Delay, Archivo), guardada en la carpeta de configuración del
+  plugin (`overlay/delay-badge-r3-30s.png`) y mostrada por una sola fuente de imagen. Se ve igual
+  en Windows, macOS y Linux (el texto anterior usaba Segoe UI, solo Windows) y se mueve de una
+  pieza. Queda a un 2,2% del lado corto del lienzo de la esquina elegida y mantiene su tamaño
+  relativo a ese lado: la misma placa que antes en lienzos horizontales (200x58 a 1080p), y en un
+  lienzo vertical 1080x1920 el tamaño de 1080p en vez de un tercio del ancho del encuadre. Muestra
+  el delay que de verdad se aplica.
+- **Firmado "By Trigglow"**: un texto pequeño y discreto bajo el icono, fuera de la placa de la
+  insignia (Geist Mono, 11 px en un lienzo de 1080p y 7,3 px a 720p, mist al 75 % con un halo
+  oscuro muy suave y sin caja), igual en todos los idiomas. En una esquina inferior el margen se
+  mantiene por debajo de la firma. Los nombres de archivo llevan una versión de dibujo, así que
+  nunca se muestra una insignia que dejó en esa carpeta una compilación anterior, y se borra.
+- **Si lo mueves o lo escalas en OBS, se queda así.** El plugin lo coloca en la esquina elegida la
+  primera vez y de nuevo solo cuando eliges otra esquina en el dock (o cuando cambia el tamaño del
+  lienzo o el de la propia insignia, siempre que no lo hayas movido ni escalado). Si ya existe una
+  fuente de imagen llamada "Trigglow Delay Badge (auto)", se reutiliza en vez de añadir
+  copias "... 2".
+- La fuente de texto antigua ("Trigglow Delay Overlay Text (auto, no tocar)") se elimina sola. Su
+  texto ya no se puede editar: si le habías cambiado la fuente o el color, ese ajuste se pierde; la
+  imagen se puede mover o escalar y lo conserva.
+
+**Cambiado / Nombres de los objetos que gestiona el plugin:**
+- Adiós a "(no tocar)" en todos los idiomas: la escena pasa a ser **Trigglow Delay Buffer (auto)**,
+  los filtros **Trigglow Buffer Mode Delay (auto)** y `Trigglow Audio Delay (auto) - <fuente>`, y el
+  overlay **Trigglow Delay Badge (auto)**. Las colecciones existentes se renombran una vez, en su
+  sitio, al cargarse (se conservan posición, filtros y ajustes); si un nombre nuevo ya está en uso se
+  queda el antiguo y sigue funcionando.
+- **Todo lo que se refiera a estos objetos por su nombre hay que actualizarlo**: una acción de
+  Stream Deck, obs-websocket u otro control remoto que cambie a la escena con el nombre antiguo, o
+  active los filtros o el overlay antiguos por su nombre, hay que apuntarla a los nombres "(auto)".
+- **Volver a la v0.5.0 o anterior después del cambio de nombre los duplica**: la versión antigua no
+  conoce los nombres "(auto)", así que vuelve a crear su escena auxiliar, sus filtros de delay y su
+  overlay "(no tocar)" junto a ellos (al cargar la colección desactiva los filtros "(auto)", que se
+  quedan inertes). Borra el juego que no uses; de vuelta en la 0.6.0 se usa el juego "(auto)" y el
+  "(no tocar)" sobrante no se renombra mientras su nombre nuevo esté ocupado.
+
+**Cambiado:**
+- **La "Calidad mínima" es un suelo para la reducción por RAM y para la degradación, acotado por la
+  salida de OBS.** Cuando falta RAM sigue decidiendo hasta dónde puede encogerse el buffer (antes que
+  bajar de ahí, se guardan menos segundos), y la degradación tampoco baja nunca de ella; pero ya no
+  eleva el buffer por encima de la resolución de salida: con una salida de 720p el buffer es 720p
+  aunque el mínimo sea 1080p.
+- **La línea de log `compression check` se sustituye por `perf check` y `pipeline check`** (abajo).
+- **Inicio de sesión, reportes y comprobación de actualizaciones: ver "Cambiado / Inicio de
+  sesión" y "Cambiado / Reportar un problema"** más arriba y "Seguridad y privacidad" más abajo.
+
+**Corregido:**
+- **Audio y vídeo comparten un único delay en segundos enteros.** Cuando la RAM recortaba el ring,
+  el vídeo se retrasaba el tramo exacto (fraccionario) y el audio en segundos enteros, así que podían
+  quedar hasta ~1 s separados. `bufferfit::Compute()` devuelve ahora un único delay efectivo en
+  segundos enteros, conservando el margen de un cuarto de segundo contra el jitter, y vídeo y audio
+  usan ese. `get_effective_delay_seconds` del filtro de vídeo lo calcula a partir de los ajustes
+  actuales del filtro en el hilo que llama (sin saltar al hilo gráfico), así que el audio recibe el
+  valor nuevo en cuanto el dock cambia un ajuste, desde Enable. La tarjeta de estado del dock muestra
+  la misma cifra que el overlay del directo: con 60 s pedidos y 35 s que caben, el chip pone
+  "35 / 60 s" en ámbar y la línea de detalle dice que de los 60 s solo caben 35 en la RAM.
+- **Un reinicio del buffer ya no muestra negro.** Un cambio del delay o de la calidad mínima que
+  redimensiona el buffer tira los frames guardados. El filtro ahora lo avisa (`buffer_restarted`) y
+  el Programa vuelve a la escena de carga, con el audio resincronizado, mientras el buffer se
+  rellena, en vez de una vista retrasada en blanco durante `delay` segundos. Igual tras un reset de
+  los ajustes de vídeo de OBS. Si no hay escena de carga, el Programa se queda en la escena
+  contenedora (en blanco), nunca en la escena en directo sin delay. El dock bloquea esos campos
+  mientras el delay está en marcha, así que en la práctica esto cubre los resets de los ajustes de
+  vídeo de OBS.
+- **Los filtros de delay solo aplican el delay del dock.** Sus propias propiedades permitían
+  saltarse el plugin: 90 s en el diálogo del filtro de vídeo dejaban el vídeo a 90 s y el audio a 60,
+  y 0 s dejaba pasar la escena en directo sin delay mientras el dock decía "Delay activo". Las
+  propiedades de los filtros "(auto)" ahora solo tienen una nota de que los gestiona el dock. El dock
+  envía su delay y su suelo de calidad con nuevos procs `set_managed_*`, y a partir de ahí un filtro
+  ignora cualquier otro valor que se escriba en sus ajustes (el botón de valores por defecto de
+  OBS, un diálogo antiguo, obs-websocket), con un WARN por cada envío. Con el delay en marcha, un filtro de
+  delay desactivado desde fuera del dock (su icono del ojo en el diálogo de Filtros, obs-websocket)
+  se vuelve a activar al momento, con un WARN por activación.
+- **Un delay de 0 s** (ahora solo posible en un filtro que el dock todavía no gestiona, p. ej. uno
+  añadido a mano) deja pasar el vídeo sin retraso, sin buffer y sin códec. Antes comprimía cada frame
+  en un ring de un slot y nunca lo dibujaba: salida en negro con todo el coste de CPU.
+- **Cambiar de colección de escenas con el delay en marcha dejaba el dock diciendo "Delay activo"**
+  mientras la colección nueva funcionaba sin ningún delay. En
+  `OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING` (cambiar, nueva, eliminar) el delay se detiene ahora
+  como con Desactivar mientras la colección antigua sigue cargada, así que se guarda con sus filtros
+  apagados y su escena de vuelta en el Programa, y el dock pasa a Inactivo con una línea que dice
+  por qué. OBS 31 no envía `COLLECTION_CHANGING` al duplicar o renombrar una colección, solo
+  `COLLECTION_CHANGED` con la copia ya cargada: entonces se hace la misma parada, que apaga los
+  filtros de la copia y sale de la escena auxiliar si la copia se abrió en ella.
+- **Renombrar la escena en directo con el delay en marcha** llenaba el log (la consulta de salud del
+  dock, una vez por segundo, buscaba el filtro por su nombre y avisaba cada vez que no lo
+  encontraba) y dejaba el filtro activado tras Desactivar. El puente guarda ahora referencias débiles
+  a los filtros que activó, para la consulta, los ajustes y para apagarlos.
+- **Delay que se quedaba puesto tras cerrar OBS estando Activo.** Si OBS se cerraba con el delay
+  activo, en el siguiente arranque la escena en directo quedaba con delay permanente mientras el
+  dock decía "Inactivo". La v0.5.0 intentaba apagar esos filtros al cargar, pero los buscaba con
+  `obs_enum_sources()`, que nunca devuelve filtros, así que no apagaba nada. Ahora recorre los
+  filtros (`obs_source_enum_filters`) de inputs, grupos, escenas y fuentes de audio globales, y los
+  apaga fuera de los locks de libobs, cuando OBS termina de cargar y también al cambiar a otra
+  colección de escenas (en ambos casos solo con el delay desactivado).
+- **Se perdían referencias al filtro de delay en cada Enable.** `obs_source_get_filter_by_name()`
+  devuelve una referencia nueva, pero el plugin la trataba como prestada y nunca la liberaba, así que
+  el filtro de vídeo nunca se destruía. Ahora cada búsqueda libera su referencia
+  (`OBSSourceAutoRelease`), y el destructor del filtro, que libobs ejecuta sin contexto gráfico,
+  entra en uno para liberar sus objetos de GPU (después de esperar a que terminen los hilos de
+  códec).
+- **Un archivo de ajustes con JSON inválido ya no se sobrescribe.** Si `buffer-mode-settings.json`
+  no se podía leer (por ejemplo tras editarlo a mano y dejarse una coma), el plugin cargaba los
+  valores por defecto y los escribía encima al cerrar OBS. Ahora se aparta como
+  `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (se copia si no se puede renombrar) con un
+  WARN que da las dos rutas; si no funciona ninguna de las dos cosas, el archivo no se toca al salir.
+- **Corregido el tooltip del dock para la calidad mínima.** Decía que el vídeo retrasado "nunca
+  baja de" esa resolución, lo que dejó de ser cierto con el límite de salida. Las propiedades del
+  filtro ya no tienen ningún campo de calidad: solo muestran la nota de que el filtro lo gestiona el
+  dock.
+
+**Pipeline del buffer del delay (detalle técnico):**
+- **Límite a la resolución de salida.** Hasta la v0.5.0 el buffer de vídeo se guardaba a la
+  resolución del lienzo, así que con un lienzo 1440p emitido a 1080p el plugin comprimía y
+  descomprimía en MJPEG cada frame del buffer a 1440p dentro del hilo gráfico de OBS: 14,3/17,4 ms
+  p50/p95 por frame en un benchmark del mismo pipeline fuera de OBS, la mayor parte de los 16,7 ms
+  que tiene un frame a 60 fps. Esos píxeles de más los descartaba de todos modos el propio reescalado
+  de salida de OBS. `EnsureRingSized()` y la estimación del dock pasan ambos por la nueva función pura
+  de dimensionado `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, sin dependencia de
+  libobs/FFmpeg) con la geometría del lienzo (`obs_video_info::base_*`) y de la salida
+  (`output_*`). El techo es una escala uniforme, `min(1, max(outW/baseW, outH/baseH))`, que
+  conserva la relación de aspecto y nunca baja de la salida en ningún eje; solo se aplica cuando el
+  objetivo del buffer tiene el tamaño del lienzo (la escena en directo). Los anchos del buffer son
+  múltiplos de 8 y las alturas pares, así que cada fila de cada plano I420 ocupa un número entero de
+  palabras de 4 bytes (OpenGL rellena las filas de la lectura a 4 bytes en Linux y macOS). Ver
+  `docs/SPEC-es.md` §3.5.
+- **Hilos de códec** (`src/codec-pipeline.{hpp,cpp}`, C++ puro con el códec inyectado). El hilo
+  gráfico ahora solo renderiza la captura, la convierte, la lee de vuelta (tres slots de staging,
+  mapeados dos capturas después para que nunca se bloquee) y sube el frame que toca, solo cuando
+  cambia. Uno o dos hilos de compresión (`trigglow-enc-N`, cada uno con su propio contexto MJPEG)
+  toman los frames de una cola acotada; un hilo de descompresión (`trigglow-dec`) descomprime hasta
+  3 frames por delante de lo que hay en pantalla, salta directamente al frame que toca cuando se
+  queda atrás y empieza por los frames más antiguos durante el último cuarto de segundo de la ventana
+  de llenado, para que el primer frame retrasado esté listo cuando toca. Un hilo liberador
+  (`trigglow-reap`) libera rings, pools de frames y bloques de la arena: el hilo gráfico nunca libera
+  cientos de MB ni espera a un hilo. Cuando la compresión se queda atrás, se descarta la captura más
+  nueva (la vista retrasada repite un frame); la cola nunca crece. Medido fuera de OBS a 1440p60
+  (Ryzen 7 7700X, FFmpeg n9.0.2 vendorizado): hilo gráfico ~1,2–1,7/1,6–2,1 ms p50/p95 por frame,
+  compresión ~8,8/10,4 ms y descompresión ~6,2/7,5 ms en sus propios hilos (ocupados un 53% y un 37%
+  aproximadamente, menos de un núcleo en total). Ver `docs/SPEC-es.md` §4.6.
+- **Conversión de color a I420 en la GPU.** El shader escribe Y, U y V como tres planos separados
+  (BT.601, rango de estudio), así que la CPU ya no desentrelaza NV12 en ningún sentido: unos
+  1,1–1,3 ms menos de CPU por frame a 1440p. Los frames MJPEG se etiquetan ahora con el rango de
+  estudio que contienen (`AVCOL_RANGE_MPEG`; solo metadatos, los planos decodificados son
+  idénticos).
+- **Ring con máquina de estados por slot y arena por bloques.** El ring (`src/frame-ring.*`) es un
+  conjunto fijo de cabeceras de slot, cada una Free, Reserved, Encoding, Ready o Dropped, con su hora
+  de captura asignada al reservar el slot, así que las marcas de tiempo siguen en orden termine en el
+  orden que termine la compresión. Los datos viven en una arena por bloques (`src/frame-arena.*`):
+  paquetes uno detrás de otro en bloques de 4–32 MiB, nunca rellenados con ceros; un bloque se
+  recicla entero cuando el ring ha sobrescrito todos los frames que tenía, y solo los bloques vacíos
+  por encima de dos de reserva vuelven al sistema, en el hilo liberador. La memoria comprometida y la
+  residente siguen lo que de verdad pesan los frames: ~576–768 MB para 30 s a 1440p60 en la
+  simulación fuera de OBS, frente a ~1,9 GB residentes y un parón de ~381 ms (unos 23 frames
+  perdidos) en el primer frame tras Enable cuando cada slot se rellenaba con ceros de entrada. La
+  arena nunca crece por encima del presupuesto de RAM: una racha larga de frames que comprimen mucho
+  peor de lo previsto descarta frames (un frame repetido en pantalla) en vez de hacer crecer la
+  memoria.
+- **Desactivar libera todo lo que usaba el delay.** El ring y el pool de frames van al hilo
+  liberador, cada hilo cierra su códec y se liberan los objetos de GPU (~100 MB de RAM medidos y
+  ~37 MB de VRAM estimados a 1440p mientras el delay está desactivado); reabrirlos en el siguiente
+  Enable cuesta del orden de un milisegundo.
+- **Tablas de Huffman estándar de JPEG** (`huffman=default`) en vez de las óptimas por frame de
+  FFmpeg, que cuestan una segunda pasada sobre cada frame: un 10–17% menos de tiempo de compresión
+  a 1440p a cambio de frames un 3–3,5% más grandes; la imagen decodificada es idéntica (la
+  codificación Huffman no pierde información). La línea de log `MJPEG encoder open` dice
+  `huffman=default` (o por qué no se pudo fijar).
+- **Cada frame retrasado se descomprime y se sube una sola vez, haya las vistas que haya**
+  (Programa, vista previa, proyectores, multiview). Si el frame que toca no está listo (descartado,
+  o no descomprimido a tiempo), se repite el último en vez de dibujar negro: un tirón de un frame que
+  nunca alarga el delay. Justo después de una pausa del render, los frames descomprimidos por
+  adelantado antes de la pausa se descartan en vez de mostrarse tarde.
+- **Intervalo de frame exacto con frame rates fraccionarios.** A 59,94 fps el intervalo de captura
+  era `1e9 / 59` ns, así que se perdía casi un frame real por segundo. Ahora es
+  `1e9 × fps_den / fps_num` (16.683.333 ns a 59,94), y se usa para la captura, el tramo del ring y su
+  dimensionado.
+- **Modo síncrono** (el interruptor `codec_workers`, abajo): el códec se ejecuta en el hilo gráfico
+  de OBS como en la v0.5.0, pero con el compresor por slices (`thread_type = FF_THREAD_SLICE`,
+  `hardware_concurrency() / 4` hilos, de 1 a 4): a 1080p pasó de 8,6/10,4 a 5,2/5,9 ms p50/p95 en
+  ese hilo. `FF_THREAD_SLICE` tiene que fijarse de forma explícita: con solo `thread_count > 1`
+  FFmpeg elige threading por frames para MJPEG, `receive_packet()` devuelve `EAGAIN` y todos los
+  frames se guardarían en crudo; si aun así arranca con threading por frames, el compresor se reabre
+  con un solo hilo y un WARN.
+
+**Degradación automática (detalle técnico, `src/degradation-policy.*`):**
+- Se evalúa cada 250 ms sobre los últimos 2 s, y como pronto 2 s después del cambio anterior. Mira
+  el trabajo propio del plugin en el hilo gráfico (conversión, lectura y copia, subida; no el render
+  de la escena, que OBS hace de todos modos), el tiempo de compresión y de descompresión por frame,
+  las capturas descartadas y los frames que el descompresor no tuvo listos a tiempo.
+- **Bajada**, de un paso en un paso, cuando: el p95 del hilo gráfico supera el 40% del intervalo de
+  frame (o el 25% mientras OBS pierde frames por retraso de render, o su p50 de los últimos 0,5 s
+  supera el 50%); el p95 de compresión supera el 80% de lo que tienen los contextos de compresión
+  por frame, o se descartan más del 2% de las capturas; el p95 de descompresión supera el 80% del
+  intervalo de captura, o más del 5% de los frames que tocan no se descomprimen a tiempo.
+- **La escalera.** La carga de compresión añade paralelismo primero (contextos de compresión ×
+  hilos de slice: 1×1, 2×1, 2×2, 2×4) y después baja de peldaño; la carga de descompresión o del
+  hilo gráfico baja de peldaño directamente (el descompresor MJPEG no tiene threading, y lo que queda
+  en el hilo gráfico escala con los píxeles). Los peldaños: el tamaño completo del buffer, después
+  pasos de ×0,83 hasta tu calidad mínima (nunca por debajo), y después ese suelo capturado a la mitad
+  de fps (solo cuando la salida va a 48 fps o más). Todos los peldaños conservan el mismo ring y el
+  mismo número de slots: el delay nunca se mueve y el buffer nunca se vacía.
+- **Subida**, de un paso, solo cuando la carga prevista un peldaño más arriba se mantiene por debajo
+  del objetivo (hilo gráfico ≤ 25% del intervalo de frame, hilos de códec ≤ 50%) durante 30 s
+  seguidos; primero vuelve la calidad y después se devuelven los hilos. Las métricas de
+  descompresión solo cuentan cuando el descompresor trabaja ya con frames capturados en el peldaño
+  actual (va `delay` segundos por detrás de la captura).
+- El punto de partida se predice según la resolución: 1440p60 empieza con un contexto de compresión
+  y un slice, 4K60 con dos contextos.
+- Cada cambio de peldaño es un WARN en el log con su causa y las métricas de los últimos 2 s,
+  terminado en "The delay itself is unchanged."; los cambios de hilos son líneas INFO. El dock lee
+  el estado una vez por segundo con el proc `get_pipeline_state` del filtro, que nunca espera al
+  hilo gráfico.
+
+**Seguridad y privacidad:**
+- **Un único camino de red endurecido.** Todas las llamadas pasan por WinHTTP (`src/win-http.*`):
+  HTTPS con TLS 1.2 o superior, a api.trigglow.com, el único host al que se envía el token de inicio
+  de sesión, más la comprobación de actualizaciones en api.github.com (sin el token). Las
+  redirecciones nunca se siguen (una redirección es un error, así que el token no puede rebotar a
+  otro host), sin cookies ni inicio de sesión automático de Windows, con timeouts en cada paso y un
+  límite total, un tope al tamaño de la respuesta y un User-Agent con la versión real del plugin y
+  el sistema. Nada que cree algo (una conversación, una pregunta, un ticket, un adjunto) se
+  reintenta solo.
+- **El plugin solo abre sus propias páginas fijas**: las de inicio de sesión, soporte, privacidad y
+  la del plugin en www.trigglow.com y este repositorio en GitHub, comprobadas por prefijo, leyendo los
+  puntos y barras codificados como lo haría un navegador (sin salida por `..` ni `%2e%2e`). Cualquier
+  otra cosa, por ejemplo un enlace dentro de una respuesta, no se abre.
+- **Menos datos personales en el log de OBS.** El enlace, los códigos y el secreto del inicio de
+  sesión, los tokens, los IDs de tickets y de conversaciones, y el texto de las preguntas y las
+  respuestas nunca se escriben en él, y las líneas que mencionan un fichero lo nombran sin la ruta
+  completa, que incluía tu nombre de usuario de Windows.
+- **El aviso de actualización solo abre las páginas de releases de este repositorio**: cualquier
+  otro enlace en la respuesta de GitHub se sustituye por la página de la última release. La
+  comprobación de actualizaciones usa el mismo cliente endurecido.
+- **Sin rutas de la máquina de compilación en la DLL**: la DLL de Windows solo registra el nombre de
+  su PDB, y el binario no lleva cadenas con forma de ruta o de host que no necesite.
+- **OBS se cierra limpio con una llamada en curso.** Cada trabajo de red (inicio de sesión, Trigi,
+  tickets, el log de un ticket, la comprobación de actualizaciones) va como un trabajo en segundo
+  plano cancelable (`src/background-tasks.*`, `src/cancel-token.*`, `src/ui-tasks.*`), y WinHTTP
+  funciona en modo asíncrono, así que una llamada se corta al momento. Descargar el plugin cancela
+  todos los trabajos y espera como mucho 2 s; en Windows ningún código del plugin se ejecuta después
+  de que OBS lo descargue, y ningún resultado llega a un diálogo cerrado. Un timeout se indica como
+  "Trigi ha tardado demasiado" en vez de "sin conexión".
+
+**Añadido (soporte y diagnóstico):**
+- **Línea `perf check` en el log de OBS**, cada 10 s con el delay en marcha (Filling y Active), y
+  una última al desactivar el delay, ponerlo a 0 s o cerrar OBS. Indica la resolución del buffer y
+  si está limitada (`capped to OBS output …`, `not capped …`, `cap off …`), p50/p95/max de la
+  llamada de render completa, de la parte propia del plugin (`own`), de la lectura y de la subida,
+  llamadas/capturas/subidas por segundo, frames repetidos (`holds`, separados en descompresión
+  tardía, descartados y aún comprimiéndose) y los contadores propios de OBS de frames
+  renderizados/perdidos/saltados en la misma ventana. Arrays fijos de 4096 muestras por fase, sin
+  asignaciones por frame.
+- **Línea `pipeline check`** justo después: modo (`workers` o `sync`), peldaño de degradación,
+  tamaño y fps de captura, contextos de compresión × hilos de slice, profundidad de descompresión
+  anticipada y de staging, p50/p95/max de compresión y descompresión con lo ocupado que estuvo cada
+  hilo, descartes (reserva, contrapresión, arena, captura), fallbacks a crudo, fallos de códec,
+  compresiones obsoletas, saltos del descompresor, frames descomprimidos obsoletos, profundidad de la
+  cola de compresión, frames descomprimidos por adelantado, ratio de compresión, memoria de la arena
+  (comprometida, viva, pico, bloques, límite) y estados de los slots. Cada ciclo empieza además con
+  una línea `delay pipeline: …` con la configuración elegida y la escalera de degradación. Guía campo
+  a campo en `docs/TROUBLESHOOTING-es.md`.
+- **Aviso cuando una salida codifica por encima del buffer.** Si una salida activa tiene un encoder
+  de vídeo del lienzo principal por encima de la resolución del buffer (por ejemplo una grabación
+  reescalada a la resolución del lienzo con Reescalar salida de la salida avanzada, o pistas de
+  Enhanced Broadcasting por encima de la salida), el log avisa una vez por encoder, tamaño y ciclo de
+  delay de que su vídeo diferido se reescala hacia arriba, con ambas resoluciones, el tamaño que
+  tendría el buffer sin el límite y cómo quitarlo, y añade que quitarlo cuesta CPU y RAM y puede
+  acortar el delay si falta RAM (con la cifra cuando el buffer sin límite no guardaría el delay
+  completo). Se comprueba al activar, al llenarse el buffer y al empezar el streaming, la grabación
+  o el Replay Buffer; solo cuando quitar el límite cambiaría de verdad el buffer. Los encoders de
+  otros lienzos con nombre (p. ej. un lienzo vertical) se reconocen y se ignoran. Los encoders
+  reescalados en GPU, que libobs pasa a una mezcla que no expone, se atribuyen al lienzo principal
+  cuando tienen su relación de aspecto (o la de la salida), y el WARN lo indica; un segundo lienzo
+  con la misma forma podría tomarse por el principal, y un encoder del lienzo principal reescalado a
+  otra relación de aspecto no se detecta. Decisión en `src/encoder-check.{hpp,cpp}`, detalles en
+  `docs/SPEC-es.md` §3.5.
+- **Ajuste oculto `buffer_output_cap`, para soporte.** `"buffer_output_cap": false` en el
+  `buffer-mode-settings.json` del plugin recupera la forma de dimensionar de la v0.5.0 (resolución
+  de la fuente/lienzo, reducida solo por RAM) para quien graba a resolución de lienzo y prefiere esa
+  calidad a costa de CPU y RAM. El log lo confirma con `output_cap=off`.
+- **Interruptor oculto `codec_workers`, para soporte.** `"codec_workers": false` en el mismo
+  archivo vuelve a ejecutar la compresión y la descompresión en el hilo gráfico de OBS, sin hilos de
+  códec (el hilo liberador sigue liberando la memoria fuera de ese hilo, y la degradación sigue
+  activa, añadiendo primero hilos de slice). Sirve para descartar o confirmar que un problema viene
+  de los hilos de códec; devuelve el coste al hilo gráfico. El log lo confirma con
+  `codec_workers=off` en las líneas `settings loaded` y `enabled`, y `mode=sync` en
+  `pipeline check`.
+- Ninguno de los dos ajustes ocultos tiene control en el dock a propósito; solo se leen al arrancar
+  OBS y hay que editarlos con OBS cerrado (OBS reescribe el archivo al salir). Solo un `false`
+  literal de JSON desactiva uno: cualquier otro valor (`"false"` entre comillas, `0`...) lo deja
+  activado y escribe un WARN. Pasos en `docs/TROUBLESHOOTING-es.md`.
+
+**Empaquetado / Build / CI:**
+- Nuevo `data/fonts/` (subconjuntos de Archivo SemiBold/Bold y Geist Mono Medium, SIL OFL 1.1 con
+  sus `OFL-*.txt`) y `data/licenses/` (iconos de Lucide, ISC), ambos en el instalador, que ahora no
+  se compila sin ellos. Si faltan en una instalación, el plugin usa la fuente de la interfaz de OBS
+  y lo indica una vez en el log. El plugin enlaza ahora `Qt6::Svg`.
+- **FFmpeg de Windows fijado a otra versión**: el build de fin de mes de BtbN
+  `autobuild-2026-09-30-13-08` (`ffmpeg-n9.0.2-17-g2a571b6068`, misma rama 9.0 y mismas DLL:
+  avcodec-63, avutil-61, swresample-7). La versión fijada anterior, `autobuild-2026-10-03-18-14`
+  (`n9.0.2-22`), se borró en origen y devolvía 404, lo que rompía el build de Windows al configurar.
+  BtbN borra sus autobuilds diarios a las dos semanas más o menos pero conserva los de fin de mes,
+  así que a partir de ahora solo se fijan builds de fin de mes (`buildspec.json`,
+  `cmake/windows/buildspec.cmake`).
+- **CI compila y ejecuta los tests unitarios** en Ubuntu, Windows y macOS: nuevo job `unit-tests` en
+  `.github/workflows/build-project.yaml`, con `tests/CMakeLists.txt`, que se configura por separado
+  sin descargar OBS, Qt ni FFmpeg (`cmake -S tests -B build_tests`) y también sirve para la ruta
+  `-DTRIGGLOW_BUILD_TESTS=ON` del proyecto principal. Se ejecuta en PRs y pushes, y bloquea el job de
+  release.
+- **Job de ThreadSanitizer** (`unit-tests-tsan`, Ubuntu, GCC): compila `frame_arena_tests`,
+  `frame_ring_tests` y `pipeline_stress_tests` con `-fsanitize=thread` y los ejecuta. Por ahora solo
+  informa (anotación de aviso y resumen del job) en vez de bloquear la release, porque TSAN puede
+  fallar sin que haya una carrera en este código (libstdc++ sin instrumentar, su lentitud dispara las
+  comprobaciones de tiempo del test de estrés); el paso de compilación sí bloquea.
+- **`TRIGGLOW_STRESS_CI=1`**, puesto en los dos jobs de tests de CI, relaja solo los límites de
+  tiempo de `pipeline_stress_tests` (50% de los frames que tocan mostrados exactos en vez de 90%,
+  100 ms de retraso tras una pausa del render, al menos 10 frames mostrados detrás de un descompresor
+  lento), que los runners compartidos y ThreadSanitizer no siempre cumplen. Sus comprobaciones de
+  corrección siguen siendo estrictas en todas partes.
+- Versión 0.6.0 en `buildspec.json` y en el script del instalador de Windows.
+- **Windows enlaza `winhttp`, `crypt32` (el inicio de sesión cifrado) y `dxgi` (el ID del fabricante
+  de la GPU de los datos técnicos opcionales).** `TRIGGLOW_ALLOW_API_HOST_OVERRIDE` (desactivada por
+  defecto) es solo para builds de prueba en local: la configuración falla si está activada en CI,
+  así que ninguna release puede apuntar a otro sitio que no sea api.trigglow.com.
+- **La DLL de Windows solo registra el nombre de su PDB** (`/PDBALTPATH`), no la ruta absoluta de
+  la máquina de compilación (`cmake/windows/helpers.cmake`).
+
+**Tests** (19 suites, sin OBS; `ctest`):
+- `buffer_fit_tests` (dimensionado: lienzo = salida, 1440p → 1080p, 4K → 1080p, salida mayor que
+  el lienzo, relaciones de aspecto distintas, un suelo por encima de la salida, reducción por RAM,
+  redondeo, anchos múltiplos de 8, dimensiones impares, entradas degeneradas, 59,94 fps, el delay
+  efectivo en segundos enteros, los suelos 1440p y 2160p, barridos de presupuesto/salida), `encoder_check_tests` (la decisión
+  del aviso de encoders), `ui_tokens_tests` (contraste en las paletas de OBS 31),
+  `auto_names_tests` (los nombres y su migración), `overlay_layout_tests` (colocación del overlay),
+  `frame_arena_tests`, `frame_ring_tests` (máquina de estados de los slots, generaciones, selección
+  por antigüedad), `degradation_policy_tests` (escalera, cada disparador, enfriamiento, histéresis
+  de 30 s, sin oscilaciones; los suelos 1440p y 2160p), `pipeline_stress_tests` (ring + arena +
+  pipeline de códec con desconexiones, redimensionados y cambios de peldaño y de fps al azar: el
+  delay nunca encoge, los frames nunca salen rotos ni desordenados y ningún ring se libera nunca en
+  el hilo gráfico simulado) y `background_tasks_tests` (cancelación, resultados que nunca llegan a
+  un dueño destruido, el cierre acotado).
+- Nuevas para la cuenta, Trigi y los tickets, todas con un sustituto de red guionizado que nunca
+  sale a la red: `json_tests` (JSON estricto y acotado), `log_redact_tests` (cada regla de redacción,
+  rutas de los tres sistemas, una línea hostil de 2 MB y un log de 5 MB), `chat_text_tests`
+  (etiquetas script e img, enlaces markdown, vallas de código, 10.000 caracteres, emojis unidos,
+  caracteres de dirección bidi), `support_diagnostics_tests` (solo las claves, tipos y valores
+  documentados, en menos de 1 KB), `api_client_tests`, `token_store_tests` (el cifrado de ida y
+  vuelta en Windows), `auth_client_tests` (inicio de sesión, renovación, cierre de sesión, el cambio
+  desde la v0.5.x y cada regla de 401/403), `support_client_tests` (cada forma de respuesta y cada
+  error, cuerpos y cabeceras de las peticiones) y `trigi_states_tests` (el estado, el botón y la
+  cuenta atrás a los que lleva cada respuesta o error).
+
+**Limitaciones conocidas:**
+- **Cambiar a mano el Programa a la escena en directo con el delay Activo** (en vez de la escena
+  auxiliar del plugin, "Trigglow Delay Buffer (auto)") emite el vídeo en directo sin delay: el filtro
+  de delay está en la escena auxiliar. Ya pasaba antes de la 0.6.0. Deja el Programa en la escena que
+  eligió el plugin mientras el delay está en marcha, y desactiva antes el delay desde el dock.
+- **Borrar a mano un filtro de delay "(auto)" con el delay en marcha** deja salir el vídeo en
+  directo sin delay (la escena auxiliar muestra entonces la escena en directo sin filtro) hasta que
+  desactivas y vuelves a activar el delay desde el dock, que lo vuelve a crear. No borres los filtros
+  del plugin; desactiva el delay desde el dock.
+- Las capturas se deduplican por una celda de reloj por intervalo de frame, no por la hora de frame
+  de OBS, así que con mucho jitter de render se puede perder de vez en cuando un frame capturado (un
+  frame repetido, nunca un desplazamiento del delay). Previsto para lo siguiente.
+- Mientras el buffer se llena, mantener la escena en directo renderizando sigue usando un render
+  target del tamaño del lienzo cuyo contenido nunca se usa (solo GPU). Previsto para lo siguiente.
+- Con un lienzo mayor que la salida, el frame retrasado se vuelve a dibujar a tamaño de lienzo y OBS
+  lo reduce otra vez, lo que puede verse algo más blando que la imagen en directo. Si no necesitas el
+  lienzo grande, poner lienzo = salida lo evita.
+- macOS sigue sin build de FFmpeg: allí el buffer se guarda sin comprimir (I420 en crudo).
+- **macOS y Linux todavía no tienen cliente HTTP en el plugin**, así que allí no hay inicio de
+  sesión (y sin él no funciona Activar delay), ni Trigi, ni reportes desde OBS; el diálogo de
+  reporte enlaza al formulario web. Previsto para la v0.6.1.
+- El log redactado puede seguir conteniendo nombres de escenas, fuentes, dispositivos de audio y
+  ventanas: no se pueden distinguir de forma fiable, y la vista previa lo avisa. Revísalo con **Ver
+  qué se envía** antes de marcar la casilla.
+- La conversación con Trigi en OBS no se conserva al cerrar el diálogo. En trigglow.com se guarda
+  hasta 12 meses y puedes borrarla antes (Ajustes → Privacidad y datos → Conversaciones con Trigi);
+  lo que se copió a un ticket se queda en ese ticket.
+
 ## v0.5.0 — 2026-10-04 (Early Access)
 
 **Añadido:**
@@ -167,7 +826,7 @@
 **Cambiado:**
 - El instalador de Windows ahora usa branding real de Trigglow — icono
   propio del `.exe`/barra de tareas y banner/logo del asistente, generados
-  a partir de la misma marca usada en trigglow.virosms.com — en vez de los
+  a partir de la misma marca usada en la web de Trigglow — en vez de los
   gráficos genéricos por defecto de Inno Setup.
 
 ## v0.3.0 — 2026-08-27 (Early Access)
