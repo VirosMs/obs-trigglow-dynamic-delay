@@ -196,10 +196,13 @@ public:
 	// like v0.5.0). Only read at load, so changing it needs an OBS restart.
 	// codecWorkers is the hidden "codec_workers" key (v0.6.0 kill switch, same
 	// rules): false runs the MJPEG encode/decode on OBS's graphics thread, as
-	// before v0.6.0, instead of on worker threads.
+	// before v0.6.0, instead of on worker threads. bufferCodecAuto is the
+	// hidden "buffer_codec" key (v0.7.0): false ("mjpeg") keeps the buffer on
+	// MJPEG instead of a hardware inter-frame codec. codec_workers=false wins
+	// over it (the hardware codec needs the workers).
 	void LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
 			  std::string loadingSceneName, bool showOverlay = true, uint32_t overlayCorner = 0,
-			  bool bufferOutputCap = true, bool codecWorkers = true);
+			  bool bufferOutputCap = true, bool codecWorkers = true, bool bufferCodecAuto = true);
 	struct SettingsSnapshot {
 		uint32_t delaySeconds;
 		uint32_t minResolutionHeight;
@@ -209,6 +212,7 @@ public:
 		uint32_t overlayCorner;
 		bool bufferOutputCap;
 		bool codecWorkers;
+		bool bufferCodecAuto;
 	};
 	SettingsSnapshot SaveSettings() const;
 

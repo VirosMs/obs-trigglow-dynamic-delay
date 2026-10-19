@@ -274,6 +274,10 @@ public:
 	// the cycle. Same rules as SetBufferFilterOutputCap().
 	bool SetBufferFilterStorageClass(const std::string &liveSceneName, bool inter) const;
 
+	// v0.7.0: the hidden buffer_codec setting into the filter ("auto" or
+	// "mjpeg"), on every Enable(). Same rules as SetBufferFilterOutputCap().
+	bool SetBufferFilterCodec(const std::string &liveSceneName, bool autoCodec) const;
+
 	// --- v0.7.0 storage codec (UI thread; the filter's procs, see
 	// VideoDelayFilter::SetObsEncodersProc() and the ones after it) ---
 

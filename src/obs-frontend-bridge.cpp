@@ -955,6 +955,21 @@ bool ObsFrontendBridge::HardwareStorageAvailable() const
 #endif
 }
 
+bool ObsFrontendBridge::SetBufferFilterCodec(const std::string &liveSceneName, bool autoCodec) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterCodec(%s): FindBufferFilter returned null, no-op",
+				  autoCodec ? "auto" : "mjpeg");
+		return false;
+	}
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "buffer_codec", autoCodec ? "auto" : "mjpeg");
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
 bool ObsFrontendBridge::SetBufferFilterStorageClass(const std::string &liveSceneName, bool inter) const
 {
 	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);

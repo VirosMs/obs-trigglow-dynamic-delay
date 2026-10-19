@@ -60,8 +60,8 @@ constexpr const char *kSettingCodecWorkers = "codec_workers";
 // the buffer store with a hardware inter-frame codec where one works,
 // "mjpeg" keeps it on MJPEG. Read as strictly as the plugin settings file.
 constexpr const char *kSettingBufferCodec = "buffer_codec";
-// During development (v0.7.0 F2/F3) the filter's own default: MJPEG.
-constexpr const char *kDefaultBufferCodec = "mjpeg";
+// The default: the hardware codec where it works (the user's decision for v0.7.0).
+constexpr const char *kDefaultBufferCodec = "auto";
 // v0.7.0, written by ObsFrontendBridge::SetBufferFilterStorageClass() on
 // every Enable(): "inter" or "intra" (anything else reads as intra).
 constexpr const char *kSettingStorageClass = "storage_class";

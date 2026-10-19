@@ -183,6 +183,35 @@ bool ReadHiddenSwitch(obs_data_t *data, const char *key, const char *what)
 	return on;
 }
 
+// v0.7.0 "buffer_codec", the same strict way (storage::ParseBufferCodec()):
+// absent (or null) is "auto", and only the exact strings "auto" and "mjpeg"
+// count; anything else ("MJPEG", "hevc", false, 0) keeps auto with a WARN, so
+// a typo never changes the codec silently. True = auto.
+bool ReadBufferCodec(obs_data_t *data)
+{
+	obs_data_item_t *item = obs_data_item_byname(data, "buffer_codec");
+	trigglow::storage::SettingType type = trigglow::storage::SettingType::Missing;
+	std::string text;
+	if (item) {
+		if (obs_data_item_gettype(item) == OBS_DATA_STRING) {
+			type = trigglow::storage::SettingType::String;
+			const char *value = obs_data_item_get_string(item);
+			text = value ? value : "";
+		} else {
+			type = trigglow::storage::SettingType::Other;
+		}
+		obs_data_item_release(&item);
+	}
+	const trigglow::storage::BufferCodecSetting setting = trigglow::storage::ParseBufferCodec(type, text);
+	if (setting.warn)
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "\"buffer_codec\" in %s is neither \"auto\" nor \"mjpeg\" -- keeping auto; only the "
+				  "literal string \"mjpeg\" forces MJPEG. This value is dropped from the file when OBS "
+				  "closes",
+				  kBufferSettingsFile);
+	return setting.mode == trigglow::storage::BufferCodecMode::Auto;
+}
+
 // False when the settings file exists but can't be parsed AND couldn't be set
 // aside: the caller must then not overwrite it on exit.
 bool LoadBufferSettings(trigglow::BufferModeController &controller)
@@ -234,18 +263,20 @@ bool LoadBufferSettings(trigglow::BufferModeController &controller)
 	// v0.6.0 kill switch: false runs the MJPEG encode/decode on OBS's
 	// graphics thread again (no codec worker threads). Read only here, at load.
 	const bool codecWorkers = ReadHiddenSwitch(data, "codec_workers", "the codec worker threads");
+	// v0.7.0: "mjpeg" keeps the buffer off the hardware storage codec. Read only here, at load.
+	const bool bufferCodecAuto = ReadBufferCodec(data);
 
 	controller.LoadSettings(delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
 				loadingScene ? loadingScene : "", showOverlay,
 				static_cast<uint32_t>(obs_data_get_int(data, "overlay_corner")), bufferOutputCap,
-				codecWorkers);
+				codecWorkers, bufferCodecAuto);
 
 	TRIGGLOW_LOG_INFO(kComponent,
 			  "settings loaded (delay=%us, min_res=%up, live=\"%s\", loading=\"%s\", output_cap=%s, "
-			  "codec_workers=%s)",
+			  "codec_workers=%s, buffer_codec=%s)",
 			  delaySeconds, minResolutionHeight, liveScene ? liveScene : "",
-			  loadingScene ? loadingScene : "", bufferOutputCap ? "on" : "off",
-			  codecWorkers ? "on" : "off");
+			  loadingScene ? loadingScene : "", bufferOutputCap ? "on" : "off", codecWorkers ? "on" : "off",
+			  bufferCodecAuto ? "auto" : "mjpeg");
 	obs_data_release(data);
 	return true;
 }
@@ -277,6 +308,8 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 		obs_data_set_bool(data, "buffer_output_cap", false);
 	if (!snapshot.codecWorkers)
 		obs_data_set_bool(data, "codec_workers", false);
+	if (!snapshot.bufferCodecAuto)
+		obs_data_set_string(data, "buffer_codec", "mjpeg");
 	obs_data_save_json(data, path.toUtf8().constData());
 	obs_data_release(data);
 

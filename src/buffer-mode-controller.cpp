@@ -193,6 +193,7 @@ void BufferModeController::Enable()
 	// filter saved with the scene collection.
 	bridge_.SetBufferFilterOutputCap(status_.liveSceneName, bufferOutputCap_);
 	bridge_.SetBufferFilterCodecWorkers(status_.liveSceneName, codecWorkers_);
+	bridge_.SetBufferFilterCodec(status_.liveSceneName, bufferCodecAuto_);
 	// v0.7.0: the storage class is fixed here for the whole cycle (I9).
 	cycleStorageInter_ = NextCycleStorageInter();
 	bridge_.SetBufferFilterStorageClass(status_.liveSceneName, cycleStorageInter_);
@@ -230,9 +231,14 @@ void BufferModeController::Enable()
 
 	++status_.fillGeneration; // A new fill window: the dock starts its countdown.
 	SetState(BufferModeState::Filling, FillingMessage());
-	TRIGGLOW_LOG_INFO(kComponent, "enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s",
-			  status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
-			  bufferOutputCap_ ? "on" : "off", codecWorkers_ ? "on" : "off");
+	TRIGGLOW_LOG_INFO(
+		kComponent,
+		"enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s buffer_codec=%s%s "
+		"storage_class=%s",
+		status_.liveSceneName.c_str(), status_.loadingSceneName.c_str(), status_.delaySeconds,
+		bufferOutputCap_ ? "on" : "off", codecWorkers_ ? "on" : "off", bufferCodecAuto_ ? "auto" : "mjpeg",
+		bufferCodecAuto_ && !codecWorkers_ ? " (ignored: codec_workers=false keeps MJPEG)" : "",
+		cycleStorageInter_ ? "inter" : "intra");
 
 	// New cycle: warn again about any encoder above the buffer, starting with
 	// the outputs already running right now.
@@ -494,10 +500,11 @@ void BufferModeController::Toggle()
 
 void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResolutionHeight, std::string liveSceneName,
 					std::string loadingSceneName, bool showOverlay, uint32_t overlayCorner,
-					bool bufferOutputCap, bool codecWorkers)
+					bool bufferOutputCap, bool codecWorkers, bool bufferCodecAuto)
 {
 	bufferOutputCap_ = bufferOutputCap;
 	codecWorkers_ = codecWorkers;
+	bufferCodecAuto_ = bufferCodecAuto;
 	status_.delaySeconds = delaySeconds;
 	status_.minResolutionHeight = minResolutionHeight;
 	status_.liveSceneName = std::move(liveSceneName);
@@ -513,7 +520,8 @@ void BufferModeController::LoadSettings(uint32_t delaySeconds, uint32_t minResol
 BufferModeController::SettingsSnapshot BufferModeController::SaveSettings() const
 {
 	return {status_.delaySeconds, status_.minResolutionHeight, status_.liveSceneName, status_.loadingSceneName,
-		status_.showOverlay,  status_.overlayCorner,       bufferOutputCap_,      codecWorkers_};
+		status_.showOverlay,  status_.overlayCorner,       bufferOutputCap_,      codecWorkers_,
+		bufferCodecAuto_};
 }
 
 PipelineHealth BufferModeController::GetPipelineHealth() const
