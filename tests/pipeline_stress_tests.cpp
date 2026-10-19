@@ -180,21 +180,31 @@ size_t FillerBytes(uint64_t stamp, uint32_t width, uint32_t height)
 }
 
 // "Compresses" a stamped frame into a header + filler; burns some CPU; fails
-// now and then (the pipeline then stores the frame raw).
-class StampCodec final : public VideoCodec {
+// now and then (the pipeline then stores the frame raw). A synchronous, all-
+// intra storage::Encoder, like MJPEG (it poses as one: the codec id is only
+// the payload's dispatch tag).
+class StampEncoder final : public storage::Encoder {
 public:
-	explicit StampCodec(uint32_t seed) : rng_(seed) {}
+	StampEncoder(const storage::EncoderConfig &config, uint32_t seed) : config_(config), rng_(seed) {}
 
-	bool Encode(const I420View &frame, uint32_t /*slices*/, const uint8_t *&packet, size_t &bytes,
-		    bool &compressed) override
+	storage::CodecId Codec() const override { return storage::CodecId::Mjpeg; }
+	storage::Backend GetBackend() const override { return storage::Backend::Cpu; }
+	const char *Name() const override { return "stamp"; }
+	bool InterFrame() const override { return false; }
+	const storage::EncoderConfig &Config() const override { return config_; }
+
+	storage::SendResult Send(const I420View &frame, uint64_t seq, bool /*forceKey*/) override
 	{
+		pending_ = false;
 		uint64_t stamp = 0;
 		if (!CheckStamped(frame, stamp))
 			++g_tornFrames;
 		SpinFor(std::uniform_int_distribution<uint32_t>(100, 700)(rng_));
 		++g_encodes;
+		if (frame.width != config_.width || frame.height != config_.height)
+			++g_badPackets; // The pipeline opens an encoder per frame size.
 		if (std::uniform_int_distribution<int>(0, 99)(rng_) == 0)
-			return false; // 1%: raw fallback path.
+			return storage::SendResult::Failed; // 1%: raw fallback path.
 		const size_t filler = FillerBytes(stamp, frame.width, frame.height);
 		packet_.resize(4 * 3 + 8 + filler);
 		uint8_t *p = packet_.data();
@@ -203,13 +213,57 @@ public:
 		std::memcpy(p + 8, &frame.height, 4);
 		std::memcpy(p + 12, &stamp, 8);
 		std::memset(p + 20, static_cast<int>(stamp & 0xFF), filler);
-		packet = packet_.data();
-		bytes = packet_.size();
-		compressed = true;
+		pending_ = true;
+		seq_ = seq;
+		return storage::SendResult::Ok;
+	}
+	bool Receive(storage::Packet &out) override
+	{
+		if (!pending_)
+			return false;
+		pending_ = false;
+		out = storage::Packet{};
+		out.data = packet_.data();
+		out.bytes = packet_.size();
+		out.seq = seq_;
+		out.key = true;
+		out.codec = storage::CodecId::Mjpeg;
 		return true;
 	}
+	void Drain(uint64_t /*deadlineNs*/, const std::function<void(const storage::Packet &)> &sink) override
+	{
+		storage::Packet packet;
+		if (Receive(packet))
+			sink(packet);
+	}
+	uint32_t InFlight() const override { return pending_ ? 1 : 0; }
 
-	bool Decode(const uint8_t *packet, size_t bytes, DecodedImage &out) override
+private:
+	storage::EncoderConfig config_;
+	std::mt19937 rng_;
+	std::vector<uint8_t> packet_;
+	bool pending_ = false;
+	uint64_t seq_ = 0;
+};
+
+class StampDecoder final : public storage::Decoder {
+public:
+	explicit StampDecoder(uint32_t seed) : rng_(seed) {}
+
+	storage::CodecId Codec() const override { return storage::CodecId::Mjpeg; }
+	const char *Name() const override { return "stamp"; }
+	void Flush() override {}
+
+	storage::DecodeStatus Decode(const storage::EncodedFrame &in, bool /*wantImage*/, DecodedImage &out,
+				     uint64_t &outSeq) override
+	{
+		outSeq = in.seq;
+		return DecodeBytes(in.data, in.bytes, out) ? storage::DecodeStatus::Frame
+							   : storage::DecodeStatus::Failed;
+	}
+
+private:
+	bool DecodeBytes(const uint8_t *packet, size_t bytes, DecodedImage &out)
 	{
 		SpinFor(std::uniform_int_distribution<uint32_t>(50, 400)(rng_) + g_decodeExtraUs.load());
 		++g_decodes;
@@ -246,12 +300,21 @@ public:
 		return true;
 	}
 
-	void Release() override { packet_ = std::vector<uint8_t>(); }
-
-private:
 	std::mt19937 rng_;
-	std::vector<uint8_t> packet_;
 };
+
+// The stamp codec's factories, as VideoDelayFilter sets MJPEG's up.
+void UseStampCodec(CodecPipeline::Options &options, std::atomic<uint32_t> &seeds)
+{
+	options.encoderFactory = [&seeds](const storage::EncoderConfig &config) {
+		return std::unique_ptr<storage::Encoder>(new StampEncoder(config, seeds++));
+	};
+	options.decoderFactory = [&seeds](storage::CodecId codec) -> std::unique_ptr<storage::Decoder> {
+		if (codec != storage::CodecId::Mjpeg)
+			return nullptr;
+		return std::unique_ptr<storage::Decoder>(new StampDecoder(seeds++));
+	};
+}
 
 struct RunStats {
 	uint64_t displayed = 0;
@@ -303,11 +366,9 @@ RunStats RunScenario(const Scenario &s)
 	options.lookaheadFrames = 3;
 	std::atomic<uint32_t> seeds{1};
 	if (s.rawCodec)
-		options.codecFactory = &MakeRawCodec;
+		options.encoderFactory = &storage::MakeRawEncoder;
 	else
-		options.codecFactory = [&seeds] {
-			return std::unique_ptr<VideoCodec>(new StampCodec(seeds++));
-		};
+		UseStampCodec(options, seeds);
 	auto pipeline = std::make_unique<CodecPipeline>(options);
 
 	std::mt19937 rng(1234);
@@ -411,7 +472,7 @@ RunStats RunScenario(const Scenario &s)
 				++stats.resets;
 			}
 			if (chance(150)) {
-				const uint32_t slices[3] = {1, 2, 4};
+				const uint32_t slices[3] = {1, 2, 4}; // 4: clamped to kMaxSlicesPerContext.
 				pipeline->SetEncodeParallelism(chance(2) ? 1 : 2, slices[rng() % 3]);
 			}
 			if (chance(120))
@@ -500,9 +561,7 @@ void RunPlaybackScenario(bool pause)
 	options.clockNs = &NowNs;
 	options.lookaheadFrames = 3;
 	std::atomic<uint32_t> seeds{100};
-	options.codecFactory = [&seeds] {
-		return std::unique_ptr<VideoCodec>(new StampCodec(seeds++));
-	};
+	UseStampCodec(options, seeds);
 	auto pipeline = std::make_unique<CodecPipeline>(options);
 	const uint64_t periodNs = 4000000, delayNs = 1000000000;
 	auto ring = std::make_shared<FrameRing>(static_cast<size_t>(delayNs / periodNs) + 32, FrameArena::Config{});

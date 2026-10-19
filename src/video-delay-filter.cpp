@@ -351,25 +351,32 @@ CodecPipeline::Options MakePipelineOptions(bool threaded, uint32_t fpsNum, uint3
 	options.nameThread = [](const char *name) {
 		os_set_thread_name(name);
 	};
+	// The storage codec (storage-codec.hpp): MJPEG where FFmpeg has it, raw
+	// otherwise (the pipeline's default, and its own raw decoder).
 #ifdef TRIGGLOW_HAVE_FFMPEG
 	if (MjpegAvailable()) {
 		const uint32_t fps = std::max<uint32_t>(1, fpsNum / std::max<uint32_t>(1, fpsDen));
-		options.codecFactory = [fps] {
-			MjpegCodecOptions mjpeg;
-			mjpeg.quality = kMjpegQuality;
-			mjpeg.timeBaseFps = fps;
-			mjpeg.log = &PipelineLog;
-			return MakeMjpegCodec(mjpeg);
+		options.encoderFactory = [fps](const storage::EncoderConfig &requested) {
+			storage::EncoderConfig config = requested; // Frame size and slice threads.
+			config.quality = kMjpegQuality;
+			config.fpsNum = fps;
+			config.fpsDen = 1;
+			return MakeMjpegEncoder(config, &PipelineLog);
+		};
+		options.decoderFactory = [](storage::CodecId codec) -> std::unique_ptr<storage::Decoder> {
+			if (codec == storage::CodecId::Mjpeg)
+				return MakeMjpegDecoder(&PipelineLog);
+			return nullptr;
 		};
 	} else {
 		TRIGGLOW_LOG_WARN(kComponent, "MJPEG encoder/decoder not found in linked FFmpeg -- the buffer stores "
 					      "uncompressed I420 this session");
-		options.codecFactory = &MakeRawCodec;
+		options.encoderFactory = &storage::MakeRawEncoder;
 	}
 #else
 	(void)fpsNum;
 	(void)fpsDen;
-	options.codecFactory = &MakeRawCodec;
+	options.encoderFactory = &storage::MakeRawEncoder;
 #endif
 	return options;
 }

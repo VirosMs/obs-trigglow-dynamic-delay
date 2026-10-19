@@ -36,21 +36,6 @@ constexpr uint32_t kMaxLookaheadFrames = 14;
 // Ready frame to show instead.
 constexpr size_t kDisplayMaxBack = 4;
 
-class RawCodec final : public VideoCodec {
-public:
-	bool Encode(const I420View &frame, uint32_t /*sliceThreads*/, const uint8_t *&packet, size_t &bytes,
-		    bool &compressed) override
-	{
-		// The pipeline packs the frame into the arena itself: no copy here.
-		packet = nullptr;
-		bytes = I420FrameBytes(frame.width, frame.height);
-		compressed = false;
-		return true;
-	}
-	bool Decode(const uint8_t * /*packet*/, size_t /*bytes*/, DecodedImage & /*out*/) override { return false; }
-	void Release() override {}
-};
-
 // A RawFrame's storage as a reference the reaper can drop. The frame keeps no
 // storage (capacity 0): AcquireRawFrame()/Attach() allocate it again.
 std::shared_ptr<void> TakeStorage(RawFrame &frame)
@@ -62,11 +47,6 @@ std::shared_ptr<void> TakeStorage(RawFrame &frame)
 	return storage;
 }
 } // namespace
-
-std::unique_ptr<VideoCodec> MakeRawCodec()
-{
-	return std::make_unique<RawCodec>();
-}
 
 I420View RawFrame::View() const
 {
@@ -91,8 +71,8 @@ CodecPipeline::CodecPipeline(Options options) : options_(std::move(options))
 							     .count());
 		};
 	}
-	if (!options_.codecFactory)
-		options_.codecFactory = &MakeRawCodec;
+	if (!options_.encoderFactory)
+		options_.encoderFactory = &storage::MakeRawEncoder;
 	for (uint32_t i = 0; i < options_.rawFramePoolSize; ++i) {
 		rawFrames_.push_back(std::make_unique<RawFrame>());
 		freeRaw_.push_back(rawFrames_.back().get());
@@ -150,6 +130,21 @@ void CodecPipeline::ReapLocked(std::shared_ptr<void> object, std::vector<std::sh
 	} else {
 		fallback.push_back(std::move(object));
 	}
+}
+
+void CodecPipeline::ReleaseRingsLocked(std::vector<std::shared_ptr<FrameRing>> &rings,
+				       std::vector<std::shared_ptr<void>> &fallback)
+{
+	// Still the pipeline's ring: ring_ holds it too, so this is never the last
+	// reference. Detached meanwhile: it may be, and freeing an arena takes tens
+	// of ms -- the reaper does that, never G nor an encode.
+	for (std::shared_ptr<FrameRing> &ring : rings) {
+		if (ring == ring_)
+			ring.reset();
+		else
+			ReapLocked(std::move(ring), fallback);
+	}
+	rings.clear();
 }
 
 void CodecPipeline::ReturnRawFrameLocked(RawFrame *frame, std::vector<std::shared_ptr<void>> &fallback)
@@ -298,10 +293,22 @@ void CodecPipeline::Detach(bool releaseCodecs, std::shared_ptr<FrameRing> retire
 	}
 	encodeCv_.notify_all();
 	decodeCv_.notify_all();
-	if (releaseCodecs && inlineCodec_) {
-		inlineCodec_->Release();
-		inlineScratch_ = std::vector<uint8_t>();
+	// The sync path's own codecs (graphics thread): closed on Disable, like the
+	// workers' (v0.6.0 released them here too).
+	if (releaseCodecs) {
+		EncodeTally tally;
+		std::vector<std::shared_ptr<FrameRing>> released;
+		CloseEncoder(inlineEncode_, false, tally, released);
+		ResetDecoders(inlineDecode_);
+		inlineDecode_.scratch = std::vector<uint8_t>();
+		if (!released.empty()) {
+			std::lock_guard<std::mutex> lock(mutex_);
+			ReleaseRingsLocked(released, fallback);
+		}
+		CommitTally(tally);
 	}
+	inlineDecode_.cursor = ringselect::ChainCursor{};
+	inlineDecode_.flushPending = true;
 	inlineFailedNs_ = 0;
 }
 
@@ -399,21 +406,27 @@ void CodecPipeline::SubmitEncode(const std::shared_ptr<FrameRing> &ring, RawFram
 		return;
 	}
 	if (!Threaded()) {
-		if (!inlineCodec_)
-			inlineCodec_ = options_.codecFactory();
 		uint32_t slices;
+		uint64_t epoch;
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			slices = slices_;
+			epoch = epoch_;
 		}
-		EncodeOne(*inlineCodec_, EncodeJob{ring, reservation, frame}, slices, kInlineStage);
+		std::vector<std::shared_ptr<FrameRing>> released;
+		EncodeOne(inlineEncode_, EncodeJob{ring, reservation, frame, epoch}, slices, kInlineStage, released);
 		ReleaseRawFrame(frame);
+		if (!released.empty()) {
+			std::vector<std::shared_ptr<void>> fallback; // Declared first: freed after the lock is released.
+			std::lock_guard<std::mutex> lock(mutex_);
+			ReleaseRingsLocked(released, fallback);
+		}
 		return;
 	}
 	size_t depth;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
-		queue_.push_back(EncodeJob{ring, reservation, frame});
+		queue_.push_back(EncodeJob{ring, reservation, frame, epoch_});
 		depth = queue_.size();
 	}
 	// notify_all: with one active context, notify_one could wake only the
@@ -425,7 +438,190 @@ void CodecPipeline::SubmitEncode(const std::shared_ptr<FrameRing> &ring, RawFram
 	++window_.queueDepthSamples;
 }
 
-void CodecPipeline::EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t slices, uint32_t stage)
+void CodecPipeline::StoreRaw(FrameRing &ring, const FrameRing::Reservation &reservation, const I420View &frame,
+			     EncodeTally &tally)
+{
+	const size_t rawBytes = I420FrameBytes(frame.width, frame.height);
+	FrameArena::Allocation allocation = ring.Arena().Allocate(rawBytes);
+	if (!allocation) {
+		ring.MarkDropped(reservation.index, reservation.generation);
+		++tally.arenaDrops;
+		return;
+	}
+	PackI420(frame, allocation.data);
+	FrameRing::Payload payload;
+	payload.allocation = allocation;
+	payload.bytes = static_cast<uint32_t>(rawBytes);
+	payload.width = frame.width;
+	payload.height = frame.height;
+	payload.codec = storage::CodecId::Raw; // A key of no chain: decodable on its own, references nothing.
+	payload.key = true;
+	payload.chain = storage::kNoChain;
+	payload.seq = 0;
+	if (!ring.Publish(reservation.index, reservation.generation, payload)) {
+		ring.Arena().Free(allocation);
+		++tally.staleEncodes;
+	}
+}
+
+bool CodecPipeline::StorePacket(EncodeContext &ctx, const storage::Packet &packet, EncodeTally &tally,
+				std::vector<std::shared_ptr<FrameRing>> &released)
+{
+	storage::InFlightQueue<InFlightFrame>::Entry entry;
+	if (ctx.inFlight.Pop(packet.seq, entry) != storage::InFlightQueue<InFlightFrame>::Match::Ok)
+		return false; // Out of order, or nobody sent it: the caller closes the encoder.
+	std::shared_ptr<FrameRing> ringRef = std::move(entry.value.ring);
+	const InFlightFrame &sent = entry.value;
+	FrameRing &ring = *ringRef;
+	const FrameRing::Reservation &reservation = sent.reservation;
+	// Chain bookkeeping only for an inter-frame encoder's current chain: an
+	// intra packet references nothing, and an older chain (a packet of a ring
+	// left behind) can't break the new one.
+	const bool tracked = ctx.encoder && ctx.encoder->InterFrame() && sent.chain == ctx.chain.Chain();
+	const size_t rawBytes = I420FrameBytes(sent.width, sent.height);
+	[&] {
+		// A packet can't be trusted past the raw size (never happens with
+		// MJPEG); anything odd is stored raw while the frame is still at hand
+		// (a synchronous encoder), like a failed encode.
+		const bool usable = packet.rawInput
+					    ? sent.frame.plane[0] != nullptr && packet.bytes == rawBytes
+					    : packet.data != nullptr && packet.bytes > 0 && packet.bytes <= rawBytes;
+		if (!usable) {
+			++tally.encodeFailures;
+			if (sent.frame.plane[0]) {
+				++tally.rawFallbacks;
+				StoreRaw(ring, reservation, sent.frame, tally);
+			} else {
+				ring.MarkDropped(reservation.index, reservation.generation);
+			}
+			if (tracked) {
+				ctx.chain.OnLost();
+				++tally.chainBreaks;
+			}
+			return;
+		}
+		if (tracked && !ctx.chain.ShouldStore(packet.key)) {
+			// Its reference was lost: never stored, so the decoder never
+			// meets a P-frame without its reference (invariant I3).
+			ring.MarkDropped(reservation.index, reservation.generation);
+			++tally.orphanDrops;
+			return;
+		}
+		const size_t storedBytes = packet.rawInput ? rawBytes : packet.bytes;
+		FrameArena::Allocation allocation = ring.Arena().Allocate(storedBytes);
+		if (!allocation) {
+			ring.MarkDropped(reservation.index, reservation.generation);
+			++tally.arenaDrops;
+			if (tracked) {
+				ctx.chain.OnLost();
+				++tally.chainBreaks;
+			}
+			return;
+		}
+		if (packet.rawInput)
+			PackI420(sent.frame, allocation.data);
+		else
+			std::memcpy(allocation.data, packet.data, packet.bytes);
+		FrameRing::Payload payload;
+		payload.allocation = allocation;
+		payload.bytes = static_cast<uint32_t>(storedBytes);
+		payload.width = sent.width;
+		payload.height = sent.height;
+		payload.codec = packet.rawInput ? storage::CodecId::Raw : packet.codec;
+		payload.key = packet.rawInput || packet.key;
+		payload.chain = packet.rawInput ? storage::kNoChain : sent.chain;
+		payload.seq = packet.rawInput ? 0 : static_cast<uint32_t>(packet.seq);
+		if (!ring.Publish(reservation.index, reservation.generation, payload)) {
+			ring.Arena().Free(allocation);
+			++tally.staleEncodes;
+			if (tracked) {
+				ctx.chain.OnLost();
+				++tally.chainBreaks;
+			}
+			return;
+		}
+		if (tracked)
+			ctx.chain.OnStored(packet.key);
+		if (payload.codec != storage::CodecId::Raw) {
+			tally.encodedBytes += packet.bytes;
+			tally.encodedRawBytes += rawBytes;
+		}
+	}();
+	released.push_back(std::move(ringRef));
+	return true;
+}
+
+void CodecPipeline::DropInFlight(EncodeContext &ctx, std::vector<std::shared_ptr<FrameRing>> &released)
+{
+	ctx.inFlight.Clear([&](storage::InFlightQueue<InFlightFrame>::Entry &entry) {
+		if (entry.value.ring) {
+			entry.value.ring->MarkDropped(entry.value.reservation.index,
+						      entry.value.reservation.generation);
+			released.push_back(std::move(entry.value.ring));
+		}
+	});
+}
+
+void CodecPipeline::ReceiveReady(EncodeContext &ctx, EncodeTally &tally,
+				 std::vector<std::shared_ptr<FrameRing>> &released)
+{
+	if (!ctx.encoder)
+		return;
+	storage::Packet packet;
+	while (ctx.encoder->Receive(packet)) {
+		if (StorePacket(ctx, packet, tally, released))
+			continue;
+		// A packet out of Send() order (invariant I1): the bitstream can't be
+		// trusted. Close the encoder; the next job opens a new one, on a new
+		// chain from a key. What was in flight is lost.
+		Log(PipelineLogLevel::Warning,
+		    "buffer encoder %s handed back packet %llu out of order -- closing it (%zu frames in flight lost)",
+		    ctx.encoder->Name(), static_cast<unsigned long long>(packet.seq), ctx.inFlight.Size());
+		++tally.encodeFailures;
+		++tally.encoderResets;
+		DropInFlight(ctx, released);
+		ctx.encoder.reset();
+		return;
+	}
+}
+
+void CodecPipeline::CloseEncoder(EncodeContext &ctx, bool drain, EncodeTally &tally,
+				 std::vector<std::shared_ptr<FrameRing>> &released)
+{
+	if (ctx.encoder && drain && ctx.encoder->InFlight() > 0) {
+		bool failed = false;
+		ctx.encoder->Drain(options_.clockNs() + kDrainDeadlineNs, [&](const storage::Packet &packet) {
+			if (!failed && !StorePacket(ctx, packet, tally, released))
+				failed = true;
+		});
+	}
+	DropInFlight(ctx, released); // Whatever didn't make it out.
+	ctx.encoder.reset();         // Closes its contexts, on this (its) thread.
+}
+
+void CodecPipeline::AddTallyLocked(const EncodeTally &tally)
+{
+	window_.encodedBytes += tally.encodedBytes;
+	window_.encodedRawBytes += tally.encodedRawBytes;
+	window_.rawFallbacks += tally.rawFallbacks;
+	window_.encodeFailures += tally.encodeFailures;
+	window_.arenaDrops += tally.arenaDrops;
+	window_.staleEncodes += tally.staleEncodes;
+	window_.chainBreaks += tally.chainBreaks;
+	window_.orphanDrops += tally.orphanDrops;
+	window_.busyDrops += tally.busyDrops;
+	window_.encoderResets += tally.encoderResets;
+	window_.inFlightMax = std::max(window_.inFlightMax, tally.inFlightMax);
+}
+
+void CodecPipeline::CommitTally(const EncodeTally &tally)
+{
+	std::lock_guard<std::mutex> lock(statsMutex_);
+	AddTallyLocked(tally);
+}
+
+void CodecPipeline::EncodeOne(EncodeContext &ctx, const EncodeJob &job, uint32_t slices, uint32_t stage,
+			      std::vector<std::shared_ptr<FrameRing>> &released)
 {
 	FrameRing &ring = *job.ring;
 	const FrameRing::Reservation &reservation = job.reservation;
@@ -437,37 +633,58 @@ void CodecPipeline::EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t 
 
 	const uint64_t startNs = options_.clockNs();
 	const I420View view = job.frame->View();
-	const size_t rawBytes = I420FrameBytes(view.width, view.height);
-	const uint8_t *packet = nullptr;
-	size_t bytes = 0;
-	bool compressed = false;
-	const bool encoded = codec.Encode(view, slices, packet, bytes, compressed);
-	// A packet can't be trusted past the raw size (never happens with MJPEG);
-	// anything odd is stored raw, like a failed encode.
-	const bool usable = encoded && (!compressed || (packet && bytes > 0 && bytes <= rawBytes));
-	const bool storeRaw = !usable || !compressed;
-	const size_t storedBytes = storeRaw ? rawBytes : bytes;
+	EncodeTally tally;
+	storage::EncoderConfig config;
+	config.width = view.width;
+	config.height = view.height;
+	config.sliceThreads = slices;
+	// Another frame size or slice count: a new encoder (the old one hands over
+	// what it has in flight first), on a new chain. A new cycle (new ring): the
+	// same encoder, a new chain from a key.
+	if (ctx.encoder && !storage::SameGeometry(ctx.encoder->Config(), config))
+		CloseEncoder(ctx, true, tally, released);
+	bool fresh = false;
+	if (!ctx.encoder) {
+		ctx.encoder = options_.encoderFactory(config);
+		fresh = true;
+	}
+	if (fresh || ctx.chainEpoch != job.epoch) {
+		ctx.chain.Start(storage::NewChainId());
+		ctx.chainEpoch = job.epoch;
+	}
 
-	FrameArena::Allocation allocation = ring.Arena().Allocate(storedBytes);
-	bool published = false;
-	if (!allocation) {
+	const bool forceKey = ctx.chain.WantKey();
+	const uint64_t seq = ctx.chain.NextSeq();
+	const storage::SendResult sent = ctx.encoder ? ctx.encoder->Send(view, seq, forceKey)
+						     : storage::SendResult::Failed;
+	if (sent == storage::SendResult::Ok) {
+		ctx.chain.CommitSend(forceKey);
+		InFlightFrame frame;
+		frame.ring = job.ring;
+		frame.reservation = reservation;
+		frame.chain = ctx.chain.Chain();
+		frame.width = view.width;
+		frame.height = view.height;
+		frame.frame = view;
+		ctx.inFlight.Push(seq, startNs, std::move(frame));
+		tally.inFlightMax = static_cast<uint32_t>(ctx.inFlight.Size());
+		ReceiveReady(ctx, tally, released);
+		// The frame goes back to the pool once this returns: a packet still in
+		// flight can no longer fall back to it.
+		ctx.inFlight.ForEach(
+			[](storage::InFlightQueue<InFlightFrame>::Entry &entry) { entry.value.frame = I420View{}; });
+	} else if (sent == storage::SendResult::Busy) {
 		ring.MarkDropped(reservation.index, reservation.generation);
+		++tally.busyDrops;
 	} else {
-		if (storeRaw)
-			PackI420(view, allocation.data);
-		else
-			std::memcpy(allocation.data, packet, bytes);
-		FrameRing::Payload payload;
-		payload.allocation = allocation;
-		payload.bytes = static_cast<uint32_t>(storedBytes);
-		payload.width = view.width;
-		payload.height = view.height;
-		// MJPEG is the only codec that compresses until the storage codecs
-		// (storage-codec.hpp) replace VideoCodec: every payload is a key.
-		payload.codec = storeRaw ? storage::CodecId::Raw : storage::CodecId::Mjpeg;
-		published = ring.Publish(reservation.index, reservation.generation, payload);
-		if (!published)
-			ring.Arena().Free(allocation);
+		// Not encoded: stored raw, like v0.6.0 did when the codec failed. The
+		// frame never entered the bitstream (no seq consumed, nothing in
+		// flight references it), but an inter-frame encoder goes on from a key.
+		++tally.rawFallbacks;
+		++tally.encodeFailures;
+		StoreRaw(ring, reservation, view, tally);
+		if (ctx.encoder && ctx.encoder->InterFrame())
+			ctx.chain.RequestKey();
 	}
 	const uint64_t endNs = options_.clockNs();
 	// Emptied blocks beyond the spare quota (the window shrank, e.g. after a
@@ -477,64 +694,106 @@ void CodecPipeline::EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t 
 		RequestTrim(job.ring);
 
 	{
+		// The worker's own time on this frame (Send, Receive, copies,
+		// Publish), never an encoder's latency: what the degradation policy
+		// weighs as load (invariant I6).
 		std::lock_guard<std::mutex> lock(statsMutex_);
 		const uint32_t index = stage < kMaxEncodeContexts ? stage : 0;
 		window_.encode[index].frameNs.Push(endNs - startNs);
 		encodeRecent_.Push(endNs, endNs - startNs, reservation.tag);
-		if (published && !storeRaw) {
-			window_.encodedBytes += bytes;
-			window_.encodedRawBytes += rawBytes;
-		}
-		if (!usable) {
-			++window_.rawFallbacks;
-			++window_.encodeFailures;
-		}
-		if (!allocation)
-			++window_.arenaDrops;
-		else if (!published)
-			++window_.staleEncodes;
+		AddTallyLocked(tally);
 	}
 }
 
-bool CodecPipeline::DecodePinned(FrameRing &ring, const FrameRing::ReadView &view, VideoCodec &codec,
-				 std::vector<uint8_t> &scratch, DecodedImage &out)
+storage::Decoder *CodecPipeline::DecoderFor(DecodeContext &ctx, storage::CodecId codec)
 {
-	const bool compressed = view.codec != storage::CodecId::Raw;
-	bool ok = view.data != nullptr && view.bytes > 0;
-	if (ok && compressed) {
+	const auto index = static_cast<size_t>(codec);
+	if (index >= storage::kCodecCount)
+		return nullptr;
+	if (!ctx.decoders[index] && !ctx.unavailable[index]) {
+		if (codec == storage::CodecId::Raw)
+			ctx.decoders[index] = storage::MakeRawDecoder();
+		else if (options_.decoderFactory)
+			ctx.decoders[index] = options_.decoderFactory(codec);
+		ctx.unavailable[index] = !ctx.decoders[index];
+	}
+	return ctx.decoders[index].get();
+}
+
+void CodecPipeline::ResetDecoders(DecodeContext &ctx)
+{
+	for (size_t i = 0; i < storage::kCodecCount; ++i) {
+		ctx.decoders[i].reset(); // Closes its context, on this (its) thread.
+		ctx.unavailable[i] = false;
+	}
+	ctx.cursor = ringselect::ChainCursor{};
+	ctx.flushPending = false;
+}
+
+CodecPipeline::DecodeOutcome CodecPipeline::DecodePinned(FrameRing &ring, const FrameRing::ReadView &view,
+							 DecodeContext &ctx, DecodedImage &out)
+{
+	if (ctx.flushPending) {
+		// A new cycle: nothing decoded before can be referenced any more.
+		for (auto &decoder : ctx.decoders) {
+			if (decoder)
+				decoder->Flush();
+		}
+		ctx.flushPending = false;
+		ctx.cursor = ringselect::ChainCursor{};
+	}
+	if (!view.data || view.bytes == 0) {
+		ring.Unpin(view);
+		return DecodeOutcome::Failed;
+	}
+	if (!ringselect::Decodable(view.key, view.chain, view.seq, ctx.cursor)) {
+		// A P-frame whose reference this decoder doesn't have (it skipped
+		// ahead, or that packet was lost): never decoded, the delayed view
+		// holds until the next key (invariant I2). Raw and MJPEG: never.
+		ring.Unpin(view);
+		return DecodeOutcome::Skipped;
+	}
+	storage::Decoder *decoder = DecoderFor(ctx, view.codec);
+	if (!decoder) {
+		ring.Unpin(view);
+		ctx.cursor = ringselect::ChainCursor{};
+		return DecodeOutcome::Failed;
+	}
+	storage::EncodedFrame in;
+	in.bytes = view.bytes;
+	in.width = view.width;
+	in.height = view.height;
+	in.seq = view.seq;
+	in.key = view.key;
+	uint64_t outSeq = 0;
+	storage::DecodeStatus status;
+	if (view.codec == storage::CodecId::Raw) {
+		// Its decode is one copy out of the slot: done while pinned.
+		in.data = view.data;
+		status = decoder->Decode(in, true, out, outSeq);
+		ring.Unpin(view);
+	} else {
 		// Copy the packet and let go of the slot before decoding: the pin only
 		// lasts a memcpy (tens of microseconds), not the whole decode.
-		if (scratch.size() < view.bytes)
-			scratch.resize(view.bytes);
-		std::memcpy(scratch.data(), view.data, view.bytes);
-	} else if (ok) {
-		const size_t need = I420FrameBytes(view.width, view.height);
-		ok = view.bytes >= need;
-		if (ok) {
-			std::shared_ptr<uint8_t> buffer(new (std::nothrow) uint8_t[need],
-							std::default_delete<uint8_t[]>());
-			ok = buffer != nullptr;
-			if (ok) {
-				std::memcpy(buffer.get(), view.data, need);
-				const I420View packed = PackedI420View(buffer.get(), view.width, view.height);
-				for (int p = 0; p < 3; ++p) {
-					out.plane[p] = packed.plane[p];
-					out.stride[p] = packed.stride[p];
-				}
-				out.width = view.width;
-				out.height = view.height;
-				out.owner = buffer;
-			}
-		}
+		if (ctx.scratch.size() < view.bytes)
+			ctx.scratch.resize(view.bytes);
+		std::memcpy(ctx.scratch.data(), view.data, view.bytes);
+		ring.Unpin(view);
+		in.data = ctx.scratch.data();
+		status = decoder->Decode(in, true, out, outSeq);
 	}
-	ring.Unpin(view);
-	if (ok && compressed) {
-		ok = codec.Decode(scratch.data(), view.bytes, out) && out.width == view.width &&
-		     out.height == view.height;
-		if (!ok)
-			out = DecodedImage{};
+	const bool ok = status == storage::DecodeStatus::Frame && outSeq == view.seq && out.width == view.width &&
+			out.height == view.height;
+	if (!ok) {
+		out = DecodedImage{};
+		ctx.cursor = ringselect::ChainCursor{}; // Whatever comes next needs a key.
+		decoder->Flush();
+		return DecodeOutcome::Failed;
 	}
-	return ok;
+	ctx.cursor.valid = true;
+	ctx.cursor.chain = view.chain;
+	ctx.cursor.seq = view.seq;
+	return DecodeOutcome::Decoded;
 }
 
 bool CodecPipeline::AcquireForDisplay(uint64_t targetNs, uint64_t lastShownNs, DecodedLease &lease)
@@ -651,20 +910,22 @@ bool CodecPipeline::AcquireInline(uint64_t targetNs, uint64_t lastShownNs, Decod
 		ring->Unpin(view);
 		return false;
 	}
-	if (!inlineCodec_)
-		inlineCodec_ = options_.codecFactory();
 	const uint64_t startNs = options_.clockNs();
 	DecodedImage image;
-	const bool ok = DecodePinned(*ring, view, *inlineCodec_, inlineScratch_, image);
+	const DecodeOutcome outcome = DecodePinned(*ring, view, inlineDecode_, image);
 	const uint64_t endNs = options_.clockNs();
 	{
 		std::lock_guard<std::mutex> lock(statsMutex_);
-		window_.decode.frameNs.Push(endNs - startNs);
-		decodeRecent_.Push(endNs, endNs - startNs, view.tag);
-		if (!ok)
-			++window_.decodeFailures;
+		if (outcome == DecodeOutcome::Skipped) {
+			++window_.noKeySkips;
+		} else {
+			window_.decode.frameNs.Push(endNs - startNs);
+			decodeRecent_.Push(endNs, endNs - startNs, view.tag);
+			if (outcome == DecodeOutcome::Failed)
+				++window_.decodeFailures;
+		}
 	}
-	if (!ok) {
+	if (outcome != DecodeOutcome::Decoded) {
 		inlineFailedNs_ = view.captureNs;
 		return false;
 	}
@@ -700,27 +961,55 @@ void CodecPipeline::EncodeLoop(uint32_t worker)
 		std::snprintf(name, sizeof(name), "trigglow-enc-%u", worker);
 		options_.nameThread(name);
 	}
-	std::unique_ptr<VideoCodec> codec;
-	bool codecUsed = false;
+	EncodeContext ctx;
 	std::unique_lock<std::mutex> lock(mutex_);
 	uint64_t handledRelease = releaseSerial_;
 	std::vector<std::shared_ptr<void>> fallback; // Stays empty: workers only run with a reaper.
+	std::vector<std::shared_ptr<FrameRing>> released;
+	// Under the lock: lets go of the rings the last step was done with.
+	auto settle = [&] {
+		ReleaseRingsLocked(released, fallback);
+		if (!fallback.empty()) {
+			lock.unlock();
+			fallback.clear();
+			lock.lock();
+		}
+	};
+	auto ready = [&] {
+		return stop_ || releaseSerial_ != handledRelease || (worker < contexts_ && !queue_.empty()) ||
+		       (worker >= contexts_ && ctx.encoder != nullptr);
+	};
 	for (;;) {
-		encodeCv_.wait(lock, [&] {
-			return stop_ || releaseSerial_ != handledRelease || (worker < contexts_ && !queue_.empty()) ||
-			       (worker >= contexts_ && codecUsed);
-		});
+		if (ctx.inFlight.Empty()) {
+			encodeCv_.wait(lock, ready);
+		} else if (!encodeCv_.wait_for(lock, std::chrono::nanoseconds(kInFlightPollNs), ready)) {
+			// Frames in flight and nothing else to do: store what came out.
+			lock.unlock();
+			EncodeTally tally;
+			ReceiveReady(ctx, tally, released);
+			CommitTally(tally);
+			lock.lock();
+			settle();
+			++wakeSerial_; // A slot may have turned Ready: the decoder may be waiting for it.
+			decodeCv_.notify_one();
+			continue;
+		}
 		if (stop_)
 			break;
-		if (releaseSerial_ != handledRelease || (worker >= contexts_ && codecUsed)) {
+		if (releaseSerial_ != handledRelease || (worker >= contexts_ && ctx.encoder)) {
 			// Disable, or this context is no longer needed: close it (on the
-			// thread that opened it). Reopened lazily by the next job.
+			// thread that opened it). Reopened lazily by the next job. On
+			// Disable what's in flight belongs to a ring being thrown away;
+			// otherwise it's handed over first.
+			const bool disable = releaseSerial_ != handledRelease;
 			handledRelease = releaseSerial_;
-			if (codecUsed) {
+			if (ctx.encoder || !ctx.inFlight.Empty()) {
 				lock.unlock();
-				codec->Release();
-				codecUsed = false;
+				EncodeTally tally;
+				CloseEncoder(ctx, !disable, tally, released);
+				CommitTally(tally);
 				lock.lock();
+				settle();
 			}
 			continue;
 		}
@@ -730,39 +1019,26 @@ void CodecPipeline::EncodeLoop(uint32_t worker)
 		queue_.pop_front();
 		const uint32_t slices = slices_;
 		lock.unlock();
-		if (!codec)
-			codec = options_.codecFactory();
-		EncodeOne(*codec, job, slices, worker);
-		codecUsed = true;
+		EncodeOne(ctx, job, slices, worker, released);
 		lock.lock();
-		// Still the pipeline's ring: ring_ holds it too, so this is never the
-		// last reference. Detached meanwhile: it may be, and freeing an arena
-		// takes tens of ms -- the reaper does that, not the next encode.
-		if (job.ring == ring_)
-			job.ring.reset();
-		else
-			ReapLocked(std::move(job.ring), fallback);
+		released.push_back(std::move(job.ring));
 		ReturnRawFrameLocked(job.frame, fallback);
+		settle();
 		++wakeSerial_;
 		decodeCv_.notify_one();
-		if (!fallback.empty()) {
-			lock.unlock();
-			fallback.clear();
-			lock.lock();
-		}
 	}
 	lock.unlock();
-	if (codec)
-		codec->Release();
+	EncodeTally tally;
+	CloseEncoder(ctx, false, tally, released);
+	// `released` goes here, on this thread (shutting down: never G).
 }
 
 void CodecPipeline::DecodeLoop()
 {
 	if (options_.nameThread)
 		options_.nameThread("trigglow-dec");
-	std::unique_ptr<VideoCodec> codec;
+	DecodeContext ctx;
 	bool codecUsed = false;
-	std::vector<uint8_t> scratch;
 	uint64_t cursorNs = 0;
 	uint64_t cursorEpoch = 0;
 	std::unique_lock<std::mutex> lock(mutex_);
@@ -772,9 +1048,9 @@ void CodecPipeline::DecodeLoop()
 			handledRelease = releaseSerial_;
 			if (codecUsed) {
 				lock.unlock();
-				codec->Release();
+				ResetDecoders(ctx);
+				ctx.scratch = std::vector<uint8_t>();
 				codecUsed = false;
-				scratch = std::vector<uint8_t>();
 				lock.lock();
 			}
 			continue;
@@ -782,6 +1058,7 @@ void CodecPipeline::DecodeLoop()
 		if (epoch_ != cursorEpoch) {
 			cursorEpoch = epoch_;
 			cursorNs = 0;
+			ctx.flushPending = true;
 		}
 		const uint64_t targetNs = targetNs_;
 		if (!ring_ || targetNs == 0) {
@@ -830,27 +1107,28 @@ void CodecPipeline::DecodeLoop()
 		FrameRing::ReadView view;
 		const bool found = ring->PinNextForDecode(cursorNs, targetNs, UINT64_MAX, intervalNs, view);
 		DecodedImage image;
-		bool ok = false;
-		uint64_t elapsedNs = 0;
+		DecodeOutcome outcome = DecodeOutcome::Failed;
 		if (found) {
-			if (!codec)
-				codec = options_.codecFactory();
 			const uint64_t startNs = options_.clockNs();
-			ok = DecodePinned(*ring, view, *codec, scratch, image);
+			outcome = DecodePinned(*ring, view, ctx, image);
 			const uint64_t endNs = options_.clockNs();
-			elapsedNs = endNs - startNs;
 			codecUsed = true;
 			std::lock_guard<std::mutex> statsLock(statsMutex_);
-			window_.decode.frameNs.Push(elapsedNs);
-			decodeRecent_.Push(endNs, elapsedNs, view.tag);
-			if (!ok)
-				++window_.decodeFailures;
+			if (outcome == DecodeOutcome::Skipped) {
+				// Nothing was decoded: no decode time to weigh.
+				++window_.noKeySkips;
+			} else {
+				window_.decode.frameNs.Push(endNs - startNs);
+				decodeRecent_.Push(endNs, endNs - startNs, view.tag);
+				if (outcome == DecodeOutcome::Failed)
+					++window_.decodeFailures;
+			}
 			if (late)
 				++window_.decodeJumps;
 		}
 		lock.lock();
 		// Never the last reference while it's still the pipeline's ring;
-		// detached meanwhile, the reaper takes it (see EncodeLoop()).
+		// detached meanwhile, the reaper takes it (see ReleaseRingsLocked()).
 		if (ring == ring_) {
 			ring.reset();
 		} else {
@@ -872,7 +1150,7 @@ void CodecPipeline::DecodeLoop()
 			continue;
 		}
 		cursorNs = view.captureNs;
-		if (ok && epoch_ == epoch) {
+		if (outcome == DecodeOutcome::Decoded && epoch_ == epoch) {
 			entry->state = DecodedEntry::State::Ready;
 			entry->captureNs = view.captureNs;
 			entry->image = std::move(image);
@@ -882,8 +1160,7 @@ void CodecPipeline::DecodeLoop()
 		}
 	}
 	lock.unlock();
-	if (codec)
-		codec->Release();
+	ResetDecoders(ctx);
 }
 
 void CodecPipeline::ReapLoop()
@@ -926,6 +1203,12 @@ void CodecPipeline::TakeWindowStats(WindowStats &out)
 	window_.staleEncodes = 0;
 	window_.decodeJumps = 0;
 	window_.staleDecoded = 0;
+	window_.chainBreaks = 0;
+	window_.orphanDrops = 0;
+	window_.busyDrops = 0;
+	window_.encoderResets = 0;
+	window_.noKeySkips = 0;
+	window_.inFlightMax = 0;
 	window_.queueDepthMax = 0;
 	window_.queueDepthSum = 0;
 	window_.queueDepthSamples = 0;
@@ -990,10 +1273,10 @@ void CodecPipeline::Shutdown()
 			entry.image = DecodedImage{};
 		}
 	}
-	if (inlineCodec_) {
-		inlineCodec_->Release();
-		inlineCodec_.reset();
-	}
+	EncodeTally tally;
+	std::vector<std::shared_ptr<FrameRing>> released;
+	CloseEncoder(inlineEncode_, false, tally, released);
+	ResetDecoders(inlineDecode_);
 }
 
 } // namespace trigglow

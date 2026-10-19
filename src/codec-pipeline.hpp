@@ -34,7 +34,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // The delay buffer's CPU pipeline (v0.6.0, buffer pipeline design B.2-B.6):
 // MJPEG encode and decode moved off OBS's graphics thread. Pure C++ (std::thread,
-// no OBS, no FFmpeg: the codec is injected), so tests drive it without either.
+// no OBS, no FFmpeg: the codecs are injected, storage-codec.hpp), so tests drive
+// it without either.
 //
 // Threads and who owns what:
 //   Graphics thread (G, VideoDelayFilter::Render): reserves a ring slot per
@@ -46,12 +47,20 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     doesn't move), no decoded frame means the last one is redrawn.
 //   Encode workers (1-2, "trigglow-enc-N"): pop jobs from a bounded FIFO,
 //     encode outside every lock, copy the packet into the ring's arena and
-//     publish the slot. Each owns its own codec context (never shared).
+//     publish the slot. Each owns its own encoder (never shared) and its
+//     bitstream chain (storage::ChainTracker); since v0.7.0 the encoder may
+//     keep frames in flight (storage::Encoder::Send()/Receive()): their
+//     packets are matched to their slots in Send() order and published when
+//     they come out, polled every kInFlightPollNs while nothing else arrives.
+//     With MJPEG and raw every packet comes out with its own Send().
 //   Decode worker (1, "trigglow-dec"): decodes, in capture order, up to
 //     `lookahead` frames ahead of what's on screen, starting from the playback
 //     target G publishes (target = now - delay is predictable from the clock;
 //     when it falls behind it jumps straight to the frame due now), into a
-//     pool of lookahead + 2 decoded frames.
+//     pool of lookahead + 2 decoded frames. One decoder per codec in the ring
+//     (raw is the pipeline's own); a P-frame is only decoded right after its
+//     reference (ringselect::Decodable()), anything else is skipped until the
+//     next key -- never the case with raw and MJPEG, all keys.
 //   Reaper (1, "trigglow-reap"): frees what must never be freed on G nor hold
 //     up an encode -- a detached ring and its arena (600-770 MB at 1440p, tens
 //     of ms to give back), the RawFrame storage after Disable, decoded frames
@@ -72,30 +81,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // same ring/arena. The reaper still frees memory off the graphics thread (if
 // it can't be started, memory is freed inline, like v0.5.1).
 namespace trigglow {
-
-// One codec instance per thread, opened, used and closed by that thread only
-// (design invariant B.1.5). Implementations: MJPEG over FFmpeg (mjpeg-codec.hpp),
-// and MakeRawCodec() below. (Since v0.7.0 I420View, DecodedImage, the I420
-// helpers and PipelineLogLevel live in storage-codec.hpp, with the storage
-// codec interface that replaces this one.)
-class VideoCodec {
-public:
-	virtual ~VideoCodec() = default;
-	// Encodes `frame` with `sliceThreads` slice threads (1 = none). On success
-	// the packet stays valid until the next call. `compressed` false means the
-	// bytes are the raw packed I420 frame. False on failure: the pipeline then
-	// stores the frame raw.
-	virtual bool Encode(const I420View &frame, uint32_t sliceThreads, const uint8_t *&packet, size_t &bytes,
-			    bool &compressed) = 0;
-	// Decodes one packet this codec produced (compressed == true).
-	virtual bool Decode(const uint8_t *packet, size_t bytes, DecodedImage &out) = 0;
-	// Closes the codec contexts and frees their buffers; the next call reopens.
-	virtual void Release() = 0;
-};
-using CodecFactory = std::function<std::unique_ptr<VideoCodec>()>;
-
-// Stores frames uncompressed (platforms without FFmpeg, and tests).
-std::unique_ptr<VideoCodec> MakeRawCodec();
 
 // A capture waiting to be encoded: tightly packed I420 storage from a small
 // pool, reused frame after frame.
@@ -122,15 +107,24 @@ public:
 	static constexpr uint32_t kMaxEncodeContexts = 2;
 	static constexpr uint32_t kMaxSlicesPerContext = 2; // 4 until v0.6.0 (design 6.2: RAM).
 	static constexpr uint32_t kStaleIntervals = 4;      // See AcquireForDisplay().
+	// A worker with frames in flight and no new job polls its encoder this often.
+	static constexpr uint64_t kInFlightPollNs = 2000000ULL;
+	// What an encoder being replaced or closed gets to hand over what it has in flight.
+	static constexpr uint64_t kDrainDeadlineNs = 50000000ULL;
 
 	struct Options {
 		bool threaded = true;
-		CodecFactory codecFactory;                               // Required.
-		std::function<void(PipelineLogLevel, const char *)> log; // Optional.
-		std::function<void(const char *)> nameThread;            // Optional; on the new thread.
-		std::function<uint64_t()> clockNs;                       // Required: same clock as G's captureNs.
-		uint32_t lookaheadFrames = 3;                            // Decode-ahead depth (L).
-		uint32_t rawFramePoolSize = kMaxEncodeContexts + 2;      // Bounds the encode queue too.
+		// Opens an encoder for the frame geometry and slice threads the
+		// pipeline fills in. Empty: frames are stored raw.
+		storage::EncoderFactory encoderFactory;
+		// Decoders for every codec but raw (the pipeline's own). Empty: only
+		// raw payloads decode.
+		storage::DecoderFactory decoderFactory;
+		PipelineLogFn log;                                  // Optional.
+		std::function<void(const char *)> nameThread;       // Optional; on the new thread.
+		std::function<uint64_t()> clockNs;                  // Required: same clock as G's captureNs.
+		uint32_t lookaheadFrames = 3;                       // Decode-ahead depth (L).
+		uint32_t rawFramePoolSize = kMaxEncodeContexts + 2; // Bounds the encode queue too.
 	};
 
 	// One telemetry window ("perf check" line), taken and reset by G.
@@ -150,6 +144,14 @@ public:
 		uint64_t staleEncodes = 0;      // Jobs whose slot was superseded before encoding.
 		uint64_t decodeJumps = 0;       // Decoder skipped ahead to catch up.
 		uint64_t staleDecoded = 0;      // Decoded frames dropped unshown: far older than the frame due.
+		// v0.7.0 chain bookkeeping, not in the "pipeline check" line yet (raw
+		// and MJPEG: all 0, and inFlightMax 1).
+		uint64_t chainBreaks = 0;   // Packets lost after their encode: the next frame is a forced key.
+		uint64_t orphanDrops = 0;   // Packets not stored: their reference was lost (slot Dropped).
+		uint64_t busyDrops = 0;     // Captures the encoder couldn't take (SendResult::Busy).
+		uint64_t encoderResets = 0; // Encoders closed on a hard error (packet out of order).
+		uint64_t noKeySkips = 0;    // Stored frames the decoder skipped: not decodable without a key first.
+		uint32_t inFlightMax = 0;   // Most frames one encoder held in flight.
 		uint32_t queueDepthMax = 0;
 		uint64_t queueDepthSum = 0;
 		uint64_t queueDepthSamples = 0;
@@ -245,7 +247,49 @@ private:
 		std::shared_ptr<FrameRing> ring;
 		FrameRing::Reservation reservation;
 		RawFrame *frame = nullptr;
+		uint64_t epoch = 0; // The cycle it was captured in: a new one starts a new chain.
 	};
+	// A frame sent to an encoder whose packet hasn't been stored yet.
+	struct InFlightFrame {
+		std::shared_ptr<FrameRing> ring;
+		FrameRing::Reservation reservation;
+		uint32_t chain = storage::kNoChain;
+		uint32_t width = 0;
+		uint32_t height = 0;
+		I420View frame; // The job's frame, only while that job is being encoded.
+	};
+	// One encode context: a worker's (or, in sync mode, G's) encoder, its
+	// chain and what it has in flight. Only its owner thread touches it.
+	struct EncodeContext {
+		std::unique_ptr<storage::Encoder> encoder;
+		storage::ChainTracker chain;
+		storage::InFlightQueue<InFlightFrame> inFlight;
+		uint64_t chainEpoch = 0;
+	};
+	// Counters an encode adds up without the stats lock, committed once.
+	struct EncodeTally {
+		uint64_t encodedBytes = 0;
+		uint64_t encodedRawBytes = 0;
+		uint64_t rawFallbacks = 0;
+		uint64_t encodeFailures = 0;
+		uint64_t arenaDrops = 0;
+		uint64_t staleEncodes = 0;
+		uint64_t chainBreaks = 0;
+		uint64_t orphanDrops = 0;
+		uint64_t busyDrops = 0;
+		uint64_t encoderResets = 0;
+		uint32_t inFlightMax = 0;
+	};
+	// A decode context: one decoder per codec (created on first use) and the
+	// chain position of the last packet decoded. Only its owner thread touches it.
+	struct DecodeContext {
+		std::unique_ptr<storage::Decoder> decoders[storage::kCodecCount];
+		bool unavailable[storage::kCodecCount] = {}; // The factory had none: not asked again.
+		ringselect::ChainCursor cursor;
+		bool flushPending = false;
+		std::vector<uint8_t> scratch; // Reusable packet copy.
+	};
+	enum class DecodeOutcome : uint8_t { Decoded, Skipped, Failed };
 	struct DecodedEntry {
 		enum class State : uint8_t { Free, Decoding, Ready };
 		State state = State::Free;
@@ -268,11 +312,37 @@ private:
 	// Has the reaper Trim() the ring's arena (inline without a reaper). No lock held.
 	void RequestTrim(const std::shared_ptr<FrameRing> &ring);
 	// Encodes one job on the calling thread; doesn't touch the RawFrame pool.
-	void EncodeOne(VideoCodec &codec, const EncodeJob &job, uint32_t slices, uint32_t stage);
-	// Copies the pinned slot's payload, unpins it, then decodes it (or unpacks a
-	// raw frame). `scratch` is the caller's reusable packet buffer.
-	bool DecodePinned(FrameRing &ring, const FrameRing::ReadView &view, VideoCodec &codec,
-			  std::vector<uint8_t> &scratch, DecodedImage &out);
+	// Ring references it lets go of (packets stored) go to `released`.
+	void EncodeOne(EncodeContext &ctx, const EncodeJob &job, uint32_t slices, uint32_t stage,
+		       std::vector<std::shared_ptr<FrameRing>> &released);
+	// Stores every packet the encoder has ready. No lock held.
+	void ReceiveReady(EncodeContext &ctx, EncodeTally &tally, std::vector<std::shared_ptr<FrameRing>> &released);
+	// Stores one packet in its slot (or drops it), keeping the chain's books.
+	// False: it isn't the oldest frame in flight (a hard error, nothing done).
+	bool StorePacket(EncodeContext &ctx, const storage::Packet &packet, EncodeTally &tally,
+			 std::vector<std::shared_ptr<FrameRing>> &released);
+	// Stores `frame` uncompressed (codec raw, a key of no chain).
+	void StoreRaw(FrameRing &ring, const FrameRing::Reservation &reservation, const I420View &frame,
+		      EncodeTally &tally);
+	// Ends what ctx has in flight: every frame's slot is Dropped, its ring released.
+	void DropInFlight(EncodeContext &ctx, std::vector<std::shared_ptr<FrameRing>> &released);
+	// Closes ctx's encoder: drain hands over what it has in flight first (up to
+	// kDrainDeadlineNs); whatever is left ends Dropped.
+	void CloseEncoder(EncodeContext &ctx, bool drain, EncodeTally &tally,
+			  std::vector<std::shared_ptr<FrameRing>> &released);
+	void CommitTally(const EncodeTally &tally);    // Takes statsMutex_.
+	void AddTallyLocked(const EncodeTally &tally); // statsMutex_ held.
+	// Under mutex_: drops ring references; ones no longer the pipeline's go to the reaper.
+	void ReleaseRingsLocked(std::vector<std::shared_ptr<FrameRing>> &rings,
+				std::vector<std::shared_ptr<void>> &fallback);
+	// The decoder for `codec` (created on first use), or nullptr.
+	storage::Decoder *DecoderFor(DecodeContext &ctx, storage::CodecId codec);
+	void ResetDecoders(DecodeContext &ctx); // Closes them all (Disable).
+	// Decodes the pinned slot when ringselect::Decodable() allows it -- a raw
+	// payload is copied out while pinned (that copy is its decode); anything
+	// else is copied to ctx.scratch, unpinned, then decoded. Always unpins.
+	DecodeOutcome DecodePinned(FrameRing &ring, const FrameRing::ReadView &view, DecodeContext &ctx,
+				   DecodedImage &out);
 	bool AcquireInline(uint64_t targetNs, uint64_t lastShownNs, DecodedLease &lease);
 	void Log(PipelineLogLevel level, const char *fmt, ...);
 
@@ -311,9 +381,9 @@ private:
 	std::condition_variable reapCv_;
 
 	// Sync mode / fallback: graphics thread only.
-	std::unique_ptr<VideoCodec> inlineCodec_;
-	std::vector<uint8_t> inlineScratch_;
-	uint64_t inlineFailedNs_ = 0; // captureNs whose decode failed: not retried on every Render().
+	EncodeContext inlineEncode_;
+	DecodeContext inlineDecode_;
+	uint64_t inlineFailedNs_ = 0; // captureNs whose decode failed (or was skipped): not retried every Render().
 
 	mutable std::mutex statsMutex_;
 	WindowStats window_;
