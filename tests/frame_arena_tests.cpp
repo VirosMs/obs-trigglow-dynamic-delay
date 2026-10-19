@@ -18,12 +18,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Unit tests for trigglow::FrameArena (src/frame-arena.hpp): block bump
 // allocation, out-of-order frees, block recycling, the limit, oversized
-// payloads, Trim(), a FIFO steady state like the ring's, and a small
-// multi-threaded run with content checks.
+// payloads, Trim(), a FIFO steady state like the ring's, the delay ring's
+// sizing (SizedFor()) and its steady state, and a small multi-threaded run
+// with content checks.
 
 #include "check.hpp"
 #include "frame-arena.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <deque>
@@ -209,6 +211,99 @@ void TestFifoSteadyState()
 		    static_cast<unsigned long long>(maxCommitted / kKiB));
 }
 
+// The delay ring's sizing (v0.7.0, design 6.1): 8 MiB blocks at every real
+// resolution, 4 MiB for small rings, whole MiB in between, one spare, and the
+// limit; raw payloads tile their blocks exactly.
+void TestSizedFor()
+{
+	testcheck::g_currentTest = "sized for a ring";
+	constexpr uint64_t kMiB = 1024 * 1024;
+	constexpr uint64_t kBudget = 16 * 1024 * kMiB;
+	// 30 s at 60 fps (1816 slots) at the assumed MJPEG ratio 5: 1080p, 1440p, 2160p.
+	const uint64_t raws[3] = {3110400, 5529600, 12441600};
+	for (const uint64_t raw : raws) {
+		const uint64_t expected = 1816 * raw / 5;
+		const FrameArena::Config c = FrameArena::SizedFor(expected, kBudget);
+		CHECK_EQ(c.blockBytes, 8 * kMiB);
+		CHECK_EQ(c.maxSpareBlocks, 1u);
+		CHECK_EQ(c.limitBytes, kBudget);
+	}
+	// A small ring: the 4 MiB floor; in between: expected/64 rounded up to a MiB.
+	CHECK_EQ(FrameArena::SizedFor(10 * kMiB, kBudget).blockBytes, 4 * kMiB);
+	CHECK_EQ(FrameArena::SizedFor(0, kBudget).blockBytes, 4 * kMiB);
+	CHECK_EQ(FrameArena::SizedFor(64 * 5 * kMiB + 64, kBudget).blockBytes, 6 * kMiB);
+	CHECK_EQ(FrameArena::SizedFor(64 * 6 * kMiB, kBudget).blockBytes, 6 * kMiB);
+	// The limit: never below what the ring was sized for plus two blocks.
+	const uint64_t huge = 20 * 1024 * kMiB;
+	CHECK_EQ(FrameArena::SizedFor(huge, kBudget).limitBytes, huge + 16 * kMiB);
+	// Raw payloads (no FFmpeg): a whole number of frames per block, never zero.
+	CHECK_EQ(FrameArena::SizedFor(huge, kBudget, 5529600).blockBytes, 5529600u);      // 1440p: one.
+	CHECK_EQ(FrameArena::SizedFor(huge, kBudget, 3110400).blockBytes, 2u * 3110400u); // 1080p: two.
+	CHECK_EQ(FrameArena::SizedFor(huge, kBudget, 1382400).blockBytes, 6u * 1382400u); // 720p: six.
+	CHECK_EQ(FrameArena::SizedFor(huge, kBudget, 12441600).blockBytes, 12441600u);    // 2160p: one.
+	CHECK_EQ(FrameArena::SizedFor(10 * kMiB, kBudget, 3110400).blockBytes, 3110400u); // 4 MiB target.
+	CHECK_EQ(FrameArena::SizedFor(huge, kBudget, 1000).blockBytes % FrameArena::kAlignment, 0u);
+	// The defaults match the sized blocks.
+	const FrameArena::Config defaults;
+	CHECK_EQ(defaults.blockBytes, 8 * kMiB);
+	CHECK_EQ(defaults.maxSpareBlocks, 1u);
+}
+
+// A ring's steady state with SizedFor() blocks (MJPEG-sized packets at
+// 1440p, ~240-420 KB, Trim() now and then like the reaper): the committed
+// bytes past the live ones stay within two blocks plus each block's unusable
+// tail (at most one packet), and a raw 2160p frame (bigger than a block)
+// takes the oversized path and is given back by Trim().
+void TestSizedSteadyState()
+{
+	testcheck::g_currentTest = "sized steady state";
+	constexpr uint64_t kMiB = 1024 * 1024;
+	const FrameArena::Config config = FrameArena::SizedFor(1816ULL * 5529600 / 5, 16 * 1024 * kMiB);
+	FrameArena arena(config);
+	std::mt19937 rng(11);
+	std::uniform_int_distribution<size_t> size(240 * 1000, 420 * 1000);
+	std::deque<FrameArena::Allocation> window;
+	uint64_t worstSlack = 0, worstAllowed = 0;
+	bool withinBound = true;
+	for (int i = 0; i < 6000; ++i) {
+		if (window.size() == 600) {
+			arena.Free(window.front());
+			window.pop_front();
+		}
+		FrameArena::Allocation a = arena.Allocate(size(rng));
+		CHECK(a);
+		window.push_back(a);
+		if (i % 15 == 0)
+			arena.Trim();
+		if (i >= 1200 && i % 15 == 0) {
+			const FrameArena::Stats s = arena.GetStats();
+			const uint64_t slack = s.committedBytes - s.liveBytes;
+			const uint64_t allowed = 2 * config.blockBytes + s.blocks * 420 * 1000;
+			worstSlack = std::max(worstSlack, slack);
+			worstAllowed = std::max(worstAllowed, allowed);
+			withinBound = withinBound && slack <= allowed;
+		}
+	}
+	CHECK(withinBound);
+	std::printf("  sized steady state: worst slack %llu KiB (bound %llu KiB)\n",
+		    static_cast<unsigned long long>(worstSlack / 1024),
+		    static_cast<unsigned long long>(worstAllowed / 1024));
+	CHECK(arena.GetStats().spareBlocks <= 1u);
+
+	// A raw 2160p frame (12.4 MB): its own oversized block, released by Trim().
+	const uint64_t before = arena.GetStats().committedBytes;
+	FrameArena::Allocation raw = arena.Allocate(12441600);
+	CHECK(raw);
+	CHECK(arena.GetStats().committedBytes >= before + 12441600);
+	arena.Free(raw);
+	CHECK(arena.TrimWanted());
+	arena.Trim();
+	CHECK(arena.GetStats().committedBytes <= before);
+	for (auto &a : window)
+		arena.Free(a);
+	CHECK_EQ(arena.GetStats().liveBytes, 0u);
+}
+
 // Two allocating threads, one freeing thread (frees out of order), content
 // checked at free time.
 void TestConcurrent()
@@ -273,6 +368,8 @@ int main()
 	TestLimit();
 	TestOversizedAndTrim();
 	TestFifoSteadyState();
+	TestSizedFor();
+	TestSizedSteadyState();
 	TestConcurrent();
 	return testcheck::Finish("frame_arena_tests");
 }

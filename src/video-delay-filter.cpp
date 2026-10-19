@@ -134,11 +134,6 @@ constexpr uint32_t kDecodeLookaheadFrames = 3;
 // frame (CodecPipeline::PrimeDecode()).
 constexpr uint64_t kDecodePrimeWindowNs = 250000000ULL;
 
-// Payload arena blocks (perf2 #3): ~1/16 of the expected ring bytes, between
-// 4 and 32 MiB, and always room for two raw frames (raw fallback).
-constexpr uint64_t kArenaMinBlockBytes = 4ULL * 1024 * 1024;
-constexpr uint64_t kArenaMaxBlockBytes = 32ULL * 1024 * 1024;
-
 // Adaptive degradation (B.8): evaluated this often, over trailing windows of
 // these lengths (perf2: p95 over ~2 s, the immediate p50 rule over less).
 constexpr uint64_t kPolicyEvalIntervalNs = 250000000ULL;
@@ -381,17 +376,12 @@ FrameArena::Config ArenaConfigFor(uint64_t slots, uint32_t width, uint32_t heigh
 	const uint64_t rawBytes = bufferfit::Nv12FrameBytes(width, height); // I420: same 1.5 bytes/pixel.
 	const auto expectedBytes = static_cast<uint64_t>(static_cast<double>(slots) * static_cast<double>(rawBytes) /
 							 kAssumedCompressionRatio);
-	uint64_t block = std::clamp<uint64_t>(expectedBytes / 16, kArenaMinBlockBytes, kArenaMaxBlockBytes);
-	block = std::max<uint64_t>(block, 2 * rawBytes);
-	block = (block + (1ULL << 20) - 1) & ~((1ULL << 20) - 1); // Whole MiB.
-	FrameArena::Config config;
-	config.blockBytes = static_cast<size_t>(block);
 	// Never past the RAM budget (or what the ring was sized for, if that's
 	// more): a sustained run of frames that compress far worse than assumed
-	// drops frames instead of growing without bound.
-	config.limitBytes = std::max<uint64_t>(budgetBytes, expectedBytes + 2 * block);
-	config.maxSpareBlocks = 2;
-	return config;
+	// drops frames instead of growing without bound. Without FFmpeg (assumed
+	// ratio 1) every payload is a raw frame: blocks hold whole ones.
+	const bool rawPayloads = kAssumedCompressionRatio <= 1.0;
+	return FrameArena::SizedFor(expectedBytes, budgetBytes, rawPayloads ? static_cast<size_t>(rawBytes) : 0);
 }
 
 PipelineLoad LoadFromCause(degradation::Cause cause)
