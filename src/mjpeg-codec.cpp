@@ -177,11 +177,12 @@ bool MjpegEncoder::OpenEncoder(uint32_t width, uint32_t height, uint32_t sliceTh
 		return false;
 	}
 
-	char huffman[96] = "default";
+	static constexpr char kHuffmanFailed[] = "FFmpeg's choice, setting default failed: ";
+	char error[64] = "";
+	char huffman[sizeof(kHuffmanFailed) + sizeof(error)] = "default"; // Room for the whole message.
 	if (huffmanResult < 0) {
-		char error[64] = "";
 		av_strerror(huffmanResult, error, sizeof(error));
-		std::snprintf(huffman, sizeof(huffman), "FFmpeg's choice, setting default failed: %s", error);
+		std::snprintf(huffman, sizeof(huffman), "%s%s", kHuffmanFailed, error);
 	}
 	Log(PipelineLogLevel::Info,
 	    "MJPEG encoder open at %ux%u (qscale=%d, huffman=%s, slice threads=%d of %u requested, "

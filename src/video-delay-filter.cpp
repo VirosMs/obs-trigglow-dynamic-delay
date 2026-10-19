@@ -1644,6 +1644,8 @@ void VideoDelayFilter::PublishHealth(bool running)
 	}
 	health.changes = healthChanges_;
 	// v2: the storage codec (support diagnostics; the dock shows none of it).
+	static_assert(sizeof(health.encoder) >= sizeof(lastCodecStatus_.encoder),
+		      "the encoder name is copied whole, never truncated");
 	if (lastCodecStatus_.interActive) {
 		health.codec = static_cast<uint8_t>(lastCodecStatus_.codec);
 		std::snprintf(health.encoder, sizeof(health.encoder), "%s", lastCodecStatus_.encoder);

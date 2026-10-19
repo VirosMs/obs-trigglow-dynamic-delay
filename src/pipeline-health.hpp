@@ -74,7 +74,7 @@ struct PipelineHealth {
 	// v2 (v0.7.0): the storage codec, for support diagnostics only -- the dock
 	// shows none of it.
 	uint8_t codec = 1;     // What's stored now (storage::CodecId): 0 raw, 1 MJPEG, 2 H.264, 3 HEVC.
-	char encoder[16] = ""; // "hevc_nvenc", "mjpeg"...
+	char encoder[24] = ""; // "hevc_nvenc", "mjpeg"... (CodecPipeline::CodecStatus::encoder, whole).
 	bool hwDecode = false; // Its frames decode on the GPU.
 	uint8_t codecPolicyState =
 		0; // storagepolicy::State: 0 Mjpeg, 1 Probing, 2 Hw, 3 HwGuarded, 4 Yielded, 5 Evacuated.
