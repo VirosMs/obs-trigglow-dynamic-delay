@@ -2,13 +2,28 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
-## v0.6.0 — 2026-10-18 (Early Access)
+## v0.6.0 — 2026-10-19 (Early Access)
 
 The delay no longer competes with OBS for its graphics thread, it adapts to what your computer can
 do without ever cutting, and the plugin takes the look of trigglow.com. "Report a problem" now
 starts with Trigi, Trigglow's AI support assistant, sign-in moves to a safer flow with the plugin's
 own encrypted sign-in, and the plugin goes through a security and privacy pass. A v0.5.1
-performance hotfix was prepared but never published: everything in it ships here.
+performance hotfix was prepared but never published: everything in it ships here. **Updating
+from v0.5.x is required** (see "Before you update"). This entry lists what you'll notice first, then
+the technical detail, and the known limitations last.
+
+**Before you update:**
+- **Updating is required to keep using the delay.** The sign-in of v0.5.x and earlier is switched
+  off when this version is published: from then on those versions can no longer sign in to Trigglow,
+  and the sign-ins they already have stop working after a transition period. The delay needs a
+  signed-in account, so update. When you install 0.6.0 over your current version, your sign-in moves
+  to the new format by itself on the first start; if the dock asks you to sign in, do it once.
+- **Sign-in, Trigi and sending reports from OBS work only on Windows in this version**; macOS and
+  Linux get them in v0.6.1 (see "Known limitations").
+- **The objects the plugin manages are renamed from "(no tocar)" to "(auto)"**, automatically.
+  **Point any Stream Deck, obs-websocket or other remote-control action that uses the old names at
+  the new ones** (list below).
+- **Going back to v0.5.0 or earlier after updating duplicates those objects** (see "Names" below).
 
 **What changes for you:**
 - **Trigi, Trigglow's AI support assistant, in "Report a problem"** (Windows, signed in). Ask about
@@ -37,7 +52,8 @@ performance hotfix was prepared but never published: everything in it ships here
 - **Minimum quality 1440p (2K) and 2160p (4K)** in the dock, after 480p, 720p and 1080p. With a
   1440p output and a 1440p minimum the buffer stays at 1440p when RAM is short (the delay gets
   shorter instead, as with 1080p) and when your computer can't keep up (only the capture frame
-  rate halves). It never goes above your OBS output: with a 1080p output it buffers at 1080p.
+  rate halves, with an output at 48 fps or more). It never goes above your OBS output: with a 1080p
+  output it buffers at 1080p. So a 2560x1440 canvas can go out at 1080p, or at 1440p60.
 - **If your computer can't keep up, the delay still never cuts.** The plugin first adds compression
   threads, then buffers at a lower resolution (never below your minimum quality), and only then
   captures at half the frame rate; it goes back up by itself once there's room. Meanwhile the dock
@@ -60,280 +76,12 @@ performance hotfix was prepared but never published: everything in it ships here
   estimate it is ("RAM only fits 41 s of 60 s…"), in whole seconds.
 - **New design** of the dock, the report dialog and the live overlay, aligned with trigglow.com, on
   top of your OBS theme (dark, light, high contrast), with AA contrast and visible keyboard focus.
+  The live overlay is one image the plugin draws, signed with a small "By Trigglow" under the icon.
 - **Fixes**, among others: delay filters left on by closing OBS while Active are switched off at
   startup and when you switch scene collection; 59.94 fps no longer loses a frame per second;
   changing OBS's video settings while the delay runs shows the loading scene instead of black;
-  renaming the live scene no longer floods the log nor keeps Disable from working.
-
-**Before you update:**
-- **Updating is required to keep using the delay.** The sign-in of v0.5.x and earlier is retired
-  with this version: those versions can no longer sign in to Trigglow, and the sign-ins they already
-  have stop working after a transition period. The delay needs a signed-in account, so update. When
-  you install 0.6.0 over your current version, your sign-in moves to the new format by itself on the
-  first start; if the dock asks you to sign in, do it once.
-- **Sign-in, Trigi and sending reports from OBS work only on Windows in this version** (see "Known
-  limitations").
-- **The objects the plugin manages are renamed from "(no tocar)" to "(auto)"**, automatically.
-  **Point any Stream Deck, obs-websocket or other remote-control action that uses the old names at
-  the new ones** (list below).
-- **Going back to v0.5.0 or earlier after updating duplicates those objects** (see "Names" below).
-
-**Delay buffer pipeline (technical detail):**
-- **Output-resolution cap.** Up to v0.5.0 the video buffer was stored at canvas resolution, so with
-  a 1440p canvas streamed at 1080p the plugin MJPEG-compressed and decompressed every buffered frame
-  at 1440p inside OBS's graphics thread: 14.3/17.4 ms p50/p95 per frame in an offline benchmark of
-  the same pipeline, most of the 16.7 ms a 60 fps frame has. Those extra pixels were discarded by
-  OBS's own output rescale anyway. `EnsureRingSized()` and the dock estimate both go through the new
-  pure sizing function `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, no libobs/FFmpeg
-  dependency) with the canvas (`obs_video_info::base_*`) and output (`output_*`) geometry. The
-  ceiling is a uniform scale, `min(1, max(outW/baseW, outH/baseH))`, which keeps the aspect ratio
-  and never goes below the output on either axis; it only applies when the buffered target is
-  canvas-sized (the live scene). Buffer widths are multiples of 8 and heights even, so every I420
-  plane row is a whole number of 4-byte words (OpenGL pads readback rows to 4 bytes on Linux and
-  macOS). See `docs/SPEC.md` §3.5.
-- **Codec worker threads** (`src/codec-pipeline.{hpp,cpp}`, pure C++ with the codec injected). The
-  graphics thread now only renders the capture, converts it, reads it back (three staging slots,
-  mapped two captures later so it never stalls) and uploads the frame due, only when it changes. One
-  or two encode workers (`trigglow-enc-N`, each with its own MJPEG context) take frames from a
-  bounded queue; one decode worker (`trigglow-dec`) decodes up to 3 frames ahead of what's on screen,
-  jumps straight to the frame due when it falls behind, and starts on the oldest frames during the
-  last quarter second of the fill window, so the first delayed frame is ready when it's due. A
-  reaper thread (`trigglow-reap`) frees rings, frame pools and arena blocks: the graphics thread
-  never frees hundreds of MB nor waits for a worker. When the encoders fall behind, the newest
-  capture is dropped (the delayed view repeats a frame); the queue never grows. Measured offline at
-  1440p60 (Ryzen 7 7700X, vendored FFmpeg n9.0.2): graphics thread ~1.2–1.7/1.6–2.1 ms p50/p95 per
-  frame, encode ~8.8/10.4 ms and decode ~6.2/7.5 ms on their own threads (about 53% and 37% busy,
-  under one core in total). See `docs/SPEC.md` §4.6.
-- **Color conversion to I420 on the GPU.** The shader writes Y, U and V as three separate planes
-  (BT.601, studio range), so the CPU no longer de-interleaves NV12 in either direction: about
-  1.1–1.3 ms less CPU per frame at 1440p. The MJPEG frames are now labelled with the studio range
-  they hold (`AVCOL_RANGE_MPEG`; metadata only, the decoded planes are identical).
-- **Ring with a slot state machine and a block arena.** The ring (`src/frame-ring.*`) is a fixed
-  set of slot headers, each one Free, Reserved, Encoding, Ready or Dropped, with its capture time
-  assigned when the slot is reserved, so timestamps stay in order whatever order the encoders finish
-  in. Payloads live in a block arena (`src/frame-arena.*`): packets packed back to back in blocks of
-  4–32 MiB, never zero-filled; a block is recycled whole once the ring has overwritten every frame
-  it held, and only empty blocks beyond two spares go back to the OS, on the reaper. Committed and
-  resident memory follow what the frames really weigh: ~576–768 MB for 30 s at 1440p60 in the
-  offline simulation, against ~1.9 GB resident and a ~381 ms stall (about 23 dropped frames) on the
-  first frame after Enable when every slot was zero-filled up front. The arena never grows past the
-  RAM budget: a long run of frames that compress far worse than assumed drops frames (a repeated
-  frame on screen) instead of growing memory.
-- **Disable frees everything the delay used.** The ring and the frame pool go to the reaper, every
-  worker closes its codec, and the GPU objects are freed (~100 MB of RAM measured and ~37 MB of VRAM
-  estimated at 1440p while the delay is off); reopening them on the next Enable costs about a
-  millisecond.
-- **Standard JPEG Huffman tables** (`huffman=default`) instead of FFmpeg's per-frame optimal ones,
-  which cost a second pass over every frame: 10–17% less encode time at 1440p for 3–3.5% bigger
-  frames; the decoded picture is identical (Huffman coding is lossless). The `MJPEG encoder open`
-  log line says `huffman=default` (or why it couldn't be set).
-- **Each delayed frame is decoded and uploaded once, however many views are open** (Program,
-  preview, projectors, multiview). If the frame due isn't ready (dropped, or not decoded in time),
-  the last one is repeated instead of drawing black: a one-frame stutter that never stretches the
-  delay. Right after a pause in rendering, frames decoded ahead before the pause are dropped rather
-  than shown late.
-- **Exact frame interval at fractional frame rates.** At 59.94 fps the capture interval was
-  `1e9 / 59` ns, so almost one real frame per second was lost. It is now `1e9 × fps_den / fps_num`
-  (16,683,333 ns at 59.94), used for capture, the ring span and its sizing.
-- **Sync mode** (the `codec_workers` kill switch, below): the codec runs on OBS's graphics thread
-  as in v0.5.0, but with the slice-threaded encoder (`thread_type = FF_THREAD_SLICE`,
-  `hardware_concurrency() / 4` threads, 1 to 4): 1080p went from 8.6/10.4 to 5.2/5.9 ms p50/p95 on
-  that thread. `FF_THREAD_SLICE` has to be explicit: with only `thread_count > 1` FFmpeg picks frame
-  threading for MJPEG, `receive_packet()` returns `EAGAIN` and every frame would be stored raw; if
-  it still comes up frame-threaded, the encoder is reopened single-threaded with a WARN.
-
-**Adaptive degradation (technical detail, `src/degradation-policy.*`):**
-- Evaluated every 250 ms over the trailing 2 s, at least 2 s after the previous change. It looks at
-  the plugin's own work on the graphics thread (conversion, readback and copy, upload; not rendering
-  the scene, which OBS does anyway), the encode and decode time per frame, dropped captures and
-  frames the decoder didn't have ready in time.
-- **Down**, one step at a time, when: the graphics-thread p95 goes above 40% of the frame interval
-  (or above 25% while OBS is lagging frames, or its p50 over the last 0.5 s above 50%); the encode
-  p95 goes above 80% of what the encode contexts have per frame, or more than 2% of captures are
-  dropped; the decode p95 goes above 80% of the capture interval, or more than 5% of the frames due
-  aren't decoded in time.
-- **The ladder.** Encode load adds parallelism first (encode contexts × slice threads: 1×1, 2×1,
-  2×2, 2×4), then lowers the rung; decode or graphics-thread load lowers the rung directly (the
-  MJPEG decoder has no threading, and what's left on the graphics thread scales with pixels). The
-  rungs: the full buffer size, then steps of ×0.83 down to your minimum quality (never below it),
-  then that floor captured at half the frame rate (only when the output runs at 48 fps or more).
-  Every rung keeps the same ring and slot count: the delay never moves and the buffer never empties.
-- **Up**, one step, only when the load predicted one step up stays under target (graphics thread
-  ≤ 25% of the frame interval, workers ≤ 50%) for 30 s in a row; quality comes back before threads
-  are given back. Decode metrics only count once the decoder works on frames captured at the
-  current rung (it runs `delay` seconds behind the capture).
-- The starting point is predicted from the resolution: 1440p60 starts with one encode context and
-  one slice, 4K60 with two contexts.
-- Every rung change is a WARN in the log with its cause and the last 2 s of metrics, ending in "The
-  delay itself is unchanged."; thread changes are INFO lines. The dock reads the state once a second
-  through the filter's `get_pipeline_state` proc, which never waits on the graphics thread.
-
-**Fixed:**
-- **Audio and video share one whole-second delay.** When RAM trimmed the ring, video was delayed
-  by the exact fractional span and audio by whole seconds, so they could be up to ~1 s apart.
-  `bufferfit::Compute()` now returns one whole-second effective delay, keeping the quarter-second
-  margin against jitter, and video and audio both use it. The video filter's
-  `get_effective_delay_seconds` computes it from the filter's current settings on the calling
-  thread (no hop to the graphics thread), so audio gets the new value the moment the dock changes a
-  setting, from Enable on. The dock's status card shows that same figure as the live overlay: with
-  60 s requested and 35 s fitting, the chip reads "35 / 60 s" in amber and the detail line says
-  only 35 of the 60 s fit in RAM.
-- **A buffer restart no longer shows black.** A change of the delay or the minimum quality that
-  resizes the buffer throws the buffered frames away. The filter now signals it
-  (`buffer_restarted`) and Program goes back to the loading scene, with audio re-synced, while the
-  buffer refills, instead of a blank delayed view for `delay` seconds. Same after a reset of OBS's
-  video settings. With no loading scene set, Program stays on the (blank) wrapper scene, never on
-  the undelayed live scene. The dock locks those fields while the delay runs, so in practice this
-  covers resets of OBS's video settings.
-- **The delay filters only ever apply the dock's delay.** Their own properties could bypass the
-  plugin: 90 s in the video filter's dialog put video at 90 s and audio at 60, and 0 s passed the
-  live scene through undelayed while the dock said "Delay on". The "(auto)" filters' properties now
-  hold only a note that the dock manages them. The dock pushes its delay and quality floor through
-  new `set_managed_*` procs, and from then on a filter ignores any other value written to its
-  settings (OBS's Defaults button, an older dialog, obs-websocket), with one WARN per push. While
-  the delay is on, a delay filter switched off from outside the dock (its eye icon in the Filters
-  dialog, obs-websocket) is switched back on at once, with one WARN per activation.
-- **A 0 s delay** (only reachable now for a filter the dock doesn't manage yet, e.g. one added by
-  hand) passes the video through undelayed, with no buffer and no codec. Before, it encoded every
-  frame into a one-slot ring and never drew it: black output at full CPU cost.
-- **Switching scene collection with the delay on left the dock saying "Delay on"** while the new
-  collection ran without any delay. On `OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING` (switch, new,
-  remove) the delay is now stopped like Disable while the old collection is still loaded, so it's
-  saved with its filters off and its scene back on Program, and the dock goes Inactive with a line
-  saying why. OBS 31 sends no `COLLECTION_CHANGING` when duplicating or renaming a collection, only
-  `COLLECTION_CHANGED` with the copy already loaded: the same stop runs then, switching off the
-  copy's filters and leaving the helper scene if the copy opened on it.
-- **Renaming the live scene with the delay on** flooded the log (the dock's once-a-second health
-  poll looked the filter up by name and warned on every miss) and left the filter enabled after
-  Disable. The bridge now keeps weak references to the filters it switched on, for the poll, the
-  setters and switching them off.
-- **Delay stuck on after closing OBS while Active.** If OBS was closed with the delay on, the next
-  start left the live scene delayed for good while the dock said "Inactive". v0.5.0 tried to switch
-  those filters off on load, but it enumerated with `obs_enum_sources()`, which never returns
-  filters, so it disabled nothing. It now walks the filters (`obs_source_enum_filters`) of inputs,
-  groups, scenes and the global audio sources, with every filter switched off outside libobs locks,
-  when OBS finishes loading and also when you switch to another scene collection (both only while
-  the delay is off).
-- **References to the delay filter leaked on every Enable.** `obs_source_get_filter_by_name()`
-  returns a new reference, but the plugin treated it as borrowed and never released it, so the video
-  filter was never destroyed. Every lookup now releases its reference (`OBSSourceAutoRelease`), and
-  the filter's destructor, which libobs runs without a graphics context, now enters one to free its
-  GPU objects (after joining the codec threads).
-- **A settings file with invalid JSON is no longer overwritten.** If `buffer-mode-settings.json`
-  couldn't be parsed (for example after a hand edit with a missing comma), the plugin loaded the
-  defaults and wrote them over the file when OBS closed. It is now moved aside as
-  `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (copied if it can't be renamed) with a WARN
-  giving both paths; if neither works, the file is left untouched at exit.
-- **Dock tooltip for the minimum quality corrected.** It said the delayed video "never drops
-  below" that resolution, which stopped being true with the output cap. The filter's properties no
-  longer have a quality field at all: they only show the note that the dock manages the filter.
-
-**Changed:**
-- **"Minimum quality" is a floor for the RAM reduction and for the degradation, bounded by OBS's
-  output.** When RAM is short it still decides how far the buffer may shrink (rather than go below
-  it, fewer seconds are stored), and the degradation never goes below it either; but it no longer
-  raises the buffer above the output resolution: with a 720p output the buffer is 720p even with a
-  1080p minimum.
-- **The `compression check` log line is replaced by `perf check` and `pipeline check`** (below).
-- **Sign-in, reports and the update check: see "Changed / Sign-in", "Changed / Report a problem"
-  and "Security and privacy"** below.
-
-**Changed / Dock:**
-- **Brand look on top of your OBS theme.** Cards, fields and backgrounds still follow the active OBS
-  theme (dark, light, Windows high contrast); the brand comes in through square cards with
-  hairlines, Archivo headlines and Geist Mono labels and figures (bundled, see Packaging), SVG icons
-  instead of text glyphs, and the cyan-to-magenta gradient only on the main action, the checked box
-  and the Active state. Colors are derived from the theme's palette in one place
-  (`src/ui-tokens.*`, `src/ui-theme.*`): every text, placeholders included, reaches WCAG AA (4.5:1)
-  and every field border and focus ring 3:1 on the palettes of OBS 31's themes (Yami and its Grey,
-  Light, Classic, Acri and Rachni variants), checked by `tests/ui_tokens_tests.cpp`. Keyboard focus
-  is visible on every control, and the dock's scroll area is no longer an invisible first tab stop.
-- **Status card**: icon, headline and a seconds chip per state, never color alone. Preparing delay
-  shows a progress bar with "12 / 30 s" and "18 s left"; Delay on is cyan with a shield (the green
-  is gone, the web has no green); errors get a red rule and an alert icon. Preparing delay and Delay
-  on both count the seconds that really apply, the same as the live overlay: with 60 s requested
-  and 41 s fitting in RAM, the chip reads "41 / 60 s" in amber, the message "Saving 41 s of stream…:
-  only 41 of your 60 s fit in RAM" and the fill window lasts 41 s. The fill countdown starts over
-  only for a new fill window: toggling the overlay or changing its corner while it fills no longer
-  restarts it (and the switch to the delayed scene with it).
-- **RAM estimate line** under the delay and quality fields, worded as what it is: "RAM fits the
-  full 30 s at 1920×1080", "RAM only fits 41 s of 60 s at …", in the same whole seconds as the chip.
-  It hides while the degradation notice shows (the notice then says what the buffer holds), and
-  gives no "lower the seconds or the min. quality" advice while those fields are locked.
-- **"Buffer quality lowered" notice** at the bottom of the status card while the buffer runs below
-  full quality: a sliders icon and the title in amber, then what was lowered (resolution against the
-  full size, capture fps, or both), why (OBS's graphics thread under heavy load, compressing or
-  decompressing the frames) and that the delay is unchanged; repeated and dropped frames per minute
-  follow when above zero. It goes away as soon as the buffer is back at full quality, and nothing is
-  polled while the delay is off. Screen readers hear it once: when it appears, when its cause
-  changes, and "Buffer back to full quality." when it goes with the delay still on (Qt 6.8+
-  announcements; older Qt keeps the card's name change), not on every rung.
-- **Locked while the delay runs:** the live and loading scene pickers, the delay seconds and the
-  minimum quality. The seconds used to stay editable while Active and applied on every keystroke,
-  resizing the buffer under a live stream. Locked fields lose their arrows, take the card's
-  background and show a lock; a line underneath, "Turn the delay off to change it.", is also their
-  accessible description; they are out of the tab order until the delay is off, and their value
-  stays readable (muted text, AA in every theme).
-- **Enable delay explains itself**: while it's disabled, a checklist shows whether the free account
-  and the live scene are missing.
-- **Live scene picker**: nothing is preselected ("Choose a scene…") until you pick a scene, so the
-  first one can be chosen too and the field never shows a scene the checklist says is missing; a
-  saved scene that no longer exists counts as not chosen. The plugin's helper scene is no longer
-  offered as a live or loading scene.
-- **Sign-in failures are no longer silent**: the account card says when trigglow.com can't be
-  reached, the link expired, the browser didn't open (with **Copy link**) or the session ended, and
-  the wait can be cancelled.
-- The mouse wheel over a scene, seconds or quality control no longer changes it unless it has focus;
-  it scrolls the dock instead. The seconds box draws its own arrows, so themes without spin box
-  styling (OBS's System theme) no longer show two dots.
-- Numbers follow OBS's language (`15.910 MB`, `41,2 s` in Spanish), resolutions use `×`, units a
-  no-break space (`30 s`). The narrow dock (below 300 px) stacks the account button and the footer.
-- **Report a problem**: header, labels above their fields, errors under the field with focus moved
-  to it, network errors in a banner, and an attachment row that says whether the OBS log goes with
-  the ticket. Raw transport errors stay in the OBS log. It opens 460 px wide and can be narrowed to
-  340 px: Name and Email stack below 400 px and the browser note moves above the buttons; the
-  email's help line sits under the email field.
-- **Texts**: English and Spanish microcopy rewritten (Spanish accents, no `--`, no glyphs, shorter
-  tooltips). In Spanish the hotkeys read "Trigglow: Activar/desactivar Dynamic Delay", "Trigglow:
-  Activar Dynamic Delay" and "Trigglow: Desactivar Dynamic Delay"; existing hotkey bindings are
-  kept.
-
-**Changed / Live overlay:**
-- The "DELAY 30 s" overlay is now **one image the plugin renders itself** (ink plate, brand rule,
-  Dynamic Delay mark, Archivo), written to the plugin's config folder
-  (`overlay/delay-badge-r3-30s.png`) and shown by a single image source. It looks the same on
-  Windows, macOS and Linux (the old text used Segoe UI, Windows only) and moves in one piece. It
-  sits 2.2% of the canvas's short side away from the chosen corner and keeps its size relative to
-  that side: the same plate as before on landscape canvases (200x58 at 1080p), and on a 1080x1920
-  vertical canvas the 1080p size instead of a third of the frame's width. It shows the delay really
-  in effect.
-- **Signed "By Trigglow"**: small, quiet text under the icon, outside the badge plate (Geist Mono,
-  11 px on a 1080p canvas and 7.3 px at 720p, mist at 75 % with a faint dark halo and no box), the
-  same in every language. In a bottom corner the margin is kept below the signature. The file names
-  carry a render version, so a badge an earlier build left in that folder is never shown, and it is
-  deleted.
-- **Move or resize it in OBS and it stays that way.** The plugin places it in the chosen corner the
-  first time and again only when you pick another corner in the dock (or when the canvas size or
-  the badge's own size changes, as long as you haven't moved or resized it). An existing image
-  source already called "Trigglow Delay Badge (auto)" is reused instead of adding "... 2" copies.
-- The old text source ("Trigglow Delay Overlay Text (auto, no tocar)") is removed automatically.
-  Its text can no longer be edited: a custom font or color applied to it is lost; the image can be
-  moved or scaled and keeps that.
-
-**Changed / Names of the objects the plugin manages:**
-- "(no tocar)" is gone from every language: the scene is now **Trigglow Delay Buffer (auto)**, the
-  filters **Trigglow Buffer Mode Delay (auto)** and `Trigglow Audio Delay (auto) - <source>`, the
-  overlay **Trigglow Delay Badge (auto)**. Existing collections are renamed once, in place, when they
-  load (position, filters and settings kept); if a new name is already taken the old one stays and
-  keeps working.
-- **Anything that refers to these objects by name has to be updated**: a Stream Deck,
-  obs-websocket or other remote-control action that switches to the old scene name, or toggles the
-  old filters or overlay by name, must be pointed at the "(auto)" names.
-- **Going back to v0.5.0 or earlier after the rename duplicates them**: the older version doesn't
-  know the "(auto)" names, so it creates its "(no tocar)" helper scene, delay filters and overlay
-  again next to them (it switches the "(auto)" filters off when the collection loads, so they stay
-  inert). Remove the set you don't use; back on 0.6.0, the "(auto)" set is used and the leftover
-  "(no tocar)" one isn't renamed while its new name is taken.
+  renaming the live scene no longer floods the log nor keeps Disable from working; closing OBS
+  while Trigi is answering or a ticket is being sent no longer waits on the network.
 
 **Added / Trigi, the AI support assistant (Windows, signed in):**
 - **"Report a problem" opens on Trigi** when it's available: on Windows, signed in, with a plugin
@@ -445,13 +193,273 @@ performance hotfix was prepared but never published: everything in it ships here
 - On macOS and Linux the form is shown disabled with a link to the web form (no HTTP client there
   yet).
 
+**Changed / Dock:**
+- **Brand look on top of your OBS theme.** Cards, fields and backgrounds still follow the active OBS
+  theme (dark, light, Windows high contrast); the brand comes in through square cards with
+  hairlines, Archivo headlines and Geist Mono labels and figures (bundled, see Packaging), SVG icons
+  instead of text glyphs, and the cyan-to-magenta gradient only on the main action, the checked box
+  and the Active state. Colors are derived from the theme's palette in one place
+  (`src/ui-tokens.*`, `src/ui-theme.*`): every text, placeholders included, reaches WCAG AA (4.5:1)
+  and every field border and focus ring 3:1 on the palettes of OBS 31's themes (Yami and its Grey,
+  Light, Classic, Acri and Rachni variants), checked by `tests/ui_tokens_tests.cpp`. Keyboard focus
+  is visible on every control, and the dock's scroll area is no longer an invisible first tab stop.
+- **Status card**: icon, headline and a seconds chip per state, never color alone. Preparing delay
+  shows a progress bar with "12 / 30 s" and "18 s left"; Delay on is cyan with a shield (the green
+  is gone, the web has no green); errors get a red rule and an alert icon. Preparing delay and Delay
+  on both count the seconds that really apply, the same as the live overlay: with 60 s requested
+  and 41 s fitting in RAM, the chip reads "41 / 60 s" in amber, the message "Saving 41 s of stream…:
+  only 41 of your 60 s fit in RAM" and the fill window lasts 41 s. The fill countdown starts over
+  only for a new fill window: toggling the overlay or changing its corner while it fills no longer
+  restarts it (and the switch to the delayed scene with it).
+- **RAM estimate line** under the delay and quality fields, worded as what it is: "RAM fits the
+  full 30 s at 1920×1080", "RAM only fits 41 s of 60 s at …", in the same whole seconds as the chip.
+  It hides while the degradation notice shows (the notice then says what the buffer holds), and
+  gives no "lower the seconds or the min. quality" advice while those fields are locked.
+- **"Buffer quality lowered" notice** at the bottom of the status card while the buffer runs below
+  full quality: a sliders icon and the title in amber, then what was lowered (resolution against the
+  full size, capture fps, or both), why (OBS's graphics thread under heavy load, compressing or
+  decompressing the frames) and that the delay is unchanged; repeated and dropped frames per minute
+  follow when above zero. It goes away as soon as the buffer is back at full quality, and nothing is
+  polled while the delay is off. Screen readers hear it once: when it appears, when its cause
+  changes, and "Buffer back to full quality." when it goes with the delay still on (Qt 6.8+
+  announcements; older Qt keeps the card's name change), not on every rung.
+- **Locked while the delay runs:** the live and loading scene pickers, the delay seconds and the
+  minimum quality. The seconds used to stay editable while Active and applied on every keystroke,
+  resizing the buffer under a live stream. Locked fields lose their arrows, take the card's
+  background and show a lock; a line underneath, "Turn the delay off to change it.", is also their
+  accessible description; they are out of the tab order until the delay is off, and their value
+  stays readable (muted text, AA in every theme).
+- **Minimum quality 1440p (2K) and 2160p (4K)**, after 480p, 720p and 1080p. The tooltip says they
+  only apply with an output that big; the sizing and the degradation already took any floor.
+- **Enable delay explains itself**: while it's disabled, a checklist shows whether the free account
+  and the live scene are missing.
+- **Live scene picker**: nothing is preselected ("Choose a scene…") until you pick a scene, so the
+  first one can be chosen too and the field never shows a scene the checklist says is missing; a
+  saved scene that no longer exists counts as not chosen. The plugin's helper scene is no longer
+  offered as a live or loading scene.
+- **Sign-in failures are no longer silent**: the account card says when trigglow.com can't be
+  reached, the link expired, the browser didn't open (with **Copy link**) or the session ended, and
+  the wait can be cancelled.
+- The mouse wheel over a scene, seconds or quality control no longer changes it unless it has focus;
+  it scrolls the dock instead. The seconds box draws its own arrows, so themes without spin box
+  styling (OBS's System theme) no longer show two dots.
+- Numbers follow OBS's language (`15.910 MB`, `41,2 s` in Spanish), resolutions use `×`, units a
+  no-break space (`30 s`). The narrow dock (below 300 px) stacks the account button and the footer.
+- **Report a problem**: header, labels above their fields, errors under the field with focus moved
+  to it, network errors in a banner, and an attachment row that says whether the OBS log goes with
+  the ticket. Raw transport errors stay in the OBS log. It opens 460 px wide and can be narrowed to
+  340 px: Name and Email stack below 400 px and the browser note moves above the buttons; the
+  email's help line sits under the email field.
+- **Texts**: English and Spanish microcopy rewritten (Spanish accents, no `--`, no glyphs, shorter
+  tooltips). In Spanish the hotkeys read "Trigglow: Activar/desactivar Dynamic Delay", "Trigglow:
+  Activar Dynamic Delay" and "Trigglow: Desactivar Dynamic Delay"; existing hotkey bindings are
+  kept.
+
+**Changed / Live overlay:**
+- The "DELAY 30 s" overlay is now **one image the plugin renders itself** (ink plate, brand rule,
+  Dynamic Delay mark, Archivo), written to the plugin's config folder
+  (`overlay/delay-badge-r3-30s.png`) and shown by a single image source. It looks the same on
+  Windows, macOS and Linux (the old text used Segoe UI, Windows only) and moves in one piece. It
+  sits 2.2% of the canvas's short side away from the chosen corner and keeps its size relative to
+  that side: the same plate as before on landscape canvases (200x58 at 1080p), and on a 1080x1920
+  vertical canvas the 1080p size instead of a third of the frame's width. It shows the delay really
+  in effect.
+- **Signed "By Trigglow"**: small, quiet text under the icon, outside the badge plate (Geist Mono,
+  11 px on a 1080p canvas and 7.3 px at 720p, mist at 75 % with a faint dark halo and no box), the
+  same in every language. In a bottom corner the margin is kept below the signature. The file names
+  carry a render version, so a badge an earlier build left in that folder is never shown, and it is
+  deleted.
+- **Move or resize it in OBS and it stays that way.** The plugin places it in the chosen corner the
+  first time and again only when you pick another corner in the dock (or when the canvas size or
+  the badge's own size changes, as long as you haven't moved or resized it). An existing image
+  source already called "Trigglow Delay Badge (auto)" is reused instead of adding "... 2" copies.
+- The old text source ("Trigglow Delay Overlay Text (auto, no tocar)") is removed automatically.
+  Its text can no longer be edited: a custom font or color applied to it is lost; the image can be
+  moved or scaled and keeps that.
+
+**Changed / Names of the objects the plugin manages:**
+- "(no tocar)" is gone from every language: the scene is now **Trigglow Delay Buffer (auto)**, the
+  filters **Trigglow Buffer Mode Delay (auto)** and `Trigglow Audio Delay (auto) - <source>`, the
+  overlay **Trigglow Delay Badge (auto)**. Existing collections are renamed once, in place, when they
+  load (position, filters and settings kept); if a new name is already taken the old one stays and
+  keeps working.
+- **Anything that refers to these objects by name has to be updated**: a Stream Deck,
+  obs-websocket or other remote-control action that switches to the old scene name, or toggles the
+  old filters or overlay by name, must be pointed at the "(auto)" names.
+- **Going back to v0.5.0 or earlier after the rename duplicates them**: the older version doesn't
+  know the "(auto)" names, so it creates its "(no tocar)" helper scene, delay filters and overlay
+  again next to them (it switches the "(auto)" filters off when the collection loads, so they stay
+  inert). Remove the set you don't use; back on 0.6.0, the "(auto)" set is used and the leftover
+  "(no tocar)" one isn't renamed while its new name is taken.
+
+**Changed:**
+- **"Minimum quality" is a floor for the RAM reduction and for the degradation, bounded by OBS's
+  output.** When RAM is short it still decides how far the buffer may shrink (rather than go below
+  it, fewer seconds are stored), and the degradation never goes below it either; but it no longer
+  raises the buffer above the output resolution: with a 720p output the buffer is 720p even with a
+  1080p minimum.
+- **The `compression check` log line is replaced by `perf check` and `pipeline check`** (below).
+- **Sign-in, reports and the update check: see "Changed / Sign-in" and "Changed / Report a
+  problem"** above and "Security and privacy" below.
+
+**Fixed:**
+- **Audio and video share one whole-second delay.** When RAM trimmed the ring, video was delayed
+  by the exact fractional span and audio by whole seconds, so they could be up to ~1 s apart.
+  `bufferfit::Compute()` now returns one whole-second effective delay, keeping the quarter-second
+  margin against jitter, and video and audio both use it. The video filter's
+  `get_effective_delay_seconds` computes it from the filter's current settings on the calling
+  thread (no hop to the graphics thread), so audio gets the new value the moment the dock changes a
+  setting, from Enable on. The dock's status card shows that same figure as the live overlay: with
+  60 s requested and 35 s fitting, the chip reads "35 / 60 s" in amber and the detail line says
+  only 35 of the 60 s fit in RAM.
+- **A buffer restart no longer shows black.** A change of the delay or the minimum quality that
+  resizes the buffer throws the buffered frames away. The filter now signals it
+  (`buffer_restarted`) and Program goes back to the loading scene, with audio re-synced, while the
+  buffer refills, instead of a blank delayed view for `delay` seconds. Same after a reset of OBS's
+  video settings. With no loading scene set, Program stays on the (blank) wrapper scene, never on
+  the undelayed live scene. The dock locks those fields while the delay runs, so in practice this
+  covers resets of OBS's video settings.
+- **The delay filters only ever apply the dock's delay.** Their own properties could bypass the
+  plugin: 90 s in the video filter's dialog put video at 90 s and audio at 60, and 0 s passed the
+  live scene through undelayed while the dock said "Delay on". The "(auto)" filters' properties now
+  hold only a note that the dock manages them. The dock pushes its delay and quality floor through
+  new `set_managed_*` procs, and from then on a filter ignores any other value written to its
+  settings (OBS's Defaults button, an older dialog, obs-websocket), with one WARN per push. While
+  the delay is on, a delay filter switched off from outside the dock (its eye icon in the Filters
+  dialog, obs-websocket) is switched back on at once, with one WARN per activation.
+- **A 0 s delay** (only reachable now for a filter the dock doesn't manage yet, e.g. one added by
+  hand) passes the video through undelayed, with no buffer and no codec. Before, it encoded every
+  frame into a one-slot ring and never drew it: black output at full CPU cost.
+- **Switching scene collection with the delay on left the dock saying "Delay on"** while the new
+  collection ran without any delay. On `OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING` (switch, new,
+  remove) the delay is now stopped like Disable while the old collection is still loaded, so it's
+  saved with its filters off and its scene back on Program, and the dock goes Inactive with a line
+  saying why. OBS 31 sends no `COLLECTION_CHANGING` when duplicating or renaming a collection, only
+  `COLLECTION_CHANGED` with the copy already loaded: the same stop runs then, switching off the
+  copy's filters and leaving the helper scene if the copy opened on it.
+- **Renaming the live scene with the delay on** flooded the log (the dock's once-a-second health
+  poll looked the filter up by name and warned on every miss) and left the filter enabled after
+  Disable. The bridge now keeps weak references to the filters it switched on, for the poll, the
+  setters and switching them off.
+- **Delay stuck on after closing OBS while Active.** If OBS was closed with the delay on, the next
+  start left the live scene delayed for good while the dock said "Inactive". v0.5.0 tried to switch
+  those filters off on load, but it enumerated with `obs_enum_sources()`, which never returns
+  filters, so it disabled nothing. It now walks the filters (`obs_source_enum_filters`) of inputs,
+  groups, scenes and the global audio sources, with every filter switched off outside libobs locks,
+  when OBS finishes loading and also when you switch to another scene collection (both only while
+  the delay is off).
+- **References to the delay filter leaked on every Enable.** `obs_source_get_filter_by_name()`
+  returns a new reference, but the plugin treated it as borrowed and never released it, so the video
+  filter was never destroyed. Every lookup now releases its reference (`OBSSourceAutoRelease`), and
+  the filter's destructor, which libobs runs without a graphics context, now enters one to free its
+  GPU objects (after joining the codec threads).
+- **A settings file with invalid JSON is no longer overwritten.** If `buffer-mode-settings.json`
+  couldn't be parsed (for example after a hand edit with a missing comma), the plugin loaded the
+  defaults and wrote them over the file when OBS closed. It is now moved aside as
+  `buffer-mode-settings.json.<yyyyMMdd-HHmmss>.invalid` (copied if it can't be renamed) with a WARN
+  giving both paths; if neither works, the file is left untouched at exit.
+- **Dock tooltip for the minimum quality corrected.** It said the delayed video "never drops
+  below" that resolution, which stopped being true with the output cap. The filter's properties no
+  longer have a quality field at all: they only show the note that the dock manages the filter.
+
+**Delay buffer pipeline (technical detail):**
+- **Output-resolution cap.** Up to v0.5.0 the video buffer was stored at canvas resolution, so with
+  a 1440p canvas streamed at 1080p the plugin MJPEG-compressed and decompressed every buffered frame
+  at 1440p inside OBS's graphics thread: 14.3/17.4 ms p50/p95 per frame in an offline benchmark of
+  the same pipeline, most of the 16.7 ms a 60 fps frame has. Those extra pixels were discarded by
+  OBS's own output rescale anyway. `EnsureRingSized()` and the dock estimate both go through the new
+  pure sizing function `bufferfit::Compute()` (`src/buffer-fit.{hpp,cpp}`, no libobs/FFmpeg
+  dependency) with the canvas (`obs_video_info::base_*`) and output (`output_*`) geometry. The
+  ceiling is a uniform scale, `min(1, max(outW/baseW, outH/baseH))`, which keeps the aspect ratio
+  and never goes below the output on either axis; it only applies when the buffered target is
+  canvas-sized (the live scene). Buffer widths are multiples of 8 and heights even, so every I420
+  plane row is a whole number of 4-byte words (OpenGL pads readback rows to 4 bytes on Linux and
+  macOS). See `docs/SPEC.md` §3.5.
+- **Codec worker threads** (`src/codec-pipeline.{hpp,cpp}`, pure C++ with the codec injected). The
+  graphics thread now only renders the capture, converts it, reads it back (three staging slots,
+  mapped two captures later so it never stalls) and uploads the frame due, only when it changes. One
+  or two encode workers (`trigglow-enc-N`, each with its own MJPEG context) take frames from a
+  bounded queue; one decode worker (`trigglow-dec`) decodes up to 3 frames ahead of what's on screen,
+  jumps straight to the frame due when it falls behind, and starts on the oldest frames during the
+  last quarter second of the fill window, so the first delayed frame is ready when it's due. A
+  reaper thread (`trigglow-reap`) frees rings, frame pools and arena blocks: the graphics thread
+  never frees hundreds of MB nor waits for a worker. When the encoders fall behind, the newest
+  capture is dropped (the delayed view repeats a frame); the queue never grows. Measured offline at
+  1440p60 (Ryzen 7 7700X, vendored FFmpeg n9.0.2): graphics thread ~1.2–1.7/1.6–2.1 ms p50/p95 per
+  frame, encode ~8.8/10.4 ms and decode ~6.2/7.5 ms on their own threads (about 53% and 37% busy,
+  under one core in total). See `docs/SPEC.md` §4.6.
+- **Color conversion to I420 on the GPU.** The shader writes Y, U and V as three separate planes
+  (BT.601, studio range), so the CPU no longer de-interleaves NV12 in either direction: about
+  1.1–1.3 ms less CPU per frame at 1440p. The MJPEG frames are now labelled with the studio range
+  they hold (`AVCOL_RANGE_MPEG`; metadata only, the decoded planes are identical).
+- **Ring with a slot state machine and a block arena.** The ring (`src/frame-ring.*`) is a fixed
+  set of slot headers, each one Free, Reserved, Encoding, Ready or Dropped, with its capture time
+  assigned when the slot is reserved, so timestamps stay in order whatever order the encoders finish
+  in. Payloads live in a block arena (`src/frame-arena.*`): packets packed back to back in blocks of
+  4–32 MiB, never zero-filled; a block is recycled whole once the ring has overwritten every frame
+  it held, and only empty blocks beyond two spares go back to the OS, on the reaper. Committed and
+  resident memory follow what the frames really weigh: ~576–768 MB for 30 s at 1440p60 in the
+  offline simulation, against ~1.9 GB resident and a ~381 ms stall (about 23 dropped frames) on the
+  first frame after Enable when every slot was zero-filled up front. The arena never grows past the
+  RAM budget: a long run of frames that compress far worse than assumed drops frames (a repeated
+  frame on screen) instead of growing memory.
+- **Disable frees everything the delay used.** The ring and the frame pool go to the reaper, every
+  worker closes its codec, and the GPU objects are freed (~100 MB of RAM measured and ~37 MB of VRAM
+  estimated at 1440p while the delay is off); reopening them on the next Enable costs about a
+  millisecond.
+- **Standard JPEG Huffman tables** (`huffman=default`) instead of FFmpeg's per-frame optimal ones,
+  which cost a second pass over every frame: 10–17% less encode time at 1440p for 3–3.5% bigger
+  frames; the decoded picture is identical (Huffman coding is lossless). The `MJPEG encoder open`
+  log line says `huffman=default` (or why it couldn't be set).
+- **Each delayed frame is decoded and uploaded once, however many views are open** (Program,
+  preview, projectors, multiview). If the frame due isn't ready (dropped, or not decoded in time),
+  the last one is repeated instead of drawing black: a one-frame stutter that never stretches the
+  delay. Right after a pause in rendering, frames decoded ahead before the pause are dropped rather
+  than shown late.
+- **Exact frame interval at fractional frame rates.** At 59.94 fps the capture interval was
+  `1e9 / 59` ns, so almost one real frame per second was lost. It is now `1e9 × fps_den / fps_num`
+  (16,683,333 ns at 59.94), used for capture, the ring span and its sizing.
+- **Sync mode** (the `codec_workers` kill switch, below): the codec runs on OBS's graphics thread
+  as in v0.5.0, but with the slice-threaded encoder (`thread_type = FF_THREAD_SLICE`,
+  `hardware_concurrency() / 4` threads, 1 to 4): 1080p went from 8.6/10.4 to 5.2/5.9 ms p50/p95 on
+  that thread. `FF_THREAD_SLICE` has to be explicit: with only `thread_count > 1` FFmpeg picks frame
+  threading for MJPEG, `receive_packet()` returns `EAGAIN` and every frame would be stored raw; if
+  it still comes up frame-threaded, the encoder is reopened single-threaded with a WARN.
+
+**Adaptive degradation (technical detail, `src/degradation-policy.*`):**
+- Evaluated every 250 ms over the trailing 2 s, at least 2 s after the previous change. It looks at
+  the plugin's own work on the graphics thread (conversion, readback and copy, upload; not rendering
+  the scene, which OBS does anyway), the encode and decode time per frame, dropped captures and
+  frames the decoder didn't have ready in time.
+- **Down**, one step at a time, when: the graphics-thread p95 goes above 40% of the frame interval
+  (or above 25% while OBS is lagging frames, or its p50 over the last 0.5 s above 50%); the encode
+  p95 goes above 80% of what the encode contexts have per frame, or more than 2% of captures are
+  dropped; the decode p95 goes above 80% of the capture interval, or more than 5% of the frames due
+  aren't decoded in time.
+- **The ladder.** Encode load adds parallelism first (encode contexts × slice threads: 1×1, 2×1,
+  2×2, 2×4), then lowers the rung; decode or graphics-thread load lowers the rung directly (the
+  MJPEG decoder has no threading, and what's left on the graphics thread scales with pixels). The
+  rungs: the full buffer size, then steps of ×0.83 down to your minimum quality (never below it),
+  then that floor captured at half the frame rate (only when the output runs at 48 fps or more).
+  Every rung keeps the same ring and slot count: the delay never moves and the buffer never empties.
+- **Up**, one step, only when the load predicted one step up stays under target (graphics thread
+  ≤ 25% of the frame interval, workers ≤ 50%) for 30 s in a row; quality comes back before threads
+  are given back. Decode metrics only count once the decoder works on frames captured at the
+  current rung (it runs `delay` seconds behind the capture).
+- The starting point is predicted from the resolution: 1440p60 starts with one encode context and
+  one slice, 4K60 with two contexts.
+- Every rung change is a WARN in the log with its cause and the last 2 s of metrics, ending in "The
+  delay itself is unchanged."; thread changes are INFO lines. The dock reads the state once a second
+  through the filter's `get_pipeline_state` proc, which never waits on the graphics thread.
+
 **Security and privacy:**
 - **One hardened network path.** Every call goes through WinHTTP (`src/win-http.*`): HTTPS with TLS
-  1.2 or newer, to api.trigglow.com only, which is the only host the sign-in token is ever sent to.
-  Redirects are never followed (a redirect is an error, so the token can't be bounced to another
-  host), no cookies or Windows auto-logon, timeouts on every step plus an overall deadline, a cap on
-  the response size, and a User-Agent with the real plugin version and system. Nothing that creates
-  something (a conversation, a question, a ticket, an attachment) is retried automatically.
+  1.2 or newer, to api.trigglow.com, the only host the sign-in token is ever sent to, plus the
+     update check on api.github.com (without the token). Redirects are never followed (a redirect is
+     an error, so the token can't be bounced to another host), no cookies or Windows auto-logon,
+     timeouts on every step plus an overall deadline, a cap on the response size, and a User-Agent
+     with the real plugin version and system. Nothing that creates something (a conversation, a
+     question, a ticket, an attachment) is retried automatically.
 - **The plugin only opens its own fixed pages**: the sign-in, support, privacy and plugin pages on
   www.trigglow.com and this repository on GitHub, checked by prefix, with encoded dots and slashes
   read as a browser would (no `..` or `%2e%2e` way out of the page). Anything else, for example a
@@ -463,6 +471,12 @@ performance hotfix was prepared but never published: everything in it ships here
   answer is replaced by the latest-release page. The update check uses the same hardened client.
 - **No build machine paths in the DLL**: the Windows DLL records only its PDB's file name, and the
   binary holds no path-like or host-like strings it doesn't need.
+- **OBS closes cleanly while a call is in flight.** Every network job (sign-in, Trigi, tickets, the
+  log for a ticket, the update check) runs as a cancellable background job
+  (`src/background-tasks.*`, `src/cancel-token.*`, `src/ui-tasks.*`), and WinHTTP runs
+  asynchronously, so a call is aborted at once. Unloading the plugin cancels every job and waits at
+  most 2 s; on Windows no plugin code runs after OBS unloads it, and no result reaches a closed
+  dialog. A timeout is reported as "Trigi took too long" instead of "no connection".
 
 **Added (support and diagnostics):**
 - **`perf check` line in the OBS log**, every 10 s while the delay is on (Filling and Active), plus
@@ -540,7 +554,7 @@ performance hotfix was prepared but never published: everything in it ships here
 - **The Windows DLL records only its PDB's file name** (`/PDBALTPATH`), not the build machine's
   absolute path (`cmake/windows/helpers.cmake`).
 
-**Tests** (18 suites, no OBS needed; `ctest`):
+**Tests** (19 suites, no OBS needed; `ctest`):
 - `buffer_fit_tests` (sizing: canvas = output, 1440p → 1080p, 4K → 1080p, output above canvas,
   mismatched aspect ratios, a floor above the output, RAM reduction, rounding, widths multiple of
   8, odd dimensions, degenerate input, 59.94 fps, the whole-second effective delay, the 1440p and
@@ -548,9 +562,11 @@ performance hotfix was prepared but never published: everything in it ships here
   31's palettes), `auto_names_tests` (names and their migration), `overlay_layout_tests` (overlay
   placement), `frame_arena_tests`, `frame_ring_tests` (slot state machine, generations, age-based
   selection), `degradation_policy_tests` (ladder, every trigger, cooldown, 30 s hysteresis, no
-  oscillation) and `pipeline_stress_tests` (ring + arena + codec pipeline under random detaches,
-  resizes, rung and rate changes: the delay never shrinks, frames are never torn or shown out of
-  order, and no ring is ever freed on the simulated graphics thread).
+  oscillation; the 1440p and 2160p floors), `pipeline_stress_tests` (ring + arena + codec pipeline
+  under random detaches, resizes, rung and rate changes: the delay never shrinks, frames are never
+  torn or shown out of order, and no ring is ever freed on the simulated graphics thread) and
+  `background_tasks_tests` (cancellation, results never delivered to a destroyed owner, the bounded
+  shutdown).
 - New for the account, Trigi and tickets, all with a scripted network stand-in that never touches
   the network: `json_tests` (strict, bounded JSON), `log_redact_tests` (every redaction rule, paths
   of the three systems, a 2 MB hostile line and a 5 MB log), `chat_text_tests` (script and image
