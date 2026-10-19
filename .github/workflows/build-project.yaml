@@ -82,11 +82,13 @@ jobs:
       run:
         shell: bash
     env:
-      # pipeline_stress_tests' timing checks (exact frame shown, lag after a
-      # render pause, a slow decoder keeping up) use their looser CI limits:
-      # shared runners, macOS above all, don't always keep its 4 ms steps,
-      # and this job gates create-release. Its correctness checks stay strict.
-      # See the header of tests/pipeline_stress_tests.cpp.
+      # pipeline_stress_tests' and pipeline_gop_stress_tests' timing checks
+      # (exact frame shown, lag after a render pause, a slow decoder keeping
+      # up, the graphics thread's calls) use their looser CI limits: shared
+      # runners, macOS above all, don't always keep their 4 ms steps, and this
+      # job gates create-release. Their correctness checks stay strict. See
+      # the headers of tests/pipeline_stress_tests.cpp and
+      # tests/pipeline_gop_stress_tests.cpp.
       TRIGGLOW_STRESS_CI: '1'
     steps:
       - uses: actions/checkout@v4
@@ -123,16 +125,18 @@ jobs:
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
           # The suites around the codec worker threads (src/frame-arena.*,
-          # src/frame-ring.*, src/codec-pipeline.*) and the background jobs'
-          # lifecycle (src/cancel-token.*, src/background-tasks.*), built with
-          # GCC like the Ubuntu plugin build. A build failure here is a real
-          # error, so this step is allowed to fail the job.
+          # src/frame-ring.*, src/codec-pipeline.*, with the stamp codec and
+          # the fake inter-frame one) and the background jobs' lifecycle
+          # (src/cancel-token.*, src/background-tasks.*), built with GCC like
+          # the Ubuntu plugin build. A build failure here is a real error, so
+          # this step is allowed to fail the job.
           cmake -S tests -B build_tsan \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
           cmake --build build_tsan --parallel \
-            --target frame_arena_tests frame_ring_tests pipeline_stress_tests background_tasks_tests
+            --target frame_arena_tests frame_ring_tests pipeline_stress_tests pipeline_gop_stress_tests \
+              background_tasks_tests
 
       - name: Run Threaded Unit Tests under ThreadSanitizer 🧪
         # Deliberately non-blocking. This job is part of this reusable
@@ -161,13 +165,14 @@ jobs:
 
           set +e
           ctest --test-dir build_tsan --output-on-failure --timeout 600 \
-            --tests-regex '^(frame_arena|frame_ring|pipeline_stress|background_tasks)_tests$' 2>&1 | tee tsan.log
+            --tests-regex '^(frame_arena|frame_ring|pipeline_stress|pipeline_gop_stress|background_tasks)_tests$' \
+            2>&1 | tee tsan.log
           status=${PIPESTATUS[0]}
           set -e
 
           reports=$(grep -c '^WARNING: ThreadSanitizer' tsan.log || true)
           {
-            echo '### ThreadSanitizer: frame_arena, frame_ring, pipeline_stress, background_tasks'
+            echo '### ThreadSanitizer: frame_arena, frame_ring, pipeline_stress, pipeline_gop_stress, background_tasks'
             echo
             echo "- ctest exit code: ${status}"
             echo "- ThreadSanitizer reports: ${reports}"
