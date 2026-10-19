@@ -62,6 +62,10 @@ constexpr const char *kSettingCodecWorkers = "codec_workers";
 constexpr const char *kSettingBufferCodec = "buffer_codec";
 // During development (v0.7.0 F2/F3) the filter's own default: MJPEG.
 constexpr const char *kDefaultBufferCodec = "mjpeg";
+// v0.7.0, written by ObsFrontendBridge::SetBufferFilterStorageClass() on
+// every Enable(): "inter" or "intra" (anything else reads as intra).
+constexpr const char *kSettingStorageClass = "storage_class";
+constexpr const char *kStorageClassInter = "inter";
 // The one entry of the filter's properties: a note that the dock manages it
 // (no delay or quality fields, see GetProperties()). Never a stored setting.
 constexpr const char *kPropertyManagedInfo = "trigglow_managed_info";
@@ -451,11 +455,23 @@ const char *BackendLabel(storage::Backend backend)
 	return "?";
 }
 
-FrameArena::Config ArenaConfigFor(uint64_t slots, uint32_t width, uint32_t height, uint64_t budgetBytes)
+// The storage class a cycle may have (only with FFmpeg: inter-frame codecs need it).
+bool StorageInter(bool requested)
+{
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	return requested;
+#else
+	(void)requested;
+	return false;
+#endif
+}
+
+FrameArena::Config ArenaConfigFor(uint64_t slots, uint32_t width, uint32_t height, uint64_t budgetBytes,
+				  double assumedRatio)
 {
 	const uint64_t rawBytes = bufferfit::Nv12FrameBytes(width, height); // I420: same 1.5 bytes/pixel.
-	const auto expectedBytes = static_cast<uint64_t>(static_cast<double>(slots) * static_cast<double>(rawBytes) /
-							 kAssumedCompressionRatio);
+	const auto expectedBytes =
+		static_cast<uint64_t>(static_cast<double>(slots) * static_cast<double>(rawBytes) / assumedRatio);
 	// Never past the RAM budget (or what the ring was sized for, if that's
 	// more): a sustained run of frames that compress far worse than assumed
 	// drops frames instead of growing without bound.
@@ -499,7 +515,7 @@ VideoDelayFilter::BufferFitEstimate
 VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight, uint32_t sourceWidth,
 				    uint32_t sourceHeight, uint32_t baseWidth, uint32_t baseHeight,
 				    uint32_t outputWidth, uint32_t outputHeight, uint32_t fpsNum, uint32_t fpsDen,
-				    bool capToOutput)
+				    bool capToOutput, bool storageInter)
 {
 	bufferfit::Input in;
 	in.sourceWidth = sourceWidth;
@@ -513,8 +529,8 @@ VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t min
 	in.delaySeconds = requestedDelaySeconds;
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
-	in.compressionRatio = kAssumedCompressionRatio;
 	in.capToOutput = capToOutput;
+	bufferfit::ApplyStorageClass(in, StorageInter(storageInter), kAssumedCompressionRatio);
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return {};
@@ -968,8 +984,10 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	in.delaySeconds = delaySeconds;
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
-	in.compressionRatio = kAssumedCompressionRatio;
 	in.capToOutput = configuredOutputCap_.load();
+	// v0.7.0 (design 6.4): the cycle's storage class -- the same one
+	// PlannedEffectiveDelaySeconds() reads, so audio gets this whole-second delay.
+	bufferfit::ApplyStorageClass(in, StorageInter(configuredStorageInter_.load()), kAssumedCompressionRatio);
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return;
@@ -1066,8 +1084,8 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	effectiveDelaySeconds_ = fit.effectiveDelaySeconds;
 	ringFrameIntervalNs_ = frameIntervalNs_;
 
-	const FrameArena::Config arena =
-		ArenaConfigFor(fit.actualFrames, fit.bufferWidth, fit.bufferHeight, in.budgetBytes);
+	const FrameArena::Config arena = ArenaConfigFor(fit.actualFrames, fit.bufferWidth, fit.bufferHeight,
+							in.budgetBytes, in.compressionRatio);
 	ring_ = std::make_shared<FrameRing>(static_cast<size_t>(fit.actualFrames), arena);
 
 	// Degradation ladder (B.8): from the fitted size down to the user's
@@ -1121,17 +1139,27 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 
 	const degradation::Rung &lowest = policy_.Ladder().back();
 	const degradation::Parallelism &par = policy_.CurrentParallelism();
-	TRIGGLOW_LOG_INFO(kComponent,
-			  "delay pipeline: %s, buffer %ux%u, %llu slots, delay %us, %u encode context%s x %u slice "
-			  "thread%s, decode-ahead %u frames, %zu staging slots, degradation ladder %zu rungs down to "
-			  "%ux%u%s, arena blocks %zuMB (limit %lluMB)",
-			  runsThreaded ? "codec workers" : "sync (codec on the graphics thread, codec_workers=false)",
-			  fit.bufferWidth, fit.bufferHeight, static_cast<unsigned long long>(fit.actualFrames),
-			  fit.effectiveDelaySeconds, par.contexts, par.contexts == 1 ? "" : "s", par.slices,
-			  par.slices == 1 ? "" : "s", pipeline_->LookaheadFrames(), kStagingSlotCount,
-			  policy_.Ladder().size(), lowest.width, lowest.height,
-			  lowest.captureDivisor > 1 ? " at half frame rate" : "", arena.blockBytes / (1024 * 1024),
-			  static_cast<unsigned long long>(arena.limitBytes / (1024 * 1024)));
+	char storageClass[96];
+	if (in.keyframeIntervalFrames > 0)
+		std::snprintf(
+			storageClass, sizeof(storageClass), "inter (assumed %.0fx, ring +%llu slots of GOP margin)",
+			in.compressionRatio,
+			static_cast<unsigned long long>(bufferfit::SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen,
+									       in.keyframeIntervalFrames) -
+							bufferfit::SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen)));
+	else
+		std::snprintf(storageClass, sizeof(storageClass), "intra (assumed %.0fx)", in.compressionRatio);
+	TRIGGLOW_LOG_INFO(
+		kComponent,
+		"delay pipeline: %s, buffer %ux%u, %llu slots, delay %us, storage class %s, %u encode "
+		"context%s x %u slice thread%s, decode-ahead %u frames, %zu staging slots, degradation ladder "
+		"%zu rungs down to %ux%u%s, arena blocks %zuMB (limit %lluMB)",
+		runsThreaded ? "codec workers" : "sync (codec on the graphics thread, codec_workers=false)",
+		fit.bufferWidth, fit.bufferHeight, static_cast<unsigned long long>(fit.actualFrames),
+		fit.effectiveDelaySeconds, storageClass, par.contexts, par.contexts == 1 ? "" : "s", par.slices,
+		par.slices == 1 ? "" : "s", pipeline_->LookaheadFrames(), kStagingSlotCount, policy_.Ladder().size(),
+		lowest.width, lowest.height, lowest.captureDivisor > 1 ? " at half frame rate" : "",
+		arena.blockBytes / (1024 * 1024), static_cast<unsigned long long>(arena.limitBytes / (1024 * 1024)));
 	PublishHealth(true);
 
 	if (restarted) {
@@ -1675,6 +1703,13 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 				  "\"mjpeg\" forces MJPEG",
 				  kSettingBufferCodec);
 	const bool bufferCodecAuto = bufferCodec.mode == storage::BufferCodecMode::Auto;
+	const bool storageInter =
+		std::strcmp(obs_data_get_string(settings, kSettingStorageClass), kStorageClassInter) == 0;
+	if (storageInter != configuredStorageInter_.load()) {
+		configuredStorageInter_ = storageInter;
+		TRIGGLOW_LOG_INFO(kComponent, "storage class %s for the next delay cycle",
+				  storageInter ? "inter" : "intra");
+	}
 	if (bufferCodecAuto != configuredBufferCodecAuto_.load()) {
 		configuredBufferCodecAuto_ = bufferCodecAuto;
 		TRIGGLOW_LOG_INFO(kComponent, "storage codec %s (buffer_codec=%s)",
@@ -2203,12 +2238,15 @@ uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
 	if (minResolutionHeight == 0)
 		minResolutionHeight = kDefaultMinResolutionHeight;
 	const bool capToOutput = obs_data_get_bool(settings, kSettingBufferOutputCap);
+	// The same storage class EnsureRingSized() sizes with (invariant I9).
+	const bool storageInter =
+		std::strcmp(obs_data_get_string(settings, kSettingStorageClass), kStorageClassInter) == 0;
 	obs_data_release(settings);
 	if (delaySeconds == 0)
 		return 0;
 	return EstimateBufferFit(delaySeconds, minResolutionHeight, sourceWidth, sourceHeight, ovi.base_width,
 				 ovi.base_height, ovi.output_width, ovi.output_height, ovi.fps_num, ovi.fps_den,
-				 capToOutput)
+				 capToOutput, storageInter)
 		.effectiveSeconds;
 }
 
@@ -2345,6 +2383,7 @@ void VideoDelayFilter::GetDefaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, kSettingBufferOutputCap, true);
 	obs_data_set_default_bool(settings, kSettingCodecWorkers, true);
 	obs_data_set_default_string(settings, kSettingBufferCodec, kDefaultBufferCodec);
+	obs_data_set_default_string(settings, kSettingStorageClass, "intra");
 }
 
 } // namespace trigglow

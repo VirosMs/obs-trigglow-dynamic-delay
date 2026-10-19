@@ -174,9 +174,12 @@ public:
 	// capToOutput must be what SetBufferFilterOutputCap() pushes (the hidden
 	// buffer_output_cap setting). Returns a zeroed estimate if liveSceneName
 	// doesn't resolve.
+	// storageInter (v0.7.0): the storage class the ring is (or would be)
+	// sized for, as SetBufferFilterStorageClass() pushes it.
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(const std::string &liveSceneName,
 							      uint32_t requestedDelaySeconds,
-							      uint32_t minResolutionHeight, bool capToOutput) const;
+							      uint32_t minResolutionHeight, bool capToOutput,
+							      bool storageInter) const;
 
 	// Every video encoder (all MAX_OUTPUT_VIDEO_ENCODERS slots, so Enhanced
 	// Broadcasting's extra tracks too) of every ACTIVE output, each with its
@@ -264,6 +267,12 @@ public:
 	// already-attached filter: false = MJPEG encode/decode on the graphics
 	// thread, no worker threads. Same rules as SetBufferFilterOutputCap().
 	bool SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const;
+
+	// v0.7.0: the cycle's storage class (design 6.4, invariant I9) into the
+	// filter: "inter" sizes its ring for a hardware inter-frame codec (12x,
+	// a GOP of slack), "intra" for MJPEG. Pushed on every Enable(), fixed for
+	// the cycle. Same rules as SetBufferFilterOutputCap().
+	bool SetBufferFilterStorageClass(const std::string &liveSceneName, bool inter) const;
 
 	// --- v0.7.0 storage codec (UI thread; the filter's procs, see
 	// VideoDelayFilter::SetObsEncodersProc() and the ones after it) ---

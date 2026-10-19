@@ -193,6 +193,9 @@ void BufferModeController::Enable()
 	// filter saved with the scene collection.
 	bridge_.SetBufferFilterOutputCap(status_.liveSceneName, bufferOutputCap_);
 	bridge_.SetBufferFilterCodecWorkers(status_.liveSceneName, codecWorkers_);
+	// v0.7.0: the storage class is fixed here for the whole cycle (I9).
+	cycleStorageInter_ = NextCycleStorageInter();
+	bridge_.SetBufferFilterStorageClass(status_.liveSceneName, cycleStorageInter_);
 
 	// Audio: unlike the video filter, these attach to individual leaf audio
 	// sources inside the live scene (Mic, Desktop, etc.), not the scene
@@ -240,6 +243,17 @@ void BufferModeController::Enable()
 	yieldPending_ = false;
 	PushObsEncoders();
 	bridge_.TakeMixSkippedFrames();
+}
+
+bool BufferModeController::NextCycleStorageInter() const
+{
+	return bufferCodecAuto_ && codecWorkers_ && bridge_.HardwareStorageAvailable();
+}
+
+bool BufferModeController::PlannedStorageInter() const
+{
+	const bool busy = status_.state == BufferModeState::Filling || status_.state == BufferModeState::Active;
+	return busy ? cycleStorageInter_ : NextCycleStorageInter();
 }
 
 void BufferModeController::PushObsEncoders()
@@ -325,9 +339,10 @@ bool BufferModeController::BufferRestartsWith(uint32_t previousDelaySeconds, uin
 	// The filter keeps its ring only if bufferfit sizes it exactly the same
 	// (the same Compute() it runs, through EstimateBufferFit()).
 	const auto before = bridge_.EstimateBufferFit(status_.liveSceneName, previousDelaySeconds,
-						      previousMinResolutionHeight, bufferOutputCap_);
+						      previousMinResolutionHeight, bufferOutputCap_,
+						      cycleStorageInter_);
 	const auto after = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
-						     status_.minResolutionHeight, bufferOutputCap_);
+						     status_.minResolutionHeight, bufferOutputCap_, cycleStorageInter_);
 	return before.width != after.width || before.height != after.height ||
 	       before.actualSeconds != after.actualSeconds || before.effectiveSeconds != after.effectiveSeconds;
 }
@@ -548,9 +563,9 @@ void BufferModeController::WarnAboutEncodersAboveBuffer()
 	// Same bufferfit::Compute() the filter sizes its ring with, so this is the
 	// buffer it uses (or will use, before its first Render()), cap on and off.
 	const auto capped = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
-						      status_.minResolutionHeight, true);
+						      status_.minResolutionHeight, true, cycleStorageInter_);
 	const auto uncapped = bridge_.EstimateBufferFit(status_.liveSceneName, status_.delaySeconds,
-							status_.minResolutionHeight, false);
+							status_.minResolutionHeight, false, cycleStorageInter_);
 	const encodercheck::Size cappedSize{capped.width, capped.height};
 	const encodercheck::Size uncappedSize{uncapped.width, uncapped.height};
 	// The cap isn't what limits the buffer (no cap applies, or RAM sets the

@@ -154,11 +154,13 @@ public:
 	// minResolutionHeight) would actually achieve -- see
 	// ObsFrontendBridge::EstimateBufferFit. For live-updating the dock as
 	// the user adjusts either control, before Enable() has even run once.
+	// Informational only (no warning of its own): with the delay on, the
+	// cycle's storage class; before Enable, the one the next cycle would get.
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds,
 							      uint32_t minResolutionHeight) const
 	{
 		return bridge_.EstimateBufferFit(status_.liveSceneName, requestedDelaySeconds, minResolutionHeight,
-						 bufferOutputCap_);
+						 bufferOutputCap_, PlannedStorageInter());
 	}
 
 	// Health of the video buffer's pipeline (v0.6.0, design B.8): the
@@ -321,6 +323,14 @@ private:
 	// v0.7.0 storage codec: OBS's active video encoders, by family, to the
 	// video filter (Enable, and every output start or stop).
 	void PushObsEncoders();
+	// The storage class of the cycle running, or (Inactive) of the next one:
+	// inter only with buffer_codec auto, the codec workers, and a hardware
+	// codec that passed its probe this session (the first Enable of a session
+	// is always intra, the conservative one). Design 6.4, invariant I9.
+	bool PlannedStorageInter() const;
+	bool NextCycleStorageInter() const;
+	bool cycleStorageInter_ = false; // Fixed at Enable(), pushed to the filter.
+	bool bufferCodecAuto_ = true;    // Hidden buffer_codec setting, see LoadSettings().
 	// An output is starting: the filter yields an NVENC session it may hold,
 	// waiting up to 100 ms only near the old session limits (OBS's NVENC
 	// encoders + the starting one + the buffer's >= 4).

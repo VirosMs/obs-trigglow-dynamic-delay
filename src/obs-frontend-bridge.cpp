@@ -907,6 +907,21 @@ bool ObsFrontendBridge::HardwareStorageAvailable() const
 #endif
 }
 
+bool ObsFrontendBridge::SetBufferFilterStorageClass(const std::string &liveSceneName, bool inter) const
+{
+	OBSSourceAutoRelease filter = BufferFilterFor(liveSceneName);
+	if (!filter) {
+		TRIGGLOW_LOG_WARN(kComponent, "SetBufferFilterStorageClass(%s): FindBufferFilter returned null, no-op",
+				  inter ? "inter" : "intra");
+		return false;
+	}
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "storage_class", inter ? "inter" : "intra");
+	obs_source_update(filter, settings);
+	obs_data_release(settings);
+	return true;
+}
+
 bool ObsFrontendBridge::GetBufferPipelineHealth(PipelineHealth &out) const
 {
 	// Through the weak reference only (see the header): no scene walk, no
@@ -1501,8 +1516,8 @@ uint64_t ObsFrontendBridge::GetBufferBudgetBytes() const
 
 VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const std::string &liveSceneName,
 									 uint32_t requestedDelaySeconds,
-									 uint32_t minResolutionHeight,
-									 bool capToOutput) const
+									 uint32_t minResolutionHeight, bool capToOutput,
+									 bool storageInter) const
 {
 	obs_source_t *liveSource = obs_get_source_by_name(liveSceneName.c_str());
 	if (!liveSource)
@@ -1532,7 +1547,8 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 	}
 
 	return VideoDelayFilter::EstimateBufferFit(requestedDelaySeconds, minResolutionHeight, width, height, baseWidth,
-						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen, capToOutput);
+						   baseHeight, outputWidth, outputHeight, fpsNum, fpsDen, capToOutput,
+						   storageInter);
 }
 
 std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() const
