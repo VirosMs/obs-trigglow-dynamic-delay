@@ -139,6 +139,43 @@ void TestWebPages()
 	CHECK(!api::IsAllowedWebUrl("javascript:alert(1)"));
 	CHECK(!api::IsAllowedWebUrl(Url("file", "/C:/x")));
 	CHECK(!api::IsAllowedWebUrl(std::string(api::web::kAppSupport) + "?a=<script>"));
+	// Dot segments in any encoding, read as a browser or the server would:
+	// never a way out of the page or the repo.
+	const std::string support = api::web::kPublicSupport;
+	const std::string repo = api::web::kRepo;
+	for (const std::string &tail : {std::string("/%2e%2e/%2e%2e/elsewhere"),
+					std::string("/%2E%2E/x"),
+					std::string("/.%2e/x"),
+					std::string("/%2e./x"),
+					std::string("/%2E./x"),
+					std::string("/%252e%252e/x"),
+					std::string("/%25252e./x"),
+					std::string("/%2e%2e%2fx"),
+					std::string("/a%2f..%2fx"),
+					std::string("/%5c..%5cx"),
+					std::string("/%5Cx"),
+					std::string("/./x"),
+					std::string("/%2e/x"),
+					std::string("/x/."),
+					std::string("/x/%2E"),
+					std::string("/%"),
+					std::string("/%2"),
+					std::string("/%zz"),
+					std::string("?a=%"),
+					std::string("/%25%32%65%25%32%65/x")}) {
+		CHECK(!api::IsAllowedWebUrl(support + tail));
+	}
+	for (const std::string &tail :
+	     {std::string("%2e%2e/%2e%2e/evil/repo"), std::string("..%2f..%2fevil"), std::string("%2E%2e/other"),
+	      std::string("./releases"), std::string("releases/%2e/latest")}) {
+		CHECK(!api::IsAllowedWebUrl(repo + tail));
+	}
+	CHECK(!api::IsAllowedWebUrl(Url("https", "www.trigglow.com/plugin/link?code=%2e%2e/%2e%2e/x")));
+	// Ordinary escapes and single dots inside a name still pass.
+	CHECK(api::IsAllowedWebUrl(support + "?q=a%20b"));
+	CHECK(api::IsAllowedWebUrl(support + "/v1.2/notes"));
+	CHECK(api::IsAllowedWebUrl(repo + "releases/tag/v0.6.0"));
+	CHECK(api::IsAllowedWebUrl(Url("https", "www.trigglow.com/plugin/link?code=abc&lang=es%2DES")));
 	CHECK(api::AppSupportTicketUrl("not-a-uuid").empty());
 	CHECK(api::PublicSupportTicketUrl("123e4567-e89b-12d3-a456-426614174000", "a&b").empty());
 }

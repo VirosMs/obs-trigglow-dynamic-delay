@@ -78,7 +78,10 @@ std::string VerificationUrlPrefix();
 
 // True only for one of the fixed pages above (exact, or followed by '?', '#'
 // or '/' and plain URL characters), the GitHub repo's pages, or a
-// verificationUrl with the right prefix. Anything else must not be opened.
+// verificationUrl with the right prefix. What follows the prefix is checked
+// with "%2e", "%2f", "%5c" and "%25" decoded first, and may hold no ".." and no
+// "." path segment, so it can't lead out of the page it names. Anything else
+// must not be opened.
 bool IsAllowedWebUrl(std::string_view url);
 
 // "View ticket on trigglow.com": kAppSupport + "?ticket=<id>" (signed-in

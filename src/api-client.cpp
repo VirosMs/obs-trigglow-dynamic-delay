@@ -61,17 +61,83 @@ bool StartsWith(std::string_view s, std::string_view prefix)
 	return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }
 
-// Characters allowed after a fixed page's prefix: a plain path, query and
-// fragment. No spaces, quotes, angle brackets, backslashes, '@' or ':'.
-bool IsPlainUrlTail(std::string_view s)
+int HexValue(char c)
 {
+	if (IsDigit(c))
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F')
+		return c - 'A' + 10;
+	return -1;
+}
+
+// A URL's tail as a browser or a server may read it: "%2e" (any case) is a
+// '.', "%2f" a '/', "%5c" a '\' and "%25" a '%', decoded until nothing
+// changes, so "%2e%2e", ".%2E" and "%252e%252e" all end up as "..". Other
+// escapes stay as they are. false: a '%' without two hex digits after it, or
+// still encoded after a few rounds.
+bool NormalizeUrlTail(std::string_view in, std::string &out)
+{
+	std::string current(in);
+	for (int round = 0; round < 4; ++round) {
+		std::string next;
+		next.reserve(current.size());
+		bool changed = false;
+		for (size_t i = 0; i < current.size(); ++i) {
+			if (current[i] != '%') {
+				next += current[i];
+				continue;
+			}
+			if (i + 2 >= current.size() || HexValue(current[i + 1]) < 0 || HexValue(current[i + 2]) < 0)
+				return false;
+			const char decoded =
+				static_cast<char>(HexValue(current[i + 1]) * 16 + HexValue(current[i + 2]));
+			if (decoded == '.' || decoded == '/' || decoded == '\\' || decoded == '%') {
+				next += decoded;
+				changed = true;
+			} else {
+				next.append(current, i, 3);
+			}
+			i += 2;
+		}
+		current = std::move(next);
+		if (!changed) {
+			out = std::move(current);
+			return true;
+		}
+	}
+	return false;
+}
+
+// What may follow a fixed page's prefix: a plain path, query and fragment,
+// checked once normalized (above). No spaces, quotes, angle brackets,
+// backslashes, '@' or ':', no ".." anywhere and no "." path segment, so a
+// link can never step out of the page it names (as "/support/%2e%2e/x" would).
+bool IsPlainUrlTail(std::string_view raw)
+{
+	std::string s;
+	if (!NormalizeUrlTail(raw, s))
+		return false;
 	for (char c : s) {
 		const bool ok = IsAlnum(c) || c == '-' || c == '.' || c == '_' || c == '~' || c == '/' || c == '?' ||
 				c == '#' || c == '&' || c == '=' || c == '%' || c == '+';
 		if (!ok)
 			return false;
 	}
-	return s.find("..") == std::string_view::npos;
+	if (s.find("..") != std::string::npos)
+		return false;
+	const std::string_view path = std::string_view(s).substr(0, s.find_first_of("?#"));
+	size_t start = 0;
+	while (start <= path.size()) {
+		size_t slash = path.find('/', start);
+		if (slash == std::string_view::npos)
+			slash = path.size();
+		if (path.substr(start, slash - start) == ".")
+			return false;
+		start = slash + 1;
+	}
+	return true;
 }
 
 #ifdef TRIGGLOW_ALLOW_API_HOST_OVERRIDE
