@@ -388,10 +388,14 @@ FrameArena::Config ArenaConfigFor(uint64_t slots, uint32_t width, uint32_t heigh
 							 kAssumedCompressionRatio);
 	// Never past the RAM budget (or what the ring was sized for, if that's
 	// more): a sustained run of frames that compress far worse than assumed
-	// drops frames instead of growing without bound. Without FFmpeg (assumed
-	// ratio 1) every payload is a raw frame: blocks hold whole ones.
-	const bool rawPayloads = kAssumedCompressionRatio <= 1.0;
-	return FrameArena::SizedFor(expectedBytes, budgetBytes, rawPayloads ? static_cast<size_t>(rawBytes) : 0);
+	// drops frames instead of growing without bound.
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	return FrameArena::SizedFor(expectedBytes, budgetBytes);
+#else
+	// No codec (assumed ratio 1): every payload is a raw frame, and blocks
+	// hold a whole number of them.
+	return FrameArena::SizedFor(expectedBytes, budgetBytes, static_cast<size_t>(rawBytes));
+#endif
 }
 
 PipelineLoad LoadFromCause(degradation::Cause cause)
