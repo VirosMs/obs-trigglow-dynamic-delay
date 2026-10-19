@@ -45,6 +45,123 @@
   el prefijo `[obs-trigglow-dynamic-delay]` alrededor del momento en que apareció el error — llevan
   más detalle del que cabe en el mensaje corto del dock.
 
+## Iniciar sesión desde el dock
+- **En la v0.6.0 el inicio de sesión solo funciona en Windows.** En macOS y Linux el plugin todavía
+  no tiene cliente HTTP (previsto para la v0.6.1), así que allí no están disponibles el inicio de
+  sesión ni, con él, `Activar delay`, Trigi y los reportes desde OBS.
+- **Cómo va.** Pulsa **Iniciar sesión**: el navegador abre trigglow.com (inicia sesión o crea ahí una
+  cuenta gratuita) y el dock muestra "La página debe mostrar el código KD7F-29QM." (tu código será
+  otro). Comprueba que la página muestra el mismo código y pulsa **Confirmar**; el dock lo recoge solo
+  unos segundos después.
+- **No se abrió el navegador** ("No se pudo abrir el navegador. Copia el enlace y ábrelo tú."): pulsa
+  **Copiar enlace** y pégalo en un navegador de este equipo.
+- **Los códigos no coinciden, o no lo has iniciado tú**: pulsa **No he sido yo** en la página. No se
+  conecta nada, y el dock dice "Inicio de sesión cancelado desde la web." Si sí querías iniciar
+  sesión, vuelve a empezar desde el dock.
+- **"Esta solicitud viene de una red distinta a la tuya"** en la página: la solicitud de OBS y tu
+  navegador parecen venir de redes distintas. Es normal con una VPN o un proxy en solo uno de los
+  dos, o con la página abierta en el móvil o desde otra conexión. Si acabas de pulsar **Iniciar
+  sesión** tú y los códigos coinciden, puedes confirmar; si no, pulsa **No he sido yo**.
+- **"El enlace de inicio de sesión caducó. Vuelve a intentarlo."**: la solicitud no se confirmó a
+  tiempo o ya se había usado. Vuelve a pulsar **Iniciar sesión** para obtener un código nuevo.
+- **"No se pudo conectar con trigglow.com. Revisa tu conexión e inténtalo de nuevo."**: OBS no llega
+  a trigglow.com (sin conexión, cortafuegos, proxy). El plugin solo habla con api.trigglow.com por
+  HTTPS; deja pasar a OBS.
+- **"Demasiados intentos. Espera un momento y vuelve a intentarlo."**: espera un minuto y vuelve a
+  intentarlo.
+- **"No se pudo iniciar sesión. Vuelve a intentarlo."**: una respuesta inesperada. Vuelve a
+  intentarlo en un momento; si sigue pasando, envía un reporte desde
+  [trigglow.com/support](https://www.trigglow.com/support).
+- **"Esta versión del plugin ya no puede iniciar sesión. Actualiza el plugin."**: instala la última
+  versión (ver "El plugin dice que lo actualice" más abajo).
+- **"Tu sesión ha terminado. Vuelve a iniciar sesión para usar el delay."**: el inicio de sesión del
+  plugin se revocó o caducó, por ejemplo porque desconectaste el plugin en trigglow.com, cambiaste la
+  contraseña o cerraste allí todas tus sesiones, o porque llevabas mucho tiempo sin abrir OBS. Vuelve a
+  iniciar sesión desde el dock.
+- **"Tu cuenta de Trigglow no está activa."**: la cuenta está suspendida o no está activa, y `Activar
+  delay` queda bloqueado. Pulsa **Abrir trigglow.com** para ver el motivo, o escribe a soporte desde
+  la web.
+
+## Dónde se guarda el inicio de sesión y cómo cerrar sesión o desconectar el plugin
+- En Windows el plugin guarda su propio inicio de sesión, cifrado con la protección de datos de
+  Windows para tu usuario de Windows y aparte de los ajustes del plugin. Otro usuario de Windows, o una
+  copia de los ficheros en otro equipo, no puede usarlo: si no se puede descifrar, el plugin lo
+  descarta y te pide iniciar sesión. Tu email no se guarda, y el inicio de sesión nunca se adjunta a
+  un reporte.
+- **Cerrar sesión** en el dock lo revoca en trigglow.com y lo borra de este equipo (la copia local se
+  borra aunque no haya conexión).
+- **Desde trigglow.com**, por ejemplo si ya no tienes ese equipo: Ajustes → Sesiones activas → Apps
+  conectadas → **Desconectar** junto a "Trigglow Dynamic Delay (OBS)". El plugin te pedirá iniciar
+  sesión de nuevo la próxima vez que lo compruebe.
+- **Si vienes de la v0.5.x**: el inicio de sesión antiguo, guardado en texto plano, se cambia por el
+  nuevo en el primer arranque de la 0.6.0, y el fichero antiguo se sobrescribe y se borra. No hay que
+  borrar nada a mano.
+
+## El plugin dice que lo actualice
+- "Esta versión del plugin ya no puede iniciar sesión. Actualiza el plugin." (dock), "Actualiza el
+  plugin para usar Trigi" (Reportar un problema) y "Actualización necesaria" (página de inicio de
+  sesión de trigglow.com) significan que tu versión es demasiado antigua. Desde la v0.6.0 el inicio de
+  sesión de la v0.5.x y anteriores está retirado, así que esas versiones ya no pueden usar el delay.
+- Descarga la última versión (**Descargar la actualización** en el diálogo, el aviso de
+  actualización del dock o la
+  [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) e
+  instálala con OBS cerrado. Tus ajustes se conservan, y el inicio de sesión de la v0.5.x pasa solo;
+  si el dock te pide iniciar sesión, hazlo una vez.
+
+## Preguntar a Trigi (Reportar un problema)
+- **Trigi no aparece y el diálogo se abre en el formulario de ticket.** Trigi necesita Windows, una
+  cuenta con la sesión iniciada y una versión del plugin que admita. Sin sesión, el diálogo ofrece
+  **Inicia sesión para preguntar a Trigi** y **Enviar un reporte sin Trigi**; en macOS y Linux, usa el
+  formulario web. Si Trigi está apagado de momento, el formulario dice "Trigi no está disponible
+  ahora. Tu mensaje va directo al equipo de soporte." y tu mensaje llega a una persona.
+- **Qué significa cada mensaje:**
+  - "No hay conexión con trigglow.com. Revisa tu conexión y vuelve a intentarlo.": revisa la conexión
+    (cortafuegos, proxy, VPN) y pulsa **Reintentar**. Nada se reintenta solo.
+  - "Trigi ha tardado demasiado en responder. Vuelve a intentarlo.": vuelve a intentarlo; si sigue
+    pasando, crea un ticket.
+  - "trigglow.com no responde ahora mismo. Vuelve a intentarlo en unos minutos.": un problema
+    temporal por nuestra parte.
+  - "Has hecho muchas preguntas seguidas. Vuelve a intentarlo en unos minutos.": **Enviar** queda
+    desactivado con una cuenta atrás, y al terminar aparece "Ya puedes volver a preguntar a Trigi."
+    Mientras tanto, **Crear ticket** funciona.
+  - "Trigi no puede responder ahora. Crea un ticket y el equipo te ayudará.": Trigi no está
+    disponible de momento; el ticket llega al equipo.
+  - "Solo puedo ayudarte con Trigglow y Dynamic Delay.": pregunta por Dynamic Delay o escribe al
+    equipo.
+  - "Tu sesión de Trigglow ha terminado. Vuelve a iniciar sesión para seguir preguntando a Trigi…":
+    vuelve a iniciar sesión (se completa desde el dock); lo que escribiste se conserva.
+  - "Esta conversación se ha cerrado. Reintenta para empezar una nueva.": tu siguiente pregunta
+    empieza una conversación nueva.
+  - "Actualiza el plugin para usar Trigi.": ver "El plugin dice que lo actualice" más arriba; puedes
+    seguir enviando un reporte desde el mismo diálogo.
+  - **No enviado** bajo una pregunta: no llegó a trigglow.com. **Reintentar** la vuelve a enviar.
+- **Trigi puede equivocarse.** Revisa lo que te diga antes de cambiar tu configuración. Si una
+  respuesta no te ayuda, pulsa **No** en "¿Te ha servido?" y crea un ticket con la conversación.
+- **Los enlaces de las respuestas de Trigi no se pueden pulsar**, a propósito. Los botones del propio
+  diálogo abren las páginas correctas (soporte en trigglow.com, la actualización en GitHub).
+
+## Enviar un reporte
+- **Con la sesión iniciada (Windows)**: el ticket se crea desde tu cuenta, así que solo escribes qué
+  ha pasado (el asunto es opcional). Deja marcada **Adjuntar el registro (log) de OBS** para que el
+  equipo reciba el log, y revísalo antes con **Ver qué se envía**: las rutas con tu usuario de
+  Windows, URLs, claves, emails e IPs van ocultas, pero pueden quedar nombres de escenas y fuentes.
+  "Ticket enviado" ofrece **Ver ticket en trigglow.com**; las respuestas llegan por email y a tu panel
+  de soporte.
+- **"El ticket se creó, pero no se pudo adjuntar el log."**: el ticket existe. Pulsa **Guardar log
+  (sin datos personales)…** y añade ese fichero al ticket en trigglow.com.
+- **Sin sesión**: el formulario de invitado pide un nombre y un email para responderte. Si el diálogo
+  dice "Para enviar el reporte desde OBS, inicia sesión. También puedes usar el formulario web.",
+  trigglow.com está pidiendo a los invitados una comprobación humana (captcha), que OBS no puede
+  mostrar: inicia sesión, o pulsa **Abrir soporte web** y envíalo desde el navegador. **Guardar log
+  (sin datos personales)…** guarda el log redactado para que lo adjuntes allí.
+- **"Has enviado muchos reportes seguidos. Vuelve a intentarlo en unos minutos."**: espera y vuelve a
+  enviarlo.
+- **"Tu sesión de Trigglow ha caducado. Vuelve a conectar desde el dock."**: vuelve a iniciar sesión
+  y envíalo.
+- **macOS y Linux**: en la v0.6.0 el formulario aparece desactivado. Usa
+  [trigglow.com/support](https://www.trigglow.com/support) y adjunta tú el log de OBS (revísalo
+  antes: ahí el plugin no puede ocultar tus datos personales).
+
 ## "Encoding overloaded" (sobrecarga al codificar) o frames perdidos en cuanto activo el delay
 
 **Qué lo causaba antes de la v0.6.0.** Con el delay activo, el plugin comprime (MJPEG) cada frame
@@ -163,6 +280,14 @@ pulsas Activar) terminan en `output_cap=on|off` y `codec_workers=on|off`; `delay
 vez que arranca el buffer) da la configuración elegida y la escalera de degradación; un WARN que
 empieza por `delay buffer lower rung` o `delay buffer higher rung` marca cada paso de degradación,
 con su causa y las cifras de los últimos 2 segundos.
+
+**Líneas de inicio de sesión, Trigi y reportes** (desde la v0.6.0): dicen qué ha pasado y, si hay un
+error, el código HTTP: `[auth-manager] signed in`, `signed out`, `session ended`, `token renewed`,
+`migrated legacy login`; `[trigi] session started (available=true)`, `[trigi] message sent (len=…,
+diagnostics=on|off)`, `[trigi] reply (HTTP 200, len=…, action=…)`, `[trigi] rate limited`; `[support]
+ticket created (attachment=yes|no)`. Nunca contienen el enlace ni los códigos del inicio de sesión,
+tokens, IDs de tickets o de conversaciones, lo que preguntaste, las respuestas de Trigi ni los datos
+técnicos.
 
 ## Ajustes ocultos para soporte: `buffer_output_cap` y `codec_workers`
 

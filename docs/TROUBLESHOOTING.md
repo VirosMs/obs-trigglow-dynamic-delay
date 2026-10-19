@@ -42,6 +42,111 @@
   `[obs-trigglow-dynamic-delay]` around the time the error appeared — they carry more detail than
   the short message the dock can show.
 
+## Signing in from the dock
+- **In v0.6.0 sign-in works only on Windows.** On macOS and Linux the plugin has no HTTP client yet
+  (planned for v0.6.1), so sign-in, and with it `Enable delay`, Trigi and reports from OBS, aren't
+  available there.
+- **How it goes.** Press **Sign in**: your browser opens trigglow.com (sign in or create a free
+  account there) and the dock shows "The page must show the code KD7F-29QM." (your code is
+  different). Check that the page shows the same code and press **Confirm**; the dock picks it up by
+  itself a few seconds later.
+- **The browser didn't open** ("Couldn't open your browser. Copy the link and open it yourself."):
+  press **Copy link** and paste it into a browser on this computer.
+- **The codes don't match, or you didn't start it**: press **It wasn't me** on the page. Nothing is
+  connected, and the dock says "Sign-in cancelled from the web." Start again from the dock if you did
+  mean to sign in.
+- **"This request comes from a different network than yours"** on the page: the request from OBS and
+  your browser seem to come from different networks. That's normal with a VPN or proxy on only one of
+  them, or with the page open on your phone or on another connection. If you pressed **Sign in**
+  yourself just now and the codes match, you can confirm; if not, press **It wasn't me**.
+- **"The sign-in link expired. Try again."**: the request wasn't confirmed in time, or was already
+  used. Press **Sign in** again for a new code.
+- **"Couldn't reach trigglow.com. Check your connection and try again."**: OBS can't reach
+  trigglow.com (offline, firewall, proxy). The plugin only talks to api.trigglow.com over HTTPS;
+  allow OBS through.
+- **"Too many attempts. Wait a moment and try again."**: wait a minute and try again.
+- **"Couldn't sign in. Try again."**: an unexpected answer. Try again in a moment; if it keeps
+  happening, send a report from [trigglow.com/support](https://www.trigglow.com/support).
+- **"This plugin version can't sign in any more. Update the plugin."**: install the latest version
+  (see "The plugin says to update" below).
+- **"Your session ended. Sign in again to use the delay."**: the plugin's sign-in was revoked or
+  expired, for example because you disconnected the plugin on trigglow.com, changed your password or
+  closed all your sessions there, or OBS wasn't opened for a long time. Sign in again from the dock.
+- **"Your Trigglow account isn't active."**: the account is suspended or not active, and `Enable
+  delay` stays blocked. Press **Open trigglow.com** to see why, or write to support from the web.
+
+## Where the sign-in is stored, and how to sign out or disconnect the plugin
+- On Windows the plugin keeps its own sign-in, encrypted with Windows' data protection for your
+  Windows user, apart from the plugin's settings. Another Windows user, or a copy of the files on
+  another computer, can't use it: if it can't be decrypted, the plugin drops it and asks you to sign
+  in. Your email isn't stored, and the sign-in is never attached to a report.
+- **Sign out** in the dock revokes it on trigglow.com and deletes it from this computer (the local
+  copy is deleted even without a connection).
+- **From trigglow.com**, for example if you no longer have that computer: Settings → Active sessions
+  → Connected apps → **Disconnect** next to "Trigglow Dynamic Delay (OBS)". The plugin asks you to
+  sign in again the next time it checks.
+- **Coming from v0.5.x**: the old sign-in, stored as plain text, is exchanged for the new one on the
+  first start of 0.6.0, and the old file is overwritten and deleted. There's nothing to delete by
+  hand.
+
+## The plugin says to update
+- "This plugin version can't sign in any more. Update the plugin." (dock), "Update the plugin to use
+  Trigi" (Report a problem) and "Update required" (trigglow.com sign-in page) all mean that your
+  version is too old. Since v0.6.0 the sign-in of v0.5.x and earlier is retired, so those versions
+  can't use the delay any more.
+- Download the latest version (**Get the update** in the dialog, the dock's update notice or the
+  [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) and
+  install it with OBS closed. Your settings are kept, and a v0.5.x sign-in moves over by itself; if
+  the dock asks you to sign in, do it once.
+
+## Asking Trigi (Report a problem)
+- **Trigi doesn't show up and the dialog opens on the ticket form.** Trigi needs Windows, a
+  signed-in account and a plugin version it supports. Signed out, the dialog offers **Sign in to ask
+  Trigi** and **Send a report without Trigi**; on macOS and Linux, use the web form. If Trigi is off
+  for the moment, the form says "Trigi isn't available right now. Your message goes straight to the
+  support team." and your message reaches a person.
+- **What each message means:**
+  - "No connection to trigglow.com. Check your connection and try again.": check the connection
+    (firewall, proxy, VPN) and press **Try again**. Nothing is retried automatically.
+  - "Trigi took too long to answer. Try again.": try again; if it keeps happening, create a ticket.
+  - "trigglow.com isn't answering right now. Try again in a few minutes.": a temporary problem on our
+    side.
+  - "You've asked a lot of questions in a row. Try again in a few minutes.": **Send** stays off with a
+    countdown, and "You can ask Trigi again." when it ends. Meanwhile, **Create a ticket** works.
+  - "Trigi can't answer right now. Create a ticket and the team will help you.": Trigi isn't
+    available for the moment; the ticket reaches the team.
+  - "I can only help with Trigglow and Dynamic Delay.": ask about Dynamic Delay, or write to the team.
+  - "Your Trigglow session ended. Sign in again to keep asking Trigi…": sign in again (it continues
+    in the dock); what you typed is kept.
+  - "This conversation was closed. Try again to start a new one.": your next question starts a new
+    conversation.
+  - "Update the plugin to use Trigi.": see "The plugin says to update" above; you can still send a
+    report from the same dialog.
+  - **Not sent** under a question: it didn't reach trigglow.com. **Try again** sends it again.
+- **Trigi can be wrong.** Check what it says before changing your setup. If an answer doesn't help,
+  press **No** under "Was this helpful?" and create a ticket with the conversation.
+- **Links in Trigi's answers aren't clickable**, on purpose. The dialog's own buttons open the right
+  pages (support on trigglow.com, the update on GitHub).
+
+## Sending a report
+- **Signed in (Windows)**: the ticket is created from your account, so you only write what happened
+  (the subject is optional). Leave **Attach OBS's log** ticked so the team gets the log, and check it
+  first with **See what is sent**: paths with your Windows user name, URLs, keys, emails and IPs are
+  hidden, but scene and source names may remain. "Ticket sent" offers **View ticket on
+  trigglow.com**; replies arrive by email and in your support panel.
+- **"The ticket was created, but the log couldn't be attached."**: the ticket exists. Press **Save log
+  (no personal data)…** and add that file to the ticket on trigglow.com.
+- **Signed out**: the guest form asks for a name and an email to reply to. If the dialog says "To
+  send the report from OBS, sign in. You can also use the web form.", trigglow.com is asking guests
+  for a human check (captcha), which OBS can't show: sign in, or press **Open web support** and send
+  it from your browser. **Save log (no personal data)…** saves the redacted log so you can attach it
+  there.
+- **"Too many reports in a row. Try again in a few minutes."**: wait and send it again.
+- **"Your Trigglow session has expired. Sign in again from the dock."**: sign in again and send it.
+- **macOS and Linux**: in v0.6.0 the form is shown disabled. Use
+  [trigglow.com/support](https://www.trigglow.com/support) and attach OBS's log yourself (check it
+  first: the plugin can't hide personal data from it there).
+
 ## "Encoding overloaded" (or lagged frames) as soon as the delay is on
 
 **What caused it before v0.6.0.** While the delay is on, the plugin compresses every captured frame
@@ -157,6 +262,13 @@ Enable) end in `output_cap=on|off` and `codec_workers=on|off`; `delay pipeline: 
 buffer starts) gives the configuration chosen and the degradation ladder; a WARN starting with
 `delay buffer lower rung` or `delay buffer higher rung` marks each degradation step, with its cause
 and the last 2 seconds of numbers.
+
+**Sign-in, Trigi and report lines** (since v0.6.0) say what happened and, on errors, the HTTP code:
+`[auth-manager] signed in`, `signed out`, `session ended`, `token renewed`, `migrated legacy login`;
+`[trigi] session started (available=true)`, `[trigi] message sent (len=…, diagnostics=on|off)`,
+`[trigi] reply (HTTP 200, len=…, action=…)`, `[trigi] rate limited`; `[support] ticket created
+(attachment=yes|no)`. They never contain the sign-in link or codes, tokens, ticket or conversation
+IDs, what you asked, Trigi's answers or the technical data.
 
 ## Hidden settings for support: `buffer_output_cap` and `codec_workers`
 

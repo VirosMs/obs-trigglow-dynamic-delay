@@ -127,7 +127,79 @@ independientemente de a dónde emitas.
 **¿Necesito un panel web o una cuenta de Trigglow para usarlo?**
 Panel web no: todo el control vive dentro de OBS. Desde la v0.3.3 sí necesitas iniciar sesión una
 vez con una cuenta gratuita de trigglow.com para que Enable funcione (el inicio de sesión se hace en
-tu navegador, y el plugin sigue siendo 100% gratis) — ver `docs/ACCOUNT_GATE.md`.
+tu navegador, y el plugin sigue siendo 100% gratis) — ver `docs/ACCOUNT_GATE.md`. **En la v0.6.0, el
+inicio de sesión (y con él Activar delay y Trigi) solo funciona en Windows.** macOS y Linux todavía
+no tienen el cliente HTTP del plugin; está previsto para la v0.6.1.
+
+**¿Cómo funciona el inicio de sesión y qué guarda el plugin?**
+El inicio de sesión siempre se hace en trigglow.com, en tu navegador: el plugin nunca te pide la
+contraseña. Pulsa **Iniciar sesión** en el dock; muestra un código ("La página debe mostrar el
+código KD7F-29QM."), y la página de trigglow.com muestra el mismo código junto con la app, su
+versión y cuándo se pidió. Confirma solo si los códigos coinciden y lo has iniciado tú; **No he sido
+yo** lo cancela. A partir de ahí el plugin guarda su propio inicio de sesión, que solo sirve para lo
+que hace el plugin (comprobar tu cuenta, Trigi y tus propios tickets de Dynamic Delay), cifrado con
+la protección de datos de Windows para tu usuario de Windows. Tu email no se guarda. **Cerrar
+sesión** en el dock también lo desconecta en trigglow.com, y también puedes desconectarlo desde la
+web: Ajustes → Sesiones activas → Apps conectadas.
+
+**Tengo la v0.5.x o anterior. ¿Tengo que actualizar?**
+Sí. El inicio de sesión de la v0.5.x y anteriores se retira con la v0.6.0: esas versiones ya no
+pueden iniciar sesión en Trigglow, y las sesiones que ya tienen dejan de funcionar tras un periodo
+de transición, así que el delay deja de funcionar en ellas. Instala la v0.6.0 encima de tu versión,
+con OBS cerrado. En el primer arranque tu inicio de sesión pasa solo al formato nuevo; si el dock te
+pide iniciar sesión, hazlo una vez. Tus escenas y ajustes se conservan.
+
+**El dock o "Reportar un problema" me dice que actualice el plugin. ¿Qué hago?**
+"Esta versión del plugin ya no puede iniciar sesión. Actualiza el plugin." en el dock, "Actualiza el
+plugin para usar Trigi" en "Reportar un problema" o "Actualización necesaria" en la página de inicio
+de sesión de trigglow.com significan lo mismo: tu versión es demasiado antigua para lo que intentas
+hacer. Descarga la última versión (**Descargar la actualización** en el diálogo, el aviso de
+actualización del dock o la
+[última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) e
+instálala con OBS cerrado; tus ajustes y tu inicio de sesión se conservan. Mientras tanto puedes
+seguir enviando un reporte desde el formulario del diálogo o desde
+[trigglow.com/support](https://www.trigglow.com/support).
+
+**¿Qué es Trigi?**
+El asistente de soporte con IA de Trigglow, el mismo que en trigglow.com, ahora dentro del plugin:
+abre **Reportar un problema** en el dock y pregúntale por Dynamic Delay (cómo configurarlo, qué dice
+el dock, rendimiento, inicio de sesión). Responde en el propio diálogo. Es una IA y puede
+equivocarse, así que revisa lo que te diga antes de cambiar tu configuración. Si no lo resuelve,
+**Crear ticket con esta conversación** se la envía al equipo con el contexto, y siempre puedes
+saltarte a Trigi y escribir directamente al equipo. Trigi está disponible en Windows con la sesión
+iniciada; si no, el diálogo se abre en el formulario de ticket. La primera vez, un aviso breve
+("Antes de empezar con Trigi") explica todo esto, y no se envía nada hasta que lo aceptas y mandas tu
+primera pregunta.
+
+**¿Qué ve Trigi y qué no?**
+Ve lo que escribes y, solo si marcas **Incluir datos técnicos de OBS**, un pequeño conjunto de
+cifras y estados que se envían una vez al empezar la conversación: versiones de OBS y de Windows,
+renderizador, fabricante de la GPU, RAM total, familia del codificador, el estado, los segundos y la
+calidad mínima del delay, tamaño del lienzo y de la salida, fps, los frames retrasados y saltados de
+OBS, la salud del buffer y los códigos de problemas recientes del plugin. **Ver qué se envía**
+muestra los datos exactos antes de enviarlos. La casilla está desmarcada hasta que la marques. Trigi
+nunca recibe tu log de OBS (ni completo, ni en partes, ni resumido), y los datos técnicos nunca
+incluyen nombres de escenas, fuentes ni filtros, rutas, URLs, claves ni datos de tu emisión, tu
+nombre de usuario o tu email, el nombre de tu GPU, IDs de hardware ni IPs. Trigglow y un proveedor
+de IA indicado en la [Política de Privacidad](https://www.trigglow.com/legal/privacy) procesan tus
+mensajes y los datos técnicos. No escribas contraseñas, claves de stream, URLs de overlay ni datos
+de pago. El log de OBS solo va con un ticket, con los datos personales ocultos, si dejas marcada su
+casilla, y puedes verlo antes.
+
+**¿Cuánto tiempo se guardan mis conversaciones con Trigi y cómo las borro?**
+Las conversaciones con Trigi y los datos técnicos que elijas enviar se guardan hasta 12 meses y
+después se borran. El historial que ves en OBS solo está en memoria y desaparece al cerrar el
+diálogo (**Borrar conversación** solo limpia esa vista). Para borrarlas antes, en trigglow.com ve a
+Ajustes → Privacidad y datos → Conversaciones con Trigi → **Eliminar mis conversaciones con Trigi**,
+o pídeselo a soporte. Una conversación que convertiste en ticket se queda en el hilo de ese ticket,
+como el resto del ticket.
+
+**¿Qué conexiones de red hace el plugin?**
+En cada arranque de OBS, una comprobación de tu inicio de sesión con api.trigglow.com (más una
+renovación cuando toca) y una comprobación de la última release de este repositorio en
+api.github.com. Todo lo demás solo ocurre cuando lo usas: iniciar sesión, cerrar sesión, preguntar a
+Trigi y enviar un reporte. Todo por HTTPS, el inicio de sesión solo se envía a api.trigglow.com, y
+el plugin solo abre sus propias páginas fijas de www.trigglow.com y GitHub.
 
 **¿Necesito el plugin de Stream Deck de Trigglow?**
 No — el plugin usa hotkeys nativas de OBS, que Stream Deck puede disparar directamente con su propia

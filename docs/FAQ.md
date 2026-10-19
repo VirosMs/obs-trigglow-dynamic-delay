@@ -121,7 +121,74 @@ any specific platform, so the behavior is identical no matter where you're strea
 **Do I need a web panel or a Trigglow account to use it?**
 No web panel: all control lives inside OBS. Since v0.3.3 you do need to sign in once to a free
 trigglow.com account before Enable works (the sign-in happens in your browser, and the plugin stays
-100% free) — see `docs/ACCOUNT_GATE.md`.
+100% free) — see `docs/ACCOUNT_GATE.md`. **In v0.6.0, sign-in (and with it Enable delay and Trigi)
+works only on Windows.** macOS and Linux don't have the plugin's HTTP client yet; it's planned for
+v0.6.1.
+
+**How does signing in work, and what does the plugin keep?**
+Signing in always happens on trigglow.com, in your browser: the plugin never asks for your password.
+Press **Sign in** in the dock; it shows a code ("The page must show the code KD7F-29QM."), and the
+trigglow.com page shows the same code with the app, its version and when it was requested. Confirm
+only if the codes match and you started it; **It wasn't me** cancels it. From then on the plugin
+keeps its own sign-in, which only works for what the plugin does (checking your account, Trigi and
+your own Dynamic Delay tickets), encrypted with Windows' data protection for your Windows user. Your
+email isn't stored. **Sign out** in the dock also disconnects it on trigglow.com, and you can
+disconnect it from the web too: Settings → Active sessions → Connected apps.
+
+**I'm on v0.5.x or earlier. Do I have to update?**
+Yes. The sign-in of v0.5.x and earlier is retired with v0.6.0: those versions can no longer sign in
+to Trigglow, and the sign-ins they already have stop working after a transition period, so the
+delay stops working there. Install v0.6.0 over your current version, with OBS closed. On the first
+start your sign-in moves to the new format by itself; if the dock asks you to sign in, do it once.
+Your scenes and settings are kept.
+
+**The dock or "Report a problem" says to update the plugin. What do I do?**
+"This plugin version can't sign in any more. Update the plugin." in the dock, "Update the plugin to
+use Trigi" in "Report a problem" or "Update required" on the trigglow.com sign-in page all mean the
+same: your version is too old for what you're trying to do. Download the latest version (**Get the
+update** in the dialog, the update notice in the dock, or the
+[latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) and install
+it with OBS closed; your settings and your sign-in are kept. Meanwhile you can still send a report
+from the form in the dialog or from [trigglow.com/support](https://www.trigglow.com/support).
+
+**What is Trigi?**
+Trigglow's AI support assistant, the same one as on trigglow.com, now in the plugin: open **Report a
+problem** in the dock and ask about Dynamic Delay (setting it up, what the dock says, performance,
+signing in). It answers right in the dialog. It's an AI and can make mistakes, so check what it
+tells you before changing your setup. If it doesn't sort it out, **Create a ticket with this
+conversation** sends it to the team with the context, and you can always skip Trigi and write to the
+team directly. Trigi is available on Windows when you're signed in; otherwise the dialog opens on
+the ticket form. The first time, a short notice ("Before you start with Trigi") explains all this,
+and nothing is sent until you accept it and send your first question.
+
+**What does Trigi see, and what doesn't it?**
+It sees what you type and, only if you tick **Include OBS technical data**, a small set of numbers
+and states sent once when the conversation starts: OBS and Windows versions, renderer, GPU vendor,
+total RAM, encoder family, the delay's state, seconds and minimum quality, canvas and output size,
+fps, OBS's lagged and skipped frames, the buffer's health and the plugin's recent problem codes.
+**See what is sent** shows the exact data before you send it. The box is unticked until you tick it.
+Trigi never gets your OBS log (not whole, not in parts, not summarized), and the technical data
+never includes scene, source or filter names, paths, URLs, stream keys or stream details, your user
+name or email, your GPU's name, hardware IDs or IPs. Your messages and the technical data are
+processed by Trigglow and an AI provider listed in the
+[Privacy Policy](https://www.trigglow.com/legal/privacy). Don't type passwords, stream keys, overlay
+URLs or payment details. The OBS log only goes with a ticket, with personal data hidden, if you
+leave its box ticked, and you can see it first.
+
+**How long are my conversations with Trigi kept, and how do I delete them?**
+Conversations with Trigi and the technical data you choose to send are kept for up to 12 months and
+then deleted. The history you see in OBS is only in memory and disappears when you close the
+dialog (**Clear conversation** only clears that view). To delete them earlier, on trigglow.com go to
+Settings → Privacy & data → Conversations with Trigi → **Delete my Trigi conversations**, or ask
+support. A conversation you turned into a ticket stays in that ticket's thread, like the rest of the
+ticket.
+
+**What network calls does the plugin make?**
+On every OBS start, one check of your sign-in with api.trigglow.com (plus a renewal when it's due)
+and one check of this repository's latest release on api.github.com. Everything else happens only
+when you use it: signing in, signing out, asking Trigi and sending a report. All of it over HTTPS,
+the sign-in only ever sent to api.trigglow.com, and the plugin only opens its own fixed pages on
+www.trigglow.com and GitHub.
 
 **Do I need Trigglow's Stream Deck plugin?**
 No — the plugin uses native OBS hotkeys, which Stream Deck can trigger directly with its own
