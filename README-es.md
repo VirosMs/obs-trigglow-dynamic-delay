@@ -335,7 +335,7 @@ src/
 data/
   locale/en-US.ini, es-ES.ini      → las cadenas traducidas reales del plugin (ver src/i18n.hpp)
   fonts/                           → Archivo y Geist Mono empaquetadas + sus licencias OFL
-  licenses/                        → avisos de los recursos de terceros compilados en el plugin
+  licenses/                        → avisos de los componentes de terceros (iconos Lucide, DLL de FFmpeg)
 tests/
   buffer_fit_tests.cpp             → tests unitarios de buffer-fit (desactivados por defecto:
                                      -DTRIGGLOW_BUILD_TESTS=ON, después ctest)
@@ -379,14 +379,15 @@ del día a día ocurre en `develop`; los PRs van de `develop` a `main`.
 
 ### Recursos de terceros
 
-La interfaz del plugin incluye algunos recursos de terceros, cada uno con su licencia (todas
-compatibles con distribuirlos junto a un binario GPL-2.0):
+El plugin incluye algunos componentes de terceros, cada uno con su licencia (todas compatibles con
+distribuirlos junto a un binario GPL-2.0):
 
 | Recurso | Dónde | Licencia |
 |---|---|---|
 | **Archivo** (SemiBold, Bold), subconjunto | `data/fonts/Archivo-*.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-Archivo.txt` |
 | **Geist Mono** (Medium), subconjunto | `data/fonts/GeistMono-Medium.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-GeistMono.txt` |
 | Iconos de la interfaz (trazados de Lucide, como en la web de Trigglow) | compilados desde `src/resources/icons/` | ISC (partes MIT, Feather), `data/licenses/LICENSE-lucide.txt` |
+| Bibliotecas de **FFmpeg** (avcodec, avutil, swresample), build LGPL de BtbN fijada en `buildspec.json`, solo Windows | DLL junto a la del plugin (`bin/64bit` en el paquete), sin modificar | LGPL 3.0 o posterior, con componentes MIT/BSD/Apache (libvpl, AMF, ffnvcodec); `data/licenses/LICENSE-ffmpeg.txt`, con la etiqueta de la build y su código fuente |
 
 Las fuentes son instancias estáticas, en subconjunto, de las fuentes variables originales de
 [google/fonts](https://github.com/google/fonts) (`ofl/archivo`, `ofl/geistmono`); `tools/fonts/`

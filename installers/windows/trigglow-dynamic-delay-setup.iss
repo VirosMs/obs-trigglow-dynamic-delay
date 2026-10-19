@@ -115,8 +115,12 @@ Source: "{#PluginStageDir}\data\images\delay-badge.png"; DestDir: "{app}\data\ob
 ; packaging an installer without them.
 Source: "{#PluginStageDir}\data\fonts\*.ttf"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion
 Source: "{#PluginStageDir}\data\fonts\OFL-*.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\fonts"; Flags: ignoreversion
-; Notices of third-party assets compiled into the plugin (Lucide icons, ISC).
-Source: "{#PluginStageDir}\data\licenses\*.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\licenses"; Flags: ignoreversion
+; Notices of third-party components: the Lucide icons compiled into the plugin
+; (ISC) and the FFmpeg DLLs below (LGPL 3.0 or later, with the build's tag and
+; its source). Listed one by one, so a staged build without either fails to
+; compile here instead of quietly packaging an installer without it.
+Source: "{#PluginStageDir}\data\licenses\LICENSE-lucide.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\licenses"; Flags: ignoreversion
+Source: "{#PluginStageDir}\data\licenses\LICENSE-ffmpeg.txt"; DestDir: "{app}\data\obs-plugins\obs-trigglow-dynamic-delay\licenses"; Flags: ignoreversion
 ; v0.3.0 Phase 0 (FFmpeg groundwork, docs/ROADMAP.md): CMake's install() rule
 ; already places these next to the plugin's own .dll in the packaged output
 ; (CMakeLists.txt's OS_WINDOWS block) specifically so Windows' DLL search

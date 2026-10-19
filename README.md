@@ -312,7 +312,7 @@ src/
 data/
   locale/en-US.ini, es-ES.ini      → the plugin's actual translated strings (see src/i18n.hpp)
   fonts/                           → bundled Archivo and Geist Mono + their OFL licenses
-  licenses/                        → notices of third-party assets compiled into the plugin
+  licenses/                        → notices of third-party components (Lucide icons, FFmpeg DLLs)
 tests/
   buffer_fit_tests.cpp             → unit tests for buffer-fit (off by default:
                                      -DTRIGGLOW_BUILD_TESTS=ON, then ctest)
@@ -355,7 +355,7 @@ direct pushes, no force-push, no branch deletion). Day-to-day work happens on `d
 
 ### Third-party assets
 
-The plugin's UI ships a few third-party assets, each under its own license (all compatible with
+The plugin ships a few third-party components, each under its own license (all compatible with
 redistribution next to a GPL-2.0 binary):
 
 | Asset | Where | License |
@@ -363,6 +363,7 @@ redistribution next to a GPL-2.0 binary):
 | **Archivo** (SemiBold, Bold), subset | `data/fonts/Archivo-*.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-Archivo.txt` |
 | **Geist Mono** (Medium), subset | `data/fonts/GeistMono-Medium.ttf` | SIL Open Font License 1.1, `data/fonts/OFL-GeistMono.txt` |
 | Interface icons (Lucide paths, as in the Trigglow web app) | compiled in from `src/resources/icons/` | ISC (portions MIT, Feather), `data/licenses/LICENSE-lucide.txt` |
+| **FFmpeg** libraries (avcodec, avutil, swresample), BtbN LGPL build pinned in `buildspec.json`, Windows only | DLLs next to the plugin's own (`bin/64bit` in the package), unmodified | LGPL 3.0 or later, with MIT/BSD/Apache components (libvpl, AMF, ffnvcodec); `data/licenses/LICENSE-ffmpeg.txt`, with the build's tag and its source |
 
 The fonts are static instances subset from the upstream variable fonts in
 [google/fonts](https://github.com/google/fonts) (`ofl/archivo`, `ofl/geistmono`); `tools/fonts/`

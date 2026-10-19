@@ -397,6 +397,57 @@ jobs:
           target: x64
           config: ${{ needs.check-event.outputs.config }}
 
+      - name: Check FFmpeg License 🔍
+        run: |
+          # Check FFmpeg License 🔍
+          #
+          # The plugin ships avcodec, avutil and swresample next to its DLL
+          # under the LGPL (data/licenses/LICENSE-ffmpeg.txt). A GPL or nonfree
+          # build in buildspec.json would make that notice wrong, and a nonfree
+          # one unredistributable: this fails the build if the avcodec DLL of
+          # the FFmpeg it just downloaded was configured with --enable-gpl or
+          # --enable-nonfree, or doesn't report an LGPL license. Only whole
+          # tokens of FFmpeg's own configure line (the one naming --target-os)
+          # count, so other strings in the DLL (a codec library's options, a
+          # help text) can't trip it.
+          if ( $Env:RUNNER_DEBUG -ne $null ) {
+            Set-PSDebug -Trace 1
+          }
+
+          # The printable ASCII run around position $at (one C string of the DLL).
+          function Get-StringAt([string]$text, [int]$at) {
+            $start = $at
+            while ( $start -gt 0 -and $text[$start - 1] -ge ' ' -and $text[$start - 1] -le '~' ) { $start-- }
+            $end = $at
+            while ( $end -lt $text.Length -and $text[$end] -ge ' ' -and $text[$end] -le '~' ) { $end++ }
+            return $text.Substring($start, $end - $start)
+          }
+
+          $dlls = Get-ChildItem -Path .deps/ffmpeg-windows-x64 -Recurse -Filter 'avcodec-*.dll'
+          if ( -not $dlls ) {
+            throw 'No avcodec DLL under .deps/ffmpeg-windows-x64: the FFmpeg dependency was not downloaded.'
+          }
+          foreach ( $dll in $dlls ) {
+            # Latin-1: one char per byte, nothing above 0x7E taken for text.
+            $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($dll.FullName))
+            $at = $text.IndexOf('libavcodec license: ', [StringComparison]::Ordinal)
+            $license = if ( $at -ge 0 ) { Get-StringAt $text $at } else { '' }
+            $configs = @()
+            $at = $text.IndexOf('--target-os=', [StringComparison]::Ordinal)
+            while ( $at -ge 0 ) {
+              $configs += Get-StringAt $text $at
+              $at = $text.IndexOf('--target-os=', $at + 1, [StringComparison]::Ordinal)
+            }
+            if ( -not $license -or $configs.Count -eq 0 ) {
+              throw "$($dll.Name): no license or configuration string found, the FFmpeg build can't be checked."
+            }
+            $bad = @($configs | ForEach-Object { -split $_ } | Where-Object { $_ -in '--enable-gpl', '--enable-nonfree' })
+            Write-Host "$($dll.Name): $license; configuration checked"
+            if ( $bad.Count -gt 0 -or $license -notmatch '^libavcodec license: LGPL version' ) {
+              throw "$($dll.Name) is not an LGPL build ($license; $($bad -join ' ')): the plugin may only ship an LGPL FFmpeg."
+            }
+          }
+
       - name: Package Plugin 📀
         uses: ./.github/actions/package-plugin
         with:
