@@ -223,6 +223,21 @@ target_link_libraries(pipeline_gop_stress_tests PRIVATE Threads::Threads)
 set_target_properties(pipeline_gop_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME pipeline_gop_stress_tests COMMAND pipeline_gop_stress_tests)
 
+# v0.7.0 adversarial tests of the pipeline's hardware path (one edge each:
+# evacuations inside a GOP, packet losses, Disable and shutdown during a
+# setup, yields, render pauses, a slow software decode, a tight arena).
+add_executable(
+  adversarial_gop_tests
+  adversarial_gop_tests.cpp
+  check.hpp
+  fake-gop-codec.hpp
+  ${_pipeline_sources}
+)
+target_include_directories(adversarial_gop_tests PRIVATE "${_src}")
+target_link_libraries(adversarial_gop_tests PRIVATE Threads::Threads)
+set_target_properties(adversarial_gop_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME adversarial_gop_tests COMMAND adversarial_gop_tests)
+
 # Lifecycle of the plugin's background jobs (src/cancel-token.*,
 # src/background-tasks.*): cancellation, results only for owners still alive,
 # nothing after shutdown, and shutdown within its time limit.
