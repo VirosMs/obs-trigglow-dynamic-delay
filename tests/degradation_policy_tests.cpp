@@ -18,7 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Unit tests for trigglow::degradation (src/degradation-policy.hpp): the
 // ladder, the initial parallelism, every down trigger, the cooldown, the 30 s
-// hysteresis going up, the recovery order and the absence of oscillation.
+// hysteresis going up, the recovery order and the absence of oscillation;
+// since v0.7.0 the storage codec policy's hooks.
 
 #include "check.hpp"
 #include "degradation-policy.hpp"
@@ -487,6 +488,82 @@ void TestNotEnoughSamples()
 	      }).empty());
 }
 
+// v0.7.0: the storage codec policy's hooks -- the hardware steps, a forced
+// rung down, the veto on going up, steps switched with the codec, a new
+// ladder -- and the worker's own time as the only encode load (I6).
+void TestCodecHooks()
+{
+	testcheck::g_currentTest = "codec hooks";
+	const std::vector<Parallelism> hw = BuildParallelismSteps(true, true);
+	CHECK_EQ(hw.size(), 1u);
+	CHECK(hw[0].contexts == 1 && hw[0].slices == 1);
+	CHECK_EQ(BuildParallelismSteps(false, true).size(), 1u);
+
+	// ForceLower: one rung right away; none at the last rung.
+	Policy p = Threaded1080();
+	const Decision d = p.ForceLower(Cause::Encode, 2.4, 10 * kSecond);
+	CHECK(d.action == Action::LowerQuality && d.cause == Cause::Encode);
+	CHECK_EQ(p.RungIndex(), 1u);
+	while (p.RungIndex() + 1 < p.Ladder().size())
+		p.ForceLower(Cause::Encode, 2.4, 11 * kSecond);
+	CHECK(p.ForceLower(Cause::Encode, 2.4, 12 * kSecond).action == Action::None);
+
+	// The veto: calm for a minute, no going up while blockUp; up once it's lifted.
+	Policy q = Threaded1080();
+	q.ForceLower(Cause::Encode, 2.4, kSecond);
+	auto calm = [](uint64_t t) {
+		Sample s = Healthy(t);
+		s.graphicsP95Ms = 0.2;
+		s.encodeP95Ms = 1.0;
+		s.decodeP95Ms = 1.0;
+		return s;
+	};
+	CHECK(Run(q, 2 * kSecond, 90 * kSecond, [&](uint64_t t) {
+		      Sample s = calm(t);
+		      s.blockUp = true;
+		      return s;
+	      }).empty());
+	const std::vector<Decision> up = Run(q, 90 * kSecond + kSecond / 4, 130 * kSecond, calm);
+	CHECK(!up.empty() && up.front().action == Action::RaiseQuality);
+
+	// Steps switched with the codec: 2x2 MJPEG -> 1x1 hardware, rung kept.
+	Policy r = Threaded1080(2);
+	r.ForceLower(Cause::Encode, 1.0, kSecond);
+	r.SetParallelism(BuildParallelismSteps(true, true), 0);
+	CHECK_EQ(r.RungIndex(), 1u);
+	CHECK_EQ(r.ParallelismIndex(), 0u);
+	CHECK(r.CurrentParallelism().contexts == 1 && r.CurrentParallelism().slices == 1);
+	// An encode overload on hardware steps can only lower a rung.
+	const std::vector<Decision> over = Run(r, 2 * kSecond, 6 * kSecond, [](uint64_t t) {
+		Sample s = Healthy(t);
+		s.encodeP95Ms = 16.0;
+		return s;
+	});
+	CHECK(!over.empty() && over.front().action == Action::LowerQuality);
+	// Back to MJPEG's steps, at its initial step.
+	r.SetParallelism(BuildParallelismSteps(true), 1);
+	CHECK_EQ(r.ParallelismIndex(), 1u);
+	CHECK(r.CurrentParallelism().contexts == 2);
+
+	// A new ladder (the encoders' ceiling), on a given rung, parallelism kept.
+	Policy e = Threaded1080(1);
+	e.Rebase(BuildLadder(1280, 720, 720, true), 0);
+	CHECK_EQ(e.Ladder().size(), 2u); // 720p, then 720p at half rate.
+	CHECK_EQ(e.RungIndex(), 0u);
+	CHECK_EQ(e.ParallelismIndex(), 1u);
+	e.Rebase(BuildLadder(1920, 1080, 720, true), 9);
+	CHECK_EQ(e.RungIndex(), e.Ladder().size() - 1);
+
+	// I6: a hardware encoder's ~20 ms latency never reaches the policy; the
+	// worker's own few milliseconds per frame don't move it.
+	Policy g(BuildLadder(1920, 1080, 720, true), BuildParallelismSteps(true, true), 0, true);
+	CHECK(Run(g, kSecond, 60 * kSecond, [](uint64_t t) {
+		      Sample s = Healthy(t);
+		      s.encodeP95Ms = 3.0; // Send(), copies, Publish -- not the 19-21 ms to the packet.
+		      return s;
+	      }).empty());
+}
+
 } // namespace
 
 int main()
@@ -505,5 +582,6 @@ int main()
 	TestNoOscillationDelayedDecode(60);
 	TestRecoveryOrder();
 	TestNotEnoughSamples();
+	TestCodecHooks();
 	return testcheck::Finish("degradation_policy_tests");
 }

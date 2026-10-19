@@ -59,8 +59,12 @@ std::vector<Rung> BuildLadder(uint32_t fullWidth, uint32_t fullHeight, uint32_t 
 	return ladder;
 }
 
-std::vector<Parallelism> BuildParallelismSteps(bool threaded)
+std::vector<Parallelism> BuildParallelismSteps(bool threaded, bool inter)
 {
+	// A hardware inter-frame encoder: one context (capture order, invariant
+	// I1), and nothing for slices to split.
+	if (inter)
+		return {{1, 1}};
 	// At most 2 slice threads per context since v0.7.0 (design 6.2): every
 	// extra slice costs the encoder ~15 MB at 1440p and ~33 MB at 2160p, and
 	// 2 contexts x 4 slices held ~60/130 MB more than 2 x 2.
@@ -152,6 +156,34 @@ Policy::Policy(std::vector<Rung> ladder, std::vector<Parallelism> steps, size_t 
 		ladder_.push_back(Rung{});
 	step_ = std::min(initialParallelism, steps_.size() - 1);
 	initialStep_ = step_;
+}
+
+Decision Policy::ForceLower(Cause cause, double load, uint64_t nowNs)
+{
+	if (!Valid() || rung_ + 1 >= ladder_.size())
+		return {};
+	return Apply(Action::LowerQuality, cause, load, nowNs);
+}
+
+void Policy::SetParallelism(std::vector<Parallelism> steps, size_t initial)
+{
+	steps_ = std::move(steps);
+	if (steps_.empty())
+		steps_.push_back(Parallelism{});
+	step_ = std::min(initial, steps_.size() - 1);
+	initialStep_ = step_;
+	upSinceNs_ = 0;
+	lastChangeNs_ = 0; // The windows restart: settle again from the next evaluation.
+}
+
+void Policy::Rebase(std::vector<Rung> ladder, size_t rung)
+{
+	ladder_ = std::move(ladder);
+	if (ladder_.empty())
+		ladder_.push_back(Rung{});
+	rung_ = std::min(rung, ladder_.size() - 1);
+	upSinceNs_ = 0;
+	lastChangeNs_ = 0;
 }
 
 Decision Policy::Apply(Action action, Cause cause, double load, uint64_t nowNs)
@@ -249,7 +281,7 @@ Decision Policy::Evaluate(const Sample &s)
 	}
 
 	// --- Up (one step, predicted) ---
-	if (!settled || s.graphicsSamples < t.minSamples ||
+	if (s.blockUp || !settled || s.graphicsSamples < t.minSamples ||
 	    (threaded_ && (s.encodeSamples < t.minSamples || decodeSamples < t.minSamples))) {
 		upSinceNs_ = 0;
 		return {};
