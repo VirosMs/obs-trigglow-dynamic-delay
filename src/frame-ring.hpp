@@ -124,6 +124,7 @@ struct ChainSlot {
 	bool key = false;
 	uint32_t chain = 0;
 	uint32_t seq = 0;
+	storage::CodecId codec = storage::CodecId::Raw;
 };
 
 // Where to start decoding so the Ready frame at position `due` can be shown
@@ -131,7 +132,10 @@ struct ChainSlot {
 // from, with every packet in between still Ready (slots dropped before the
 // encode carry no seq, so they don't count as gaps); catchUp of them must be
 // decoded unshown first (0 when due is a key itself: always so for raw and
-// MJPEG). nextKeyPos: the first Ready key after due (kNoPosition if none yet).
+// MJPEG). Frames of another codec in between (an intra frame a second encode
+// context stored while the hardware encoder took over) aren't part of the
+// chain's bitstream: skipped, not counted. nextKeyPos: the first Ready key
+// after due, of any codec (kNoPosition if none yet).
 constexpr size_t kNoPosition = SIZE_MAX;
 struct DecodeStart {
 	bool found = false;
@@ -165,6 +169,8 @@ template<typename ChainAt> DecodeStart PlanDecodeStart(size_t count, size_t due,
 		const ChainSlot slot = chainAt(due - back);
 		if (!slot.ready)
 			continue; // Dropped before its encode (no seq), or not stored: a gap shows in the seqs.
+		if (slot.codec != target.codec)
+			continue; // Another codec's frame: its decoder keeps its own references.
 		if (slot.chain != target.chain || slot.seq != expected - 1)
 			return plan; // Another chain, or a packet of this one is missing: wait for the next key.
 		expected = slot.seq;
@@ -320,6 +326,9 @@ public:
 	// search (wait for it).
 	bool PinNextForDecode(uint64_t afterNs, uint64_t targetNs, uint64_t windowEndNs, uint64_t lateNs,
 			      ReadView &out);
+	// Catch-up (v0.7.0): pins the first Ready slot with afterNs < captureNs <=
+	// untilNs, whatever the states in between. False if there is none.
+	bool PinNextInRange(uint64_t afterNs, uint64_t untilNs, ReadView &out);
 	// Sync path: pins ringselect::SelectForDisplay(targetNs, maxBack).
 	bool PinForDisplay(uint64_t targetNs, size_t maxBack, ReadView &out);
 	// The capture time of the slot PinForDisplay() would pin, without pinning

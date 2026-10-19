@@ -194,6 +194,26 @@ bool FrameRing::PinNextForDecode(uint64_t afterNs, uint64_t targetNs, uint64_t w
 	return false;
 }
 
+bool FrameRing::PinNextInRange(uint64_t afterNs, uint64_t untilNs, ReadView &out)
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	const size_t count = buffered_;
+	auto captureAt = [&](size_t p) {
+		return headers_[IndexAt(p)].captureNs;
+	};
+	const size_t last = ringselect::LastAtOrBefore(count, afterNs, captureAt);
+	for (size_t p = last == count ? 0 : last + 1; p < count; ++p) {
+		const Header &header = headers_[IndexAt(p)];
+		if (header.captureNs > untilNs)
+			return false;
+		if (header.captureNs > afterNs && header.state == SlotState::Ready) {
+			FillViewLocked(IndexAt(p), out);
+			return true;
+		}
+	}
+	return false;
+}
+
 bool FrameRing::PinForDisplay(uint64_t targetNs, size_t maxBack, ReadView &out)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
@@ -293,6 +313,7 @@ FrameRing::DecodePlan FrameRing::PlanDecodeStart(uint64_t targetNs, size_t maxBa
 		slot.key = header.payload.key;
 		slot.chain = header.payload.chain;
 		slot.seq = header.payload.seq;
+		slot.codec = header.payload.codec;
 		return slot;
 	};
 	const size_t due = ringselect::SelectForDisplay(count, targetNs, maxBack, captureAt, readyAt);

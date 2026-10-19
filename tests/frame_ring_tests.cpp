@@ -492,6 +492,27 @@ void TestPlanDecodeStart()
 	// The due position not Ready, or past the end: nothing.
 	CHECK(!Plan({K(1, 0), D()}, 1).found);
 	CHECK(!Plan({K(1, 0)}, 3).found);
+	// v0.7.0: an intra frame of another codec between the key and the due
+	// P-frame (a second MJPEG context while the hardware encoder took over)
+	// isn't part of the chain: skipped, not decoded, not a gap.
+	auto hevc = [](ringselect::ChainSlot slot) {
+		slot.codec = storage::CodecId::Hevc;
+		return slot;
+	};
+	auto mjpeg = [](ringselect::ChainSlot slot) {
+		slot.codec = storage::CodecId::Mjpeg;
+		return slot;
+	};
+	plan = Plan({hevc(K(1, 0)), hevc(P(1, 1)), mjpeg(K(2, 0)), hevc(P(1, 2)), mjpeg(K(3, 0)), hevc(P(1, 3))}, 5);
+	CHECK(plan.found && plan.keyPos == 0 && plan.catchUp == 3);
+	CHECK_EQ(plan.nextKeyPos, ringselect::kNoPosition);
+	// The MJPEG frame after the due one is the next key (of any codec).
+	plan = Plan({hevc(K(1, 0)), hevc(P(1, 1)), hevc(P(1, 2)), mjpeg(K(2, 0))}, 2);
+	CHECK(plan.found && plan.catchUp == 2);
+	CHECK_EQ(plan.nextKeyPos, 3u);
+	// Another chain of the same codec in between still cuts it.
+	plan = Plan({hevc(K(1, 0)), hevc(K(4, 0)), hevc(P(1, 1))}, 2);
+	CHECK(!plan.found);
 }
 
 void TestChooseDecodeStart()
@@ -566,6 +587,18 @@ void TestRingPlan()
 	CHECK(!plan.nextKey);
 	// Before the oldest frame: nothing due.
 	CHECK(!ring.PlanDecodeStart(999, 4, 1, kInterval).due);
+	CHECK_EQ(ring.GetCounts().pinned, 0u);
+
+	// PinNextInRange(): the catch-up walk, Ready slots only, inside (after, until].
+	FrameRing::ReadView view;
+	CHECK(ring.PinNextInRange(999, 1040, view) && view.captureNs == 1000);
+	ring.Unpin(view);
+	CHECK(ring.PinNextInRange(1010, 1040, view) && view.captureNs == 1030); // 2 is dropped.
+	ring.Unpin(view);
+	CHECK(!ring.PinNextInRange(1040, 1040, view));         // Nothing after 1040 up to 1040.
+	CHECK(ring.PinNextInRange(1100, 2000, view) == false); // 11 is still encoding, nothing after.
+	CHECK(ring.PinNextInRange(1060, 1075, view) && view.captureNs == 1070 && view.codec == storage::CodecId::Mjpeg);
+	ring.Unpin(view);
 	CHECK_EQ(ring.GetCounts().pinned, 0u);
 }
 
