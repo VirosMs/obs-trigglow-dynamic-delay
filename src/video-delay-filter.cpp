@@ -2302,7 +2302,7 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 		proc_handler_add(procHandler, "void release_buffers()", &VideoDelayFilter::ReleaseBuffersProc, filter);
 		proc_handler_add(procHandler, "void get_effective_delay_seconds(out int seconds)",
 				 &VideoDelayFilter::GetEffectiveDelaySecondsProc, filter);
-		proc_handler_add(procHandler, "void get_pipeline_state(in ptr health)",
+		proc_handler_add(procHandler, "void get_pipeline_state(in ptr health, in int size)",
 				 &VideoDelayFilter::GetPipelineStateProc, filter);
 		proc_handler_add(procHandler, "void set_managed_delay_seconds(in int seconds)",
 				 &VideoDelayFilter::SetManagedDelaySecondsProc, filter);
@@ -2430,8 +2430,16 @@ void VideoDelayFilter::GetPipelineStateProc(void *data, calldata_t *params)
 	void *out = nullptr;
 	if (!calldata_get_ptr(params, "health", &out) || !out)
 		return;
-	std::lock_guard<std::mutex> lock(filter->healthMutex_);
-	*static_cast<PipelineHealth *>(out) = filter->health_;
+	// Only what the caller's struct holds ("size"; a caller without it gets
+	// the version 1 part): never the newer, bigger struct over a smaller one.
+	long long size = 0;
+	const bool sizeGiven = calldata_get_int(params, "size", &size);
+	PipelineHealth health;
+	{
+		std::lock_guard<std::mutex> lock(filter->healthMutex_);
+		health = filter->health_;
+	}
+	CopyPipelineHealth(health, out, PipelineHealthCopySize(sizeGiven, size));
 }
 
 void VideoDelayFilter::SetManagedDelaySecondsProc(void *data, calldata_t *params)

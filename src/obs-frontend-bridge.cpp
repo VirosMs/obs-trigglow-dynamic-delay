@@ -1119,6 +1119,7 @@ bool ObsFrontendBridge::GetBufferPipelineHealth(PipelineHealth &out) const
 	PipelineHealth health;
 	calldata_t cd = {};
 	calldata_set_ptr(&cd, "health", &health);
+	calldata_set_int(&cd, "size", static_cast<long long>(sizeof(health)));
 	const bool ok = proc_handler_call(procHandler, "get_pipeline_state", &cd);
 	calldata_free(&cd);
 	if (ok)

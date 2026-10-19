@@ -18,7 +18,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <type_traits>
 
 // Health of the video delay buffer's pipeline, for the dock (v0.6.0, design
 // B.8): which degradation rung it's on and why, so the UI can show a
@@ -29,7 +33,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // the dock likes (e.g. once a second): VideoDelayFilter keeps a copy under a
 // small mutex and its "get_pipeline_state" proc only copies it, never hopping
 // to the graphics thread, so a lagging render can't block the UI. Plain data,
-// no OBS or Qt types.
+// no OBS or Qt types. The proc copies no more than the caller says its struct
+// holds (CopyPipelineHealth()): a caller built against an older, smaller
+// version never has the newer fields written past its end.
 namespace trigglow {
 
 enum class PipelineLoad : uint8_t {
@@ -76,5 +82,37 @@ struct PipelineHealth {
 
 	bool Degraded() const { return level > 0; }
 };
+
+static_assert(std::is_trivially_copyable_v<PipelineHealth>, "copied byte for byte by get_pipeline_state");
+
+// A version 1 PipelineHealth (v0.6.0) ends right before the storage codec's
+// fields: what get_pipeline_state copies for a caller that doesn't say how
+// big its struct is.
+inline constexpr size_t kPipelineHealthV1Size = offsetof(PipelineHealth, codec);
+
+// get_pipeline_state's "size": the bytes a caller's struct holds. Without it
+// (sizeGiven false: a version 1 caller), the version 1 part; never more than
+// this version's struct; nothing for a size too small to hold `version`.
+inline size_t PipelineHealthCopySize(bool sizeGiven, long long size)
+{
+	if (!sizeGiven)
+		return kPipelineHealthV1Size;
+	if (size < static_cast<long long>(sizeof(uint32_t)))
+		return 0;
+	return static_cast<size_t>(std::min<long long>(size, static_cast<long long>(sizeof(PipelineHealth))));
+}
+
+// Copies the first `bytes` of `health` into `out` (bytes from
+// PipelineHealthCopySize()), with `version` saying what was copied: 2 for the
+// whole struct, 1 for less (only the version 1 fields are complete).
+inline void CopyPipelineHealth(const PipelineHealth &health, void *out, size_t bytes)
+{
+	if (!out || bytes == 0)
+		return;
+	PipelineHealth copy = health;
+	if (bytes < sizeof(PipelineHealth))
+		copy.version = 1;
+	std::memcpy(out, &copy, std::min(bytes, sizeof(PipelineHealth)));
+}
 
 } // namespace trigglow

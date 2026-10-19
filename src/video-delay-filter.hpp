@@ -376,10 +376,12 @@ private:
 	// info or delay. Any thread.
 	uint32_t PlannedEffectiveDelaySeconds() const;
 
-	// "get_pipeline_state(in ptr health)" proc handler (v0.6.0, design B.8):
-	// copies the current PipelineHealth into *health. Doesn't hop to the
-	// graphics thread -- it only reads health_ under healthMutex_ -- so the
-	// dock can poll it without ever blocking on a lagging render.
+	// "get_pipeline_state(in ptr health, in int size)" proc handler (v0.6.0,
+	// design B.8): copies the current PipelineHealth into *health, no more
+	// than the `size` bytes the caller's struct holds (without `size`, the
+	// version 1 part: CopyPipelineHealth()). Doesn't hop to the graphics
+	// thread -- it only reads health_ under healthMutex_ -- so the dock can
+	// poll it without ever blocking on a lagging render.
 	static void GetPipelineStateProc(void *data, calldata_t *params);
 
 	// "set_managed_delay_seconds(in int seconds)" and
