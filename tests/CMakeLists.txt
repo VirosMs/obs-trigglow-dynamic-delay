@@ -2,8 +2,10 @@
 # src/encoder-check.*, and since v0.6.0 src/ui-tokens.*, src/auto-names.*,
 # src/overlay-layout.*, src/frame-arena.*, src/frame-ring.*,
 # src/degradation-policy.*, a stress test of src/codec-pipeline.*, since
-# v0.7.0 the storage codec interface (src/storage-codec.hpp) and a stress test
-# of the pipeline with a fake inter-frame codec (tests/fake-gop-codec.hpp), the
+# v0.7.0 the storage codec interface (src/storage-codec.hpp, src/annexb.*,
+# src/storage-codec-select.*), the storage codec policy
+# (src/storage-codec-policy.*) and a stress test of the pipeline with a fake
+# inter-frame codec (tests/fake-gop-codec.hpp), the
 # background jobs' lifecycle (src/cancel-token.*, src/background-tasks.*), and
 # the account, Trigi and ticket client: src/json.*, src/log-redact.*,
 # src/chat-text.*, src/support-diagnostics.*, src/api-client.*,
@@ -153,6 +155,18 @@ add_executable(
 target_include_directories(storage_codec_tests PRIVATE "${_src}")
 set_target_properties(storage_codec_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME storage_codec_tests COMMAND storage_codec_tests)
+
+# v0.7.0 storage codec policy: evacuation to MJPEG, early warning, veto, yields.
+add_executable(
+  storage_policy_tests
+  storage_policy_tests.cpp
+  check.hpp
+  "${_src}/storage-codec-policy.cpp"
+  "${_src}/storage-codec-policy.hpp"
+)
+target_include_directories(storage_policy_tests PRIVATE "${_src}")
+set_target_properties(storage_policy_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME storage_policy_tests COMMAND storage_policy_tests)
 
 add_executable(
   pipeline_gop_stress_tests

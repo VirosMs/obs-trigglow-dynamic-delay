@@ -181,6 +181,8 @@ target_sources(
     src/storage-codec-select.hpp
     src/annexb.cpp
     src/annexb.hpp
+    src/storage-codec-policy.cpp
+    src/storage-codec-policy.hpp
     src/perf-stats.cpp
     src/perf-stats.hpp
     src/pipeline-health.hpp
