@@ -31,7 +31,7 @@
 ; override pattern below -- falls back to buildspec.json's value at the time
 ; of this fix for anyone building locally without passing it explicitly.
 #ifndef MyAppVersion
-  #define MyAppVersion "0.6.0"
+  #define MyAppVersion "0.7.0"
 #endif
 #define MyAppPublisher "Trigglow (VirosMs)"
 #define MyAppURL "https://www.trigglow.com/dynamic-delay"
