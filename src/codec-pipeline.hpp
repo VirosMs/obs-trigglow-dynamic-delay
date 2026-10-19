@@ -138,8 +138,14 @@ public:
 	// What an encoder being replaced or closed gets to hand over what it has in flight.
 	static constexpr uint64_t kDrainDeadlineNs = 50000000ULL;
 	// An inter-frame encoder with its oldest frame in flight this long, newer
-	// ones sent after it, and no packet: a stall (a hard error).
+	// ones sent after it, and no packet: a stall (a hard error). Only time
+	// while frames keep coming counts: an encoder like AMF hands a frame's
+	// packet out once more frames are in, so during a render pause it holds
+	// what it has, and that's no stall.
 	static constexpr uint64_t kStallNs = 500000000ULL;
+	// No frame sent for this long: a render pause (the stall clock stops, and
+	// starts over from the next frame).
+	static constexpr uint64_t kRenderPauseNs = 250000000ULL;
 	// A decoder that decoded nothing for this long while others did is closed (its
 	// codec left the ring: after a fallback, or MJPEG once the hardware took over).
 	static constexpr uint64_t kDecoderIdleNs = 3000000000ULL;
@@ -360,6 +366,11 @@ private:
 		storage::ChainTracker chain;
 		storage::InFlightQueue<InFlightFrame> inFlight;
 		uint64_t chainEpoch = 0;
+		// Stall detection (inter encoders): the last Send() attempt, and when
+		// the stall clock started (the encoder's first frame, or the first
+		// one after a render pause).
+		uint64_t lastSendNs = 0;
+		uint64_t stallFromNs = 0;
 	};
 	// Counters an encode adds up without the stats lock, committed once.
 	struct EncodeTally {

@@ -783,9 +783,9 @@ void TestHalfRate()
 }
 
 // T7: stall detection vs. render pauses. AMF hands a frame's packet out only once the next
-// frame is in. (a) 1 frame in flight + 700 ms pause: must not count as a stall.
-// (b) 2 frames held (a busy engine) + 700 ms pause: the pipeline's stall rule fires
-// (FailInter -> hard error -> the policy evacuates and blacklists the encoder).
+// frame is in. (a) 1 frame in flight + 700 ms pause, (b) 2 frames held (a busy engine) +
+// 700 ms pause: neither is a stall (before, (b) failed the encoder, and the policy then
+// evacuated and blacklisted it). (c) a real stall while frames keep coming still fails it.
 void TestStallVsPause()
 {
 	for (uint32_t held : {1u, 2u}) {
@@ -802,11 +802,27 @@ void TestStallVsPause()
 		const CodecPipeline::CodecStatus st = h.pipeline->GetCodecStatus();
 		std::printf("  [T7] %u held + 3 pauses of 700 ms: hardErrors %llu, interActive %d, lastError '%s'\n",
 			    held, (unsigned long long)st.hardErrors, st.interActive ? 1 : 0, st.lastError);
-		if (held == 1)
-			CHECK_EQ(st.hardErrors, 0u);
+		CHECK_EQ(st.hardErrors, 0u); // Frames held over a render pause are no stall.
+		CHECK(st.interActive);
 		h.CheckCommon(held == 1 ? "T7a" : "T7b");
 		h.Finish();
 	}
+	// T7c: a real stall -- no packet any more while frames keep coming -- still fails the encoder.
+	testcheck::g_currentTest = "T7c stall while capturing";
+	Harness h;
+	h.hw.latencyFrames = 1;
+	h.hw.stallAfter = 150;
+	h.Build(true);
+	CHECK(h.WaitInter(2000000000ULL));
+	h.RunFor(1500000000ULL); // 150 frames (0.6 s), then 500 ms of frames without a packet.
+	const CodecPipeline::CodecStatus st = h.pipeline->GetCodecStatus();
+	std::printf("  [T7c] stalled encoder: hardErrors %llu, interActive %d, lastError '%s'\n",
+		    static_cast<unsigned long long>(st.hardErrors), st.interActive ? 1 : 0, st.lastError);
+	CHECK_EQ(st.hardErrors, 1u);
+	CHECK(!st.interActive);
+	CHECK(std::strstr(st.lastError, "stalled") != nullptr);
+	h.CheckCommon("T7c");
+	h.Finish();
 }
 
 // T8: evacuation + software decode switch at once (AMD/Intel decode shares the engine),

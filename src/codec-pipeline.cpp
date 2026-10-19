@@ -784,11 +784,16 @@ void CodecPipeline::CheckInterHealth(EncodeContext &ctx, EncodeTally &tally,
 		FailInter(ctx, "encoder error", tally, released);
 		return;
 	}
-	// A stall: frames went in after the oldest one, and for 500 ms none came
-	// out. One frame alone may wait: an encoder like AMF hands a frame's packet
-	// out only once the next one is in (a render pause, say).
+	// A stall: frames went in after the oldest one, and for 500 ms of frames
+	// still coming none came out. An encoder like AMF hands a frame's packet
+	// out only once the next ones are in, so it may hold one or two frames
+	// for as long as rendering pauses: that time doesn't count (no frame for
+	// kRenderPauseNs), and the clock starts over when frames come again.
 	const auto *oldest = ctx.inFlight.Front();
-	if (oldest && ctx.inFlight.Size() >= 2 && options_.clockNs() > oldest->submitNs + kStallNs)
+	const uint64_t nowNs = options_.clockNs();
+	const bool sending = ctx.lastSendNs != 0 && nowNs - ctx.lastSendNs <= kRenderPauseNs;
+	if (oldest && ctx.inFlight.Size() >= 2 && sending &&
+	    nowNs > std::max(oldest->submitNs, ctx.stallFromNs) + kStallNs)
 		FailInter(ctx, "stalled: no packet for 500 ms", tally, released);
 }
 
@@ -922,6 +927,14 @@ void CodecPipeline::EncodeOne(EncodeContext &ctx, const EncodeJob &job, uint32_t
 	const bool forceKey = ctx.chain.WantKey();
 	const uint64_t seq = ctx.chain.NextSeq();
 	const uint64_t sendNs = options_.clockNs();
+	if (inter) {
+		// The stall clock (CheckInterHealth()): from this encoder's first
+		// frame, and again from the first one after a render pause. Busy
+		// sends count as frames coming: a full queue is what a stall looks like.
+		if (fresh || ctx.lastSendNs == 0 || sendNs - ctx.lastSendNs > kRenderPauseNs)
+			ctx.stallFromNs = sendNs;
+		ctx.lastSendNs = sendNs;
+	}
 	const storage::SendResult sent = ctx.encoder ? ctx.encoder->Send(view, seq, forceKey)
 						     : storage::SendResult::Failed;
 	const uint64_t sentNs = options_.clockNs();
