@@ -39,12 +39,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // like pipeline_stress_tests): the p99.9 of the graphics thread's calls into
 // the pipeline, and how many due frames are shown exactly in a steady run.
 //
-// What a run must have exercised (frames in flight, chain breaks and orphan
-// drops, adoptions, hard errors, setup failures, restarts on a P-frame) never
-// depends on how fast the machine is: the fake encoders hold frames in flight
+// What a chaos run must have exercised (frames in flight, chain breaks and
+// orphan drops, adoptions, hard errors, setup failures, restarts on a P-frame)
+// never depends on how fast the machine is: their fake encoders hold a frame
 // by count, not only by time (latencyFrames), the chaos scenario loses keys on
 // purpose (loseKeyEvery), and the hardware scenarios walk through a scripted
-// prologue before their chaos (Prologue).
+// prologue before their chaos (Prologue). The steady run keeps a latency by
+// time only: it is the one its timing checks measure.
 
 #include "check.hpp"
 #include "codec-pipeline.hpp"
@@ -323,7 +324,7 @@ RunStats RunScenario(const Scenario &s)
 			o.codec = storage::CodecId::Hevc;
 			o.gop = 4 + n % 9;
 			o.latencyNs = static_cast<uint64_t>(n % 3) * s.periodNs;
-			o.latencyFrames = 1 + n % 2; // AMF-like: frames in flight however slowly they come.
+			o.latencyFrames = 1; // AMF-like: a frame in flight however slowly they come.
 			o.fillerBytes = 380;
 			o.seed = n + 1000;
 			o.clockNs = &NowNs;
@@ -383,10 +384,13 @@ RunStats RunScenario(const Scenario &s)
 		const uint32_t latency = s.fixedLatency ? s.maxLatencyFrames : (n * 3 + 1) % (s.maxLatencyFrames + 1);
 		o.latencyNs = static_cast<uint64_t>(latency) * s.periodNs;
 		o.busyAbove = s.injectFailures && n % 4 == 1 ? 2 : 0;
-		// Frames in flight however slowly they come (not only for latencyNs),
-		// fewer than a Busy encoder's limit: its queue always drains.
-		if (o.inter)
-			o.latencyFrames = o.busyAbove > 0 ? std::min(latency, o.busyAbove - 1) : latency;
+		// A frame in flight however slowly they come (not only for latencyNs):
+		// held until the next Send(), like AMF, fewer than a Busy encoder's
+		// limit (its queue always drains). Not in the steady run: its timing
+		// checks measure latencyNs alone (on a starved machine, a frame held
+		// for the next capture would no longer be due in time).
+		if (o.inter && !s.fixedLatency && latency > 0 && (o.busyAbove == 0 || o.busyAbove > 1))
+			o.latencyFrames = 1;
 		o.loseKeyEvery = s.loseKeyEvery;
 		o.failOneIn = s.injectFailures ? 150 : 0;
 		o.fillerBytes = 380;
