@@ -41,9 +41,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // a symptom -- OBS skipped frames for encoding lag, or one of its outputs
 // stopped on an encoder error, with the engine shared -- or a warning at the
 // last rung, or any hard error, MJPEG, which never touches the engine. Hard
-// errors (ours, or OBS's encoder's) act at once; everything else waits 2 s
-// after the previous transition, and a warning must hold for 1 s with enough
-// samples.
+// errors (ours, or OBS's encoder's) and OBS skipping frames act at once (an
+// OBS encoder error while probing or yielded is kept until the hardware
+// encoder stores again); the early warning waits 2 s after the previous
+// transition and must hold for 1 s with enough samples.
 namespace trigglow::storagepolicy {
 
 enum class State : uint8_t { Mjpeg, Probing, Hw, HwGuarded, Yielded, Evacuated };
@@ -75,7 +76,7 @@ const char *ActionName(Action action);
 const char *ReasonText(Reason reason);
 
 struct Thresholds {
-	uint64_t cooldownNs = 2000000000ULL; // Between transitions (hard errors excepted).
+	uint64_t cooldownNs = 2000000000ULL; // Before an early warning acts, after the previous transition.
 	double latencyFactor = 2.5;          // x the capture interval (42 ms at 60 fps).
 	uint64_t warnHoldNs = 1000000000ULL; // A warning must hold this long...
 	uint32_t minLatencySamples = 20;     // ...over this many packets.
@@ -130,6 +131,7 @@ private:
 	uint64_t warnSinceNs_ = 0;
 	uint64_t vetoUntilNs_ = 0;
 	uint64_t transitions_ = 0;
+	bool obsEncodeErrorPending_ = false; // Sample::obsEncodeError not acted on yet.
 };
 
 } // namespace trigglow::storagepolicy

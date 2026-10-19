@@ -103,8 +103,15 @@ Decision Policy::Go(State state, Action action, Reason reason, double value, uin
 
 Decision Policy::Evaluate(const Sample &s)
 {
-	if (state_ == State::Mjpeg || state_ == State::Evacuated)
+	if (state_ == State::Mjpeg || state_ == State::Evacuated) {
+		obsEncodeErrorPending_ = false;
 		return {};
+	}
+	// An OBS encoder error while probing or yielded (the hardware encoder not
+	// storing yet, its engine not known) is kept until it is: then, with the
+	// engine shared, it evacuates like one reported then.
+	if (s.obsEncodeError)
+		obsEncodeErrorPending_ = true;
 	// A hard error wins over everything, at once.
 	if (s.hardErrors > 0) {
 		vetoUntilNs_ = 0;
@@ -131,8 +138,11 @@ Decision Policy::Evaluate(const Sample &s)
 		return {};
 	}
 
-	// OBS's own encoder failed on an engine the buffer shares: at once, like a hard error.
-	if (s.obsEncodeError && s.engineShared) {
+	// OBS's own encoder failed on an engine the buffer shares: at once, like a
+	// hard error. Not shared: not the buffer's doing, forgotten.
+	const bool obsEncodeError = obsEncodeErrorPending_;
+	obsEncodeErrorPending_ = false;
+	if (obsEncodeError && s.engineShared) {
 		vetoUntilNs_ = 0;
 		return Go(State::Evacuated, Action::Evacuate, Reason::ObsEncodeError, 0.0, s.nowNs);
 	}
@@ -145,7 +155,10 @@ Decision Policy::Evaluate(const Sample &s)
 	}
 	const bool settled = s.nowNs >= lastTransitionNs_ + t_.cooldownNs;
 	// The symptom: OBS already skipped frames, on an engine the buffer shares.
-	if (settled && s.engineShared && s.obsSkipped >= t_.skippedFrames) {
+	// At once, never after the cooldown: the stream is lagging now, and a rung
+	// just lowered or an encoder just adopted (or back from a yield) is no
+	// reason to let it lag for 2 s more.
+	if (s.engineShared && s.obsSkipped >= t_.skippedFrames) {
 		vetoUntilNs_ = 0;
 		return Go(State::Evacuated, Action::Evacuate, Reason::ObsSkipped, s.obsSkipped, s.nowNs);
 	}

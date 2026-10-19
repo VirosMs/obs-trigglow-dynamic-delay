@@ -16,12 +16,14 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-// Unit tests for trigglow::storagepolicy (src/storage-codec-policy.hpp, v0.7.0
-// RAM design 4.2 and 8.1): the triggers and their priorities (a hard error
-// over everything), evacuation only with the engine shared, the early warning
-// lowering a rung and evacuating at the floor, the 2 s cooldown, the 5-minute
-// veto, yields and the way back, the minimum of samples, Evacuated as terminal,
-// and no oscillation over an hour of metrics at the edge of the thresholds.
+// Unit tests for trigglow::storagepolicy (src/storage-codec-policy.hpp,
+// v0.7.0): the triggers and their priorities (a hard error over everything),
+// evacuation only with the engine shared, OBS's skipped frames acting at once
+// (never after the cooldown), an OBS encoder error kept while probing or
+// yielded, the early warning lowering a rung and evacuating at the floor, the
+// 2 s cooldown, the 5-minute veto, yields and the way back, the minimum of
+// samples, Evacuated as terminal, and no oscillation over an hour of metrics
+// at the edge of the thresholds.
 
 #include "check.hpp"
 #include "storage-codec-policy.hpp"
@@ -161,7 +163,8 @@ void TestObsSkipped()
 		      n.obsSkipped = 25;
 		      return n;
 	      }).empty());
-	// Within the cooldown after adoption: it waits for it, then evacuates.
+	// Right after the adoption: at once, never after the 2 s cooldown (the
+	// stream lags now).
 	Policy r = OnHardware();
 	const std::vector<Decision> early = Run(r, kSecond + kSecond / 4, 4 * kSecond, [](uint64_t t) {
 		Sample n = Fine(t);
@@ -169,7 +172,34 @@ void TestObsSkipped()
 		return n;
 	});
 	CHECK_EQ(early.size(), 1u);
-	CHECK(early.size() == 1 && early[0].action == Action::Evacuate);
+	CHECK(early.size() == 1 && early[0].action == Action::Evacuate && early[0].reason == Reason::ObsSkipped);
+	CHECK(r.GetState() == State::Evacuated);
+	// Right after a rung was lowered: at once too.
+	Policy lowered = OnHardware();
+	const std::vector<Decision> warned = Run(lowered, 4 * kSecond, 5 * kSecond, [](uint64_t t) {
+		Sample n = Fine(t);
+		n.latencyP95Ms = 50.0;
+		return n;
+	});
+	CHECK(warned.size() == 1 && warned[0].action == Action::LowerRung);
+	Sample lag = Fine(5 * kSecond + kSecond / 4); // A quarter second after the rung.
+	lag.obsSkipped = 1;
+	const Decision afterRung = lowered.Evaluate(lag);
+	CHECK(afterRung.action == Action::Evacuate && afterRung.reason == Reason::ObsSkipped);
+	// Right after coming back from a yield: at once.
+	Policy back = OnHardware();
+	Sample yielded = Fine(2 * kSecond);
+	yielded.yielded = true;
+	yielded.interActive = false;
+	CHECK(back.Evaluate(yielded).action == Action::Yield);
+	Sample resumed = Fine(3 * kSecond);
+	resumed.interActive = false;
+	CHECK(back.Evaluate(resumed).action == Action::Resume);
+	CHECK(back.Evaluate(Fine(3 * kSecond + kSecond / 4)).action == Action::Adopted);
+	Sample lagging = Fine(3 * kSecond + kSecond / 2);
+	lagging.obsSkipped = 3;
+	const Decision afterYield = back.Evaluate(lagging);
+	CHECK(afterYield.action == Action::Evacuate && afterYield.reason == Reason::ObsSkipped);
 	// Zero skipped: nothing.
 	Policy z = OnHardware();
 	CHECK(Run(z, 4 * kSecond, 60 * kSecond, [](uint64_t t) { return Fine(t); }).empty());
@@ -196,6 +226,42 @@ void TestObsEncodeError()
 	// Already on MJPEG (never on hardware): nothing to do.
 	Policy none;
 	CHECK(none.Evaluate(s).action == Action::None);
+
+	// While probing (the bridge stores, the setup opens an encoder): kept, and
+	// acted on once the hardware encoder stores, with its engine known.
+	Policy probing(true);
+	Sample setup = Fine(kSecond);
+	setup.interActive = false;
+	setup.obsEncodeError = true;
+	CHECK(probing.Evaluate(setup).action == Action::None);
+	CHECK(probing.Evaluate(Fine(kSecond + kSecond / 4)).action == Action::Adopted);
+	const Decision kept = probing.Evaluate(Fine(kSecond + kSecond / 2));
+	CHECK(kept.action == Action::Evacuate && kept.reason == Reason::ObsEncodeError);
+	// While yielded: kept through the way back.
+	Policy yield = OnHardware();
+	Sample away = Fine(2 * kSecond);
+	away.yielded = true;
+	away.interActive = false;
+	CHECK(yield.Evaluate(away).action == Action::Yield);
+	away.nowNs = 3 * kSecond;
+	away.obsEncodeError = true;
+	CHECK(yield.Evaluate(away).action == Action::None);
+	Sample resumed = Fine(4 * kSecond);
+	resumed.interActive = false;
+	CHECK(yield.Evaluate(resumed).action == Action::Resume);
+	CHECK(yield.Evaluate(Fine(4 * kSecond + kSecond / 4)).action == Action::Adopted);
+	const Decision afterYield = yield.Evaluate(Fine(4 * kSecond + kSecond / 2));
+	CHECK(afterYield.action == Action::Evacuate && afterYield.reason == Reason::ObsEncodeError);
+	// Kept while probing, but the encoder adopted doesn't share OBS's engine:
+	// forgotten, never acted on later.
+	Policy apart(true);
+	CHECK(apart.Evaluate(setup).action == Action::None);
+	Sample adopted = Fine(2 * kSecond);
+	adopted.engineShared = false;
+	CHECK(apart.Evaluate(adopted).action == Action::Adopted);
+	CHECK(apart.Evaluate(adopted).action == Action::None);
+	CHECK(Run(apart, 3 * kSecond, 30 * kSecond, [](uint64_t t) { return Fine(t); }).empty());
+	CHECK(apart.GetState() == State::Hw);
 }
 
 void TestEarlyWarning()
