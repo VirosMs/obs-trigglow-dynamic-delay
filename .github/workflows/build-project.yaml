@@ -82,11 +82,13 @@ jobs:
       run:
         shell: bash
     env:
-      # pipeline_stress_tests' timing checks (exact frame shown, lag after a
-      # render pause, a slow decoder keeping up) use their looser CI limits:
-      # shared runners, macOS above all, don't always keep its 4 ms steps,
-      # and this job gates create-release. Its correctness checks stay strict.
-      # See the header of tests/pipeline_stress_tests.cpp.
+      # pipeline_stress_tests' and pipeline_gop_stress_tests' timing checks
+      # (exact frame shown, lag after a render pause, a slow decoder keeping
+      # up, the graphics thread's calls) use their looser CI limits: shared
+      # runners, macOS above all, don't always keep their 4 ms steps, and this
+      # job gates create-release. Their correctness checks stay strict. See
+      # the headers of tests/pipeline_stress_tests.cpp and
+      # tests/pipeline_gop_stress_tests.cpp.
       TRIGGLOW_STRESS_CI: '1'
     steps:
       - uses: actions/checkout@v4
@@ -123,16 +125,18 @@ jobs:
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
           # The suites around the codec worker threads (src/frame-arena.*,
-          # src/frame-ring.*, src/codec-pipeline.*) and the background jobs'
-          # lifecycle (src/cancel-token.*, src/background-tasks.*), built with
-          # GCC like the Ubuntu plugin build. A build failure here is a real
-          # error, so this step is allowed to fail the job.
+          # src/frame-ring.*, src/codec-pipeline.*, with the stamp codec and
+          # the fake inter-frame one) and the background jobs' lifecycle
+          # (src/cancel-token.*, src/background-tasks.*), built with GCC like
+          # the Ubuntu plugin build. A build failure here is a real error, so
+          # this step is allowed to fail the job.
           cmake -S tests -B build_tsan \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
           cmake --build build_tsan --parallel \
-            --target frame_arena_tests frame_ring_tests pipeline_stress_tests background_tasks_tests
+            --target frame_arena_tests frame_ring_tests pipeline_stress_tests pipeline_gop_stress_tests \
+              background_tasks_tests
 
       - name: Run Threaded Unit Tests under ThreadSanitizer 🧪
         # Deliberately non-blocking. This job is part of this reusable
@@ -161,13 +165,14 @@ jobs:
 
           set +e
           ctest --test-dir build_tsan --output-on-failure --timeout 600 \
-            --tests-regex '^(frame_arena|frame_ring|pipeline_stress|background_tasks)_tests$' 2>&1 | tee tsan.log
+            --tests-regex '^(frame_arena|frame_ring|pipeline_stress|pipeline_gop_stress|background_tasks)_tests$' \
+            2>&1 | tee tsan.log
           status=${PIPESTATUS[0]}
           set -e
 
           reports=$(grep -c '^WARNING: ThreadSanitizer' tsan.log || true)
           {
-            echo '### ThreadSanitizer: frame_arena, frame_ring, pipeline_stress, background_tasks'
+            echo '### ThreadSanitizer: frame_arena, frame_ring, pipeline_stress, pipeline_gop_stress, background_tasks'
             echo
             echo "- ctest exit code: ${status}"
             echo "- ThreadSanitizer reports: ${reports}"
@@ -391,6 +396,57 @@ jobs:
         with:
           target: x64
           config: ${{ needs.check-event.outputs.config }}
+
+      - name: Check FFmpeg License 🔍
+        run: |
+          # Check FFmpeg License 🔍
+          #
+          # The plugin ships avcodec, avutil and swresample next to its DLL
+          # under the LGPL (data/licenses/LICENSE-ffmpeg.txt). A GPL or nonfree
+          # build in buildspec.json would make that notice wrong, and a nonfree
+          # one unredistributable: this fails the build if the avcodec DLL of
+          # the FFmpeg it just downloaded was configured with --enable-gpl or
+          # --enable-nonfree, or doesn't report an LGPL license. Only whole
+          # tokens of FFmpeg's own configure line (the one naming --target-os)
+          # count, so other strings in the DLL (a codec library's options, a
+          # help text) can't trip it.
+          if ( $Env:RUNNER_DEBUG -ne $null ) {
+            Set-PSDebug -Trace 1
+          }
+
+          # The printable ASCII run around position $at (one C string of the DLL).
+          function Get-StringAt([string]$text, [int]$at) {
+            $start = $at
+            while ( $start -gt 0 -and $text[$start - 1] -ge ' ' -and $text[$start - 1] -le '~' ) { $start-- }
+            $end = $at
+            while ( $end -lt $text.Length -and $text[$end] -ge ' ' -and $text[$end] -le '~' ) { $end++ }
+            return $text.Substring($start, $end - $start)
+          }
+
+          $dlls = Get-ChildItem -Path .deps/ffmpeg-windows-x64 -Recurse -Filter 'avcodec-*.dll'
+          if ( -not $dlls ) {
+            throw 'No avcodec DLL under .deps/ffmpeg-windows-x64: the FFmpeg dependency was not downloaded.'
+          }
+          foreach ( $dll in $dlls ) {
+            # Latin-1: one char per byte, nothing above 0x7E taken for text.
+            $text = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes($dll.FullName))
+            $at = $text.IndexOf('libavcodec license: ', [StringComparison]::Ordinal)
+            $license = if ( $at -ge 0 ) { Get-StringAt $text $at } else { '' }
+            $configs = @()
+            $at = $text.IndexOf('--target-os=', [StringComparison]::Ordinal)
+            while ( $at -ge 0 ) {
+              $configs += Get-StringAt $text $at
+              $at = $text.IndexOf('--target-os=', $at + 1, [StringComparison]::Ordinal)
+            }
+            if ( -not $license -or $configs.Count -eq 0 ) {
+              throw "$($dll.Name): no license or configuration string found, the FFmpeg build can't be checked."
+            }
+            $bad = @($configs | ForEach-Object { -split $_ } | Where-Object { $_ -in '--enable-gpl', '--enable-nonfree' })
+            Write-Host "$($dll.Name): $license; configuration checked"
+            if ( $bad.Count -gt 0 -or $license -notmatch '^libavcodec license: LGPL version' ) {
+              throw "$($dll.Name) is not an LGPL build ($license; $($bad -join ' ')): the plugin may only ship an LGPL FFmpeg."
+            }
+          }
 
       - name: Package Plugin 📀
         uses: ./.github/actions/package-plugin

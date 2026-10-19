@@ -2,6 +2,249 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.7.0 — 2026-10-20 (Early Access)
+
+Una versión de optimización: en Windows el buffer del delay ocupa más o menos la mitad de RAM. Los
+frames que esperan el delay se guardan con el encoder de vídeo por hardware de tu GPU y se
+decodifican en la GPU, en vez de comprimirse uno a uno como imágenes MJPEG, y la imagen con delay
+sale más parecida a la original. No hay nada que configurar: el dock, sus textos y sus avisos son
+los mismos. Esta entrada recoge primero lo que vas a notar, después el detalle técnico y al final
+las limitaciones conocidas.
+
+**Antes de actualizar:**
+- No hay que cambiar nada. Instala encima de la v0.6.0 con OBS cerrado; tus escenas, ajustes,
+  atajos e inicio de sesión se conservan.
+- Si vienes de la v0.5.x o anterior, lee "Antes de actualizar" de la v0.6.0, más abajo: actualizar
+  es obligatorio, y los objetos que gestiona el plugin pasan a llamarse "(auto)".
+
+**Qué cambia para ti:**
+- **Más o menos la mitad de RAM para el buffer del delay en Windows.** Con un encoder de vídeo por
+  hardware (NVENC de NVIDIA, AMF de AMD o Quick Sync de Intel) el buffer se guarda como vídeo HEVC,
+  o H.264 en una GPU sin HEVC, y se decodifica en la GPU. A 1440p60 pasa de ~675 MB a ~325 MB con
+  30 s de delay, y de ~1,2 GB a ~520 MB con 60 s: entre un −49 % y un −62 % según la resolución y el
+  delay. Son cifras de referencia medidas fuera de OBS en una GPU AMD (AMF), con contenido tipo
+  gameplay; NVENC aún no está medido. Tabla por resolución en `docs/FAQ-es.md`.
+- **La imagen con delay se parece más a la original.** En las mismas mediciones, los frames
+  guardados vuelven con un PSNR-Y de ~45 dB en vez de ~40 dB con MJPEG, así que el encoder de tu
+  stream parte de una imagen más limpia.
+- **Menos CPU.** La compresión la hace el motor de vídeo de la GPU: el trabajo de códec del plugin
+  baja de ~0,8 a ~0,2–0,3 núcleos de CPU a 1440p60, y de ~2 a ~0,4–0,65 a 2160p60.
+- **El encoder de tu stream va primero (protección frente a "Encoding overloaded").** Cuando el
+  buffer codifica en el mismo motor de la GPU que alguno de los encoders de OBS:
+  - si sube la latencia del encoder del buffer, o se le acumulan frames, el buffer primero baja un
+    peldaño de resolución (nunca por debajo de tu calidad mínima) y no vuelve a subir en 5 minutos;
+    el dock muestra su aviso ámbar de siempre;
+  - si OBS se salta un frame por retraso de codificación, o una de sus salidas se para por un error
+    del encoder, el buffer vuelve a MJPEG al momento, sin cortar ni mover el delay;
+  - cuando OBS empieza a emitir, a grabar o a usar el Replay Buffer, el buffer le cede antes su
+    sesión NVENC y recupera el hardware unos segundos después.
+
+  Cualquier error del encoder o del decoder por hardware también devuelve el buffer a MJPEG al
+  momento. Una vez en MJPEG se queda así hasta que desactivas y vuelves a activar el delay, y su RAM
+  sube hasta la cifra de MJPEG durante los siguientes segundos de delay, siempre dentro del
+  presupuesto.
+- **Caben más segundos en la misma RAM cuando falta.** Cuando el códec por hardware ya ha funcionado
+  en esta sesión de OBS, el ring se dimensiona suponiendo una compresión de 12x en vez de 5x, así
+  que cuando la RAM no da para todo el delay caben unas 2,4 veces más frames. La primera vez que
+  activas el delay en cada sesión de OBS se dimensiona con un margen conservador (el 5x de MJPEG),
+  porque aún no se ha comprobado ningún encoder de hardware.
+- **Se guarda a la resolución del encoder de tu stream cuando todos los encoders reescalan por
+  debajo de la salida.** Por ejemplo, una salida 1440p que se emite con un encoder reescalado a
+  1080p, sin ninguna grabación por encima de 1080p: el buffer se guarda a 1080p, porque nadie usa
+  las líneas de más. Con la cámara virtual u otra salida sin encoder activa, o con
+  `buffer_output_cap` desactivado, se queda a la resolución de salida.
+- **Bloques de memoria más pequeños y como mucho dos hilos de compresión por contexto**, que también
+  aligeran MJPEG: ~15–35 MB menos en nuestras pruebas, y hasta ~60 MB (1440p) o ~130 MB (2160p)
+  menos cuando el plugin había añadido hilos.
+- **Sin controles, textos ni avisos de RAM nuevos.** Un ajuste oculto de soporte, `buffer_codec`,
+  fuerza MJPEG (pasos en `docs/TROUBLESHOOTING-es.md`).
+- **Linux y macOS no cambian**: Linux sigue con MJPEG y macOS guarda el buffer sin comprimir.
+
+**Códec de almacenamiento (detalle técnico, `src/storage-codec*`, `src/hw-storage-codec.*`):**
+- **Interfaz.** `storage::Encoder` es asíncrono (`Send()`/`Receive()`, frames en vuelo, `Drain()`) y
+  `storage::Decoder` decodifica un paquete guardado y se vacía (flush) ante una discontinuidad.
+  MJPEG, el modo sin comprimir y el códec por hardware las implementan; `VideoCodec` y
+  `CodecFactory` desaparecen. Los frames decodificados son siempre I420, así que la reproducción no
+  sabe qué códec había detrás.
+- **Encoders por hardware** (`TRIGGLOW_HAVE_HW_STORAGE`, solo Windows), en este orden y solo de los
+  fabricantes de GPU presentes: `hevc_nvenc`, `hevc_amf`, `hevc_qsv`, `h264_nvenc`, `h264_amf`,
+  `h264_qsv`; primero los motores en los que OBS no codifica (una iGPU, por ejemplo). NVENC solo
+  mientras OBS tenga como mucho 3 encoders NVENC en marcha, así queda una sesión libre incluso con
+  el antiguo límite de 5. QP constante 20 en HEVC y 18 en H.264, un keyframe cada medio segundo
+  (30 frames a 60 fps), sin B-frames, el preset más rápido, sin lookahead, IDR forzados y parámetros
+  en banda (copiados delante de un keyframe que no los lleve). NVENC y AMF se abren en un
+  dispositivo D3D11 del adaptador de su fabricante (el de OBS si es de ese fabricante).
+- **Decode por hardware**: D3D11VA en el adaptador de OBS, de baja latencia, descargado como NV12 y
+  separado a I420 en el hilo de decode, nunca con un paso silencioso a software. El decoder
+  HEVC/H.264 por software de libavcodec es solo una vía de emergencia: cuando falla el decoder por
+  hardware, o cuando el buffer abandona un motor que comparte con OBS para decodificar (AMD, Intel;
+  NVIDIA decodifica en NVDEC, un motor aparte).
+- **Hilo de preparación** (`trigglow-codec-setup`): abre y sondea un encoder sin retrasar nunca una
+  captura: 8 frames sintéticos, keyframes forzados en el 0 y el 5 con sus parámetros en banda, un
+  decode D3D11VA del 0 al 7 y, tras vaciar el decoder, del 5 al 7, tamaños y PSNR-Y por encima de
+  30 dB. Un registro de la sesión recuerda qué pasó la prueba (un tamaño nuevo solo necesita
+  entonces una reapertura corta), qué falló y a qué tamaño, y qué falló de forma grave (no se vuelve
+  a probar hasta reiniciar OBS). Mientras tanto el buffer guarda en MJPEG desde el primer frame (el
+  "puente"); el encoder por hardware toma el relevo en una frontera de frame, en una cadena nueva
+  que empieza en un keyframe. En una RX 7800 XT: sondeo de 330–380 ms a 1440p y reapertura de unos
+  100 ms.
+- **Ring con cadenas.** Cada paquete lleva su códec, si es keyframe, su cadena y su seq; un mismo
+  ring admite varios códecs. Un P-frame solo se decodifica justo después de su referencia; un
+  paquete perdido después de codificarse fuerza el siguiente keyframe y los P-frames hasta entonces
+  no se guardan; las capturas descartadas antes de codificarse no rompen nada. Con almacenamiento
+  inter-frame el ring guarda un GOP de margen (30 slots a 60 fps en vez de 15), así que el keyframe
+  del frame que toca siempre sigue ahí. Al empezar la reproducción, al reanudarla tras una pausa o
+  al saltar, el decoder se pone al día sin mostrar desde el keyframe o espera al siguiente,
+  manteniendo el frame en pantalla; esas repeticiones no cuentan como decode lento.
+- **Hilo de codificación.** Un único contexto por hardware (bitstream en orden de captura), paquetes
+  emparejados con sus frames por seq. Un paquete fuera de orden, un error del encoder, o 500 ms con
+  frames en vuelo y ningún paquete mientras siguen llegando frames es un error grave. La latencia
+  del encoder (más o menos un frame) nunca cuenta como carga para la degradación, que solo ve el
+  tiempo propio del hilo. Un tamaño de frame nuevo (un peldaño, un reinicio del vídeo de OBS) vacía
+  el encoder anterior; MJPEG hace de puente hasta que el nuevo está abierto.
+
+**Política del códec de almacenamiento (detalle técnico, `src/storage-codec-policy.*`):**
+- Estados `Mjpeg`, `Probing`, `Hw`, `HwGuarded`, `Yielded` y `Evacuated`, evaluados cada 250 ms en
+  el hilo gráfico junto a la política de degradación. Pura y con tests.
+- **Motor compartido**: el encoder del buffer es de la misma familia que un encoder de vídeo activo
+  de OBS, o su decode va en una GPU AMD o Intel cuyo motor también codifica para OBS. Los encoders
+  de OBS se listan al activar, en cada inicio o parada de la emisión, la grabación, el Replay Buffer
+  y la cámara virtual, y una vez por segundo mientras el delay está activo, lo que también ve las
+  salidas que arrancan otros plugins (Aitum Vertical, multi-rtmp, Source Record). Los encoders
+  desconocidos cuentan como compartidos.
+- **Vuelta a MJPEG al momento** (`Evacuated`, hasta la siguiente activación): cualquier error grave
+  del encoder o del decoder por hardware (un encoder que ha fallado no se vuelve a probar en esta
+  sesión); y, con el motor compartido, uno o más frames saltados por OBS por retraso de codificación
+  en 2 s (mezcla principal y mezclas propias de sus encoders), una salida de OBS que se para por un
+  error del encoder, o un aviso temprano sin peldaño que bajar. Con el decode en el motor
+  compartido, los frames por hardware que quedan en el ring se decodifican por software.
+- **Aviso temprano** (motor compartido, mantenido durante 1 s con al menos 20 paquetes, 2 s después
+  del cambio anterior): latencia p95 por encima de 2,5 intervalos de captura (42 ms a 60 fps), o
+  3 frames en vuelo. Un peldaño menos (menos píxeles es lo que libera el motor) y sin volver a subir
+  durante 5 minutos.
+- **Sesiones NVENC**: en los eventos de "inicio" de la emisión, la grabación y el Replay Buffer, si
+  el buffer puede tener una sesión NVENC la cierra (la UI espera como mucho 100 ms, y solo cuando
+  los encoders NVENC de OBS, el que arranca y el del buffer suman 4 o más), guarda en MJPEG mientras
+  tanto y vuelve a preparar el hardware 3 s después de que la salida arranque (10 s como mucho).
+
+**Cambiado (memoria y dimensionado):**
+- **Bloques de la arena** de lo esperado/64 en MiB enteros, entre 4 y 8 MiB, con un bloque de
+  repuesto (antes lo esperado/16, entre 4 y 32 MiB, dos de repuesto y al menos dos frames sin
+  comprimir): la memoria reservada de más sobre los paquetes vivos baja de 35–71 MB a unos dos
+  bloques. Un frame sin comprimir mayor que un bloque va por la vía de tamaño excesivo.
+- **Como mucho dos hilos de slice por contexto MJPEG**: los pasos de paralelismo son 1×1 → 2×1 → 2×2
+  con hilos de códec y 1 → 2 slices en modo síncrono; el códec por hardware solo tiene 1×1.
+- **Clase de almacenamiento, fija por ciclo de delay** (ajuste del filtro `storage_class`): `intra`
+  (5x y un cuarto de segundo de margen; con `buffer_codec` en `mjpeg`, `codec_workers` desactivado,
+  sin GPU, o en Linux; 1x en macOS), `intra-gop` (5x con un GOP de margen: un ciclo en el que el
+  hardware puede tomar el relevo antes de que ningún encoder haya pasado su sondeo en esta sesión) e
+  `inter` (12x y un GOP de margen, cuando ya alguno lo ha pasado). El ring, la estimación del dock y
+  el delay del audio pasan por la misma clase, así que mantienen un único delay en segundos enteros.
+  El 12x aguanta aunque el ciclo acabe en MJPEG (13–17x medido); con contenido peor la arena
+  descarta frames en vez de crecer.
+- **Techo de los encoders** (`encodercheck::EncoderCeiling()`): los encoders activos que ven el
+  lienzo principal (exactamente o por relación de aspecto, incluidas todas las pistas de Enhanced
+  Broadcasting y nunca otros lienzos) limitan el buffer al mayor de ellos cuando queda por debajo de
+  la salida de OBS. No hay techo si no hay ninguno, con una salida sin encoder sobre la mezcla
+  principal (cámara virtual, NDI), con un encoder reescalado por GPU de otra relación de aspecto, o
+  con `buffer_output_cap` desactivado. Es un techo blando: el ring, su límite de RAM y el delay del
+  audio siguen dimensionados para la salida, así que puede levantarse en cualquier momento; el dock
+  no muestra nada nuevo.
+
+**Añadido (soporte y diagnóstico):**
+- **Ajuste oculto `buffer_codec`** en `buffer-mode-settings.json`: si falta vale `"auto"` (hardware
+  donde funcione); el texto exacto `"mjpeg"` fuerza MJPEG. Solo se lee al arrancar OBS, con la misma
+  lectura estricta que los demás ajustes ocultos: cualquier otro valor (`"MJPEG"`, `"hevc"`,
+  `false`, `0`) mantiene auto con un WARN, y desaparece del archivo al cerrar OBS. `codec_workers`
+  desactivado manda sobre él (MJPEG). Las líneas `settings loaded` y `enabled` muestran
+  `buffer_codec=auto|mjpeg`, y `enabled` además la `storage_class` del ciclo.
+- **`pipeline check`** nombra el códec que guarda los frames después de `mode=` (`codec=mjpeg`,
+  `codec=hevc_nvenc`…; `raw` en macOS).
+- **Línea `storage codec check`** justo después, cada 10 s: el encoder con su QP y su GOP, el
+  decoder (`d3d11va`, `sw` o `mjpeg`), la latencia p50/p95/máx del encoder por hardware, los frames
+  en vuelo y el p95 de `Send()`, keyframes e IDR forzados, cadenas rotas y P-frames huérfanos
+  descartados, puestas al día y esperas de keyframe, frames de puente, cambios de códec, errores
+  graves, el estado de la política y su veto, y los frames que OBS se saltó por retraso de
+  codificación en la mezcla principal y en las de sus encoders. Una línea corta cuando todo el ciclo
+  es MJPEG.
+- **Otras líneas**: `storage codec: auto -> hevc_amf (…)` cuando un encoder por hardware pasa su
+  sondeo (QP, GOP, adaptador de decode, tiempos del sondeo, qué se probó, si comparte motor con OBS
+  y las sesiones NVENC de OBS), o por qué se queda en MJPEG; un WARN `delay buffer codec … -> mjpeg:
+  <motivo>` en cada vuelta a MJPEG; líneas INFO para las cesiones; `delay pipeline: …` nombra la
+  clase de almacenamiento; `encoder ceiling WxH: …` o `no encoder ceiling: …`.
+- **`PipelineHealth` v2**: el códec, el nombre del encoder, el decode por hardware, el estado de la
+  política y su contador de cambios, solo para el diagnóstico de soporte. El dock no cambia.
+
+**Seguridad:**
+- **Sin Quick Sync en un OBS ejecutado como administrador.** Su runtime se carga a través de un
+  cargador que busca DLL en rutas de las que un proceso elevado no debería fiarse; el log lo dice
+  cuando hay una GPU Intel. NVENC y AMF cargan su runtime desde el driver, y el decode es D3D11VA.
+- **`get_pipeline_state` solo copia lo que cabe en la estructura de quien llama** (un parámetro
+  `size`), así que a quien se compiló con la estructura v1, más pequeña, nunca se le sobrescribe
+  memoria más allá de ella.
+- Solo se sondean los fabricantes de GPU presentes, así que no se carga el runtime de ningún otro.
+  El plugin solo decodifica bitstreams que ha producido él mismo.
+
+**Empaquetado / Build / CI:**
+- **`data/licenses/LICENSE-ffmpeg.txt`**: la build de FFmpeg de BtbN fijada en `buildspec.json`
+  (etiqueta de la release, archivo, SHA-256, commit de FFmpeg), enlaces a su código fuente y a sus
+  scripts de build, los componentes MIT/BSD/Apache que enlaza (libvpl, AMF, ffnvcodec) y los textos
+  de la LGPL v3 y la GPL v3. El instalador lista cada aviso, así que un paquete sin alguno no
+  compila, y las tablas de terceros del README nombran las DLL de FFmpeg.
+- **La build de Windows comprueba que el FFmpeg descargado sigue siendo LGPL**: falla si su línea de
+  configuración lleva `--enable-gpl` o `--enable-nonfree`, o si libavcodec no declara una licencia
+  LGPL.
+- **Sin DLL nuevas**: los encoders y decoders por hardware están en las `avcodec-63.dll` y
+  `avutil-61.dll` que ya se distribuyen, y sus runtimes vienen con el driver de la GPU.
+- El job de ThreadSanitizer también ejecuta `pipeline_gop_stress_tests`; `TRIGGLOW_STRESS_CI=1`
+  relaja también sus comprobaciones de tiempo.
+- Versión 0.7.0 en `buildspec.json` y en el script del instalador de Windows.
+
+**Tests** (23 suites, sin OBS, más `hw_storage_codec_tests` en builds locales de Windows; `ctest`):
+- Nuevos: `storage_codec_tests` (frames en vuelo de 0 a 16, contabilidad de cadenas, parámetros en
+  banda, NV12, la lectura estricta de `buffer_codec`, el orden de candidatos con y sin Quick Sync,
+  familias de encoders de OBS, motor compartido), `storage_policy_tests` (prioridades, la regla del
+  motor compartido, enfriamiento, veto, cesiones, pocas muestras, una hora en el límite de los
+  umbrales con como mucho una transición), `pipeline_gop_stress_tests` (el pipeline con un códec
+  inter-frame falso: latencia, GOP, pérdidas, cambios de códec y de tamaño, pausas de render,
+  preparaciones que fallan; nunca un P-frame sin su referencia, cadenas que empiezan en un keyframe,
+  un hilo por objeto de códec y nunca el hilo gráfico), `adversarial_gop_tests` (evacuaciones dentro
+  de un GOP, paquetes perdidos después de codificarse, desactivar y cerrar con una preparación
+  bloqueada, tamaños que cambian sin parar, cesiones, mitad de fps, pausas con frames retenidos en
+  el encoder, un decoder por hardware roto, un decode por software lento, una arena demasiado
+  pequeña) y `hw_storage_codec_tests` (el FFmpeg real con fallos inyectados: aperturas fallidas, una
+  preparación cancelada, un decoder que no llega a abrirse).
+- Ampliados: `frame_ring_tests` (paquetes decodificables, planes de arranque del decode, códecs
+  mezclados), `frame_arena_tests` (bloques de 8 MiB, un repuesto), `buffer_fit_tests` (clases de
+  almacenamiento, margen de GOP, 2,4 veces los frames en el suelo, 4K60 durante 60 s con 16 GB a
+  resolución completa), `encoder_check_tests` (el techo), `degradation_policy_tests` (escaleras de
+  dos slices, pasos por hardware, la bajada forzada de peldaño, el veto, la latencia que nunca
+  cuenta como carga) y `support_diagnostics_tests` (tamaños de `PipelineHealth`).
+
+**Limitaciones conocidas:**
+- **NVENC aún no se ha validado dentro de un OBS real.** La vía por hardware se midió con AMF de AMD
+  fuera de OBS. NVENC y NVDEC de NVIDIA, Quick Sync de Intel y la VRAM que ocupa el códec por
+  hardware no están medidos, y los bytes por frame (y con ellos la RAM) pueden variar en NVIDIA.
+  Cada encoder se sondea antes de usarlo, y cualquier error, o un frame que OBS se salte con el
+  motor compartido, devuelve el buffer a MJPEG; si aun así ves un problema, pon `buffer_codec` en
+  `"mjpeg"` y envía un reporte.
+- **El decode por software de emergencia es más lento y no llega a 4K60.** Si falla el decoder por
+  hardware, o el buffer abandona un motor que comparte con OBS para decodificar (AMD, Intel), los
+  frames por hardware que ya están en el buffer se decodifican en la CPU: a 2160p60 la imagen con
+  delay puede repetir frames (nunca mover el delay) hasta que lleguen a pantalla los frames MJPEG
+  siguientes, como mucho lo que dure el delay.
+- **Linux y macOS no cambian**: MJPEG en Linux y sin comprimir en macOS. El inicio de sesión, Trigi
+  y los reportes desde OBS siguen siendo solo de Windows.
+- Tras volver a MJPEG, el buffer no vuelve a probar el hardware hasta que desactivas y activas el
+  delay. La primera activación de cada sesión de OBS dimensiona el ring con el 5x de MJPEG, así que
+  con poca RAM puede guardar menos segundos que las siguientes.
+- Cuando el buffer baja un peldaño porque el motor de vídeo de la GPU va saturado, el aviso del dock
+  da la causa que ya existía, "comprimir los fotogramas consume mucha CPU"; el WARN del log dice que
+  fue el motor.
+- Siguen valiendo las limitaciones de la v0.6.0 (cambiar Program a la escena en directo a mano o
+  borrar un filtro "(auto)" con el delay activo, los tirones de render, el render target del tamaño
+  del lienzo para mantener viva la escena).
+
 ## v0.6.0 — 2026-10-19 (Early Access)
 
 El delay deja de competir con OBS por su hilo gráfico, se adapta a lo que da tu equipo sin cortarse

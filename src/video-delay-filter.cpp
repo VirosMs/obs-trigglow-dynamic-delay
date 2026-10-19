@@ -55,6 +55,17 @@ constexpr const char *kSettingBufferOutputCap = "buffer_output_cap";
 // runs the MJPEG encode/decode on the graphics thread, no codec worker threads
 // (the pipeline's reaper thread still frees memory off it).
 constexpr const char *kSettingCodecWorkers = "codec_workers";
+// Hidden v0.7.0 storage codec switch, same mechanism (pushed by
+// ObsFrontendBridge::SetBufferFilterCodec() on every Enable()): "auto" lets
+// the buffer store with a hardware inter-frame codec where one works,
+// "mjpeg" keeps it on MJPEG. Read as strictly as the plugin settings file.
+constexpr const char *kSettingBufferCodec = "buffer_codec";
+// The default: the hardware codec where it works (the user's decision for v0.7.0).
+constexpr const char *kDefaultBufferCodec = "auto";
+// v0.7.0, written by the set_storage_class proc (ObsFrontendBridge::
+// SetBufferFilterStorageClass(), every Enable()): bufferfit::RingClassName(),
+// "intra", "intra-gop" or "inter" (anything else reads as intra).
+constexpr const char *kSettingStorageClass = "storage_class";
 // The one entry of the filter's properties: a note that the dock manages it
 // (no delay or quality fields, see GetProperties()). Never a stored setting.
 constexpr const char *kPropertyManagedInfo = "trigglow_managed_info";
@@ -115,11 +126,14 @@ constexpr double kAssumedCompressionRatio = 1.0;
 
 // Sync path (codec_workers=false) only: slice threads for the MJPEG encoder
 // running on the graphics thread, as in v0.5.1 -- hardware_concurrency()/4
-// (logical CPUs), clamped to [1, 4]: 4 on an 8C/16T CPU, 1 on a 4-thread one.
-// They cut the encode's WALL time there (1080p: 5.1 -> 1.8ms p50 with 4
-// slices, same total CPU, ~3.5% bigger packets). With codec workers the
-// degradation policy starts at one context and one slice and adds threads
-// only when the measured load asks for them.
+// (logical CPUs), clamped to [1, CodecPipeline::kMaxSlicesPerContext]: 2 on an
+// 8C/16T CPU, 1 on a 4-thread one. They cut the encode's WALL time there
+// (1080p: 5.1 ms p50 with 1 slice, ~3 ms with 2, 1.8 ms with the 4 v0.6.0
+// allowed; same total CPU, ~3.5% bigger packets). v0.7.0 caps them at 2 for
+// RAM: every slice holds its own encoder buffers, and this path is the kill
+// switch's rescue mode. With codec workers the degradation policy starts at one
+// context and one slice and adds threads only when the measured load asks for
+// them.
 uint32_t EncodeSliceThreadCount()
 {
 	const unsigned logicalCpus = std::thread::hardware_concurrency(); // 0 = unknown -> 1 thread.
@@ -134,16 +148,13 @@ constexpr uint32_t kDecodeLookaheadFrames = 3;
 // frame (CodecPipeline::PrimeDecode()).
 constexpr uint64_t kDecodePrimeWindowNs = 250000000ULL;
 
-// Payload arena blocks (perf2 #3): ~1/16 of the expected ring bytes, between
-// 4 and 32 MiB, and always room for two raw frames (raw fallback).
-constexpr uint64_t kArenaMinBlockBytes = 4ULL * 1024 * 1024;
-constexpr uint64_t kArenaMaxBlockBytes = 32ULL * 1024 * 1024;
-
 // Adaptive degradation (B.8): evaluated this often, over trailing windows of
 // these lengths (perf2: p95 over ~2 s, the immediate p50 rule over less).
 constexpr uint64_t kPolicyEvalIntervalNs = 250000000ULL;
 constexpr uint64_t kPolicyWindowNs = 2000000000ULL;
 constexpr uint64_t kPolicyShortWindowNs = 500000000ULL;
+// The storage codec policy's latency window: a warning must hold for a second.
+constexpr uint64_t kCodecLatencyWindowNs = 1000000000ULL;
 
 // v0.5.1 telemetry: one "perf check" line per this much rendering (plus, since
 // v0.6.0, a "pipeline check" line for the codec workers, queues and arena).
@@ -343,7 +354,26 @@ void PipelineLog(PipelineLogLevel level, const char *line)
 		TRIGGLOW_LOG_INFO(kComponent, "%s", line);
 }
 
-CodecPipeline::Options MakePipelineOptions(bool threaded, uint32_t fpsNum, uint32_t fpsDen)
+// The codec-class bit of a decode tag (CodecPipeline::kInterTagBit), for the
+// degradation policy's (rung, codec) labels.
+uint32_t ClassBit(bool inter)
+{
+	return inter ? CodecPipeline::kInterTagBit : 0u;
+}
+
+uint32_t ClassBitOf(storage::CodecId codec)
+{
+	return ClassBit(storage::ClassOf(codec) == storage::StorageClass::Inter);
+}
+
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+using ProviderRef = std::shared_ptr<hwstorage::Provider>;
+#else
+using ProviderRef = std::shared_ptr<void>; // No hardware storage codec in this build.
+#endif
+
+CodecPipeline::Options MakePipelineOptions(bool threaded, uint32_t fpsNum, uint32_t fpsDen,
+					   std::shared_ptr<storage::InterControl> interControl, ProviderRef provider)
 {
 	CodecPipeline::Options options;
 	options.threaded = threaded;
@@ -353,45 +383,106 @@ CodecPipeline::Options MakePipelineOptions(bool threaded, uint32_t fpsNum, uint3
 	options.nameThread = [](const char *name) {
 		os_set_thread_name(name);
 	};
+	options.interControl = std::move(interControl);
+	// The storage codec (storage-codec.hpp): MJPEG where FFmpeg has it, raw
+	// otherwise (the pipeline's default, and its own raw decoder).
 #ifdef TRIGGLOW_HAVE_FFMPEG
 	if (MjpegAvailable()) {
 		const uint32_t fps = std::max<uint32_t>(1, fpsNum / std::max<uint32_t>(1, fpsDen));
-		options.codecFactory = [fps] {
-			MjpegCodecOptions mjpeg;
-			mjpeg.quality = kMjpegQuality;
-			mjpeg.timeBaseFps = fps;
-			mjpeg.log = &PipelineLog;
-			return MakeMjpegCodec(mjpeg);
+		options.encoderFactory = [fps](const storage::EncoderConfig &requested) {
+			storage::EncoderConfig config = requested; // Frame size and slice threads.
+			config.quality = kMjpegQuality;
+			config.fpsNum = fps;
+			config.fpsDen = 1;
+			return MakeMjpegEncoder(config, &PipelineLog);
 		};
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+		// v0.7.0: the hardware inter-frame codec, set up on the pipeline's
+		// setup thread (only with the codec workers: it needs them).
+		if (threaded && provider && provider->AnyHardware()) {
+			options.interSetup = [provider](const storage::EncoderConfig &frame,
+							const storage::SetupCancelled &cancelled) {
+				return provider->Setup(frame, cancelled);
+			};
+			options.softwareDecoderFactory = [provider](storage::CodecId codec) {
+				return provider->MakeSoftwareDecoder(codec);
+			};
+		}
+		options.decoderFactory = [provider](storage::CodecId codec) -> std::unique_ptr<storage::Decoder> {
+			if (codec == storage::CodecId::Mjpeg)
+				return MakeMjpegDecoder(&PipelineLog);
+			if (provider)
+				return provider->MakeHardwareDecoder(codec);
+			return nullptr;
+		};
+#else
+		options.decoderFactory = [](storage::CodecId codec) -> std::unique_ptr<storage::Decoder> {
+			if (codec == storage::CodecId::Mjpeg)
+				return MakeMjpegDecoder(&PipelineLog);
+			return nullptr;
+		};
+#endif
 	} else {
 		TRIGGLOW_LOG_WARN(kComponent, "MJPEG encoder/decoder not found in linked FFmpeg -- the buffer stores "
 					      "uncompressed I420 this session");
-		options.codecFactory = &MakeRawCodec;
+		options.encoderFactory = &storage::MakeRawEncoder;
 	}
 #else
 	(void)fpsNum;
 	(void)fpsDen;
-	options.codecFactory = &MakeRawCodec;
+	options.encoderFactory = &storage::MakeRawEncoder;
+#endif
+#ifndef TRIGGLOW_HAVE_HW_STORAGE
+	(void)provider;
 #endif
 	return options;
 }
 
-FrameArena::Config ArenaConfigFor(uint64_t slots, uint32_t width, uint32_t height, uint64_t budgetBytes)
+// The hardware encoder families, in the storage codec's log lines.
+const char *BackendLabel(storage::Backend backend)
+{
+	switch (backend) {
+	case storage::Backend::Nvenc:
+		return "NVENC";
+	case storage::Backend::Amf:
+		return "AMF";
+	case storage::Backend::Qsv:
+		return "Quick Sync";
+	case storage::Backend::Cpu:
+		return "CPU";
+	case storage::Backend::D3d12va:
+		return "D3D12";
+	}
+	return "?";
+}
+
+// The ring class a cycle may have (only with FFmpeg: inter-frame codecs need it).
+bufferfit::RingClass RingClassFor(bufferfit::RingClass requested)
+{
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	return requested;
+#else
+	(void)requested;
+	return bufferfit::RingClass::Intra;
+#endif
+}
+
+FrameArena::Config ArenaConfigFor(uint64_t slots, uint32_t width, uint32_t height, uint64_t budgetBytes,
+				  double assumedRatio)
 {
 	const uint64_t rawBytes = bufferfit::Nv12FrameBytes(width, height); // I420: same 1.5 bytes/pixel.
-	const auto expectedBytes = static_cast<uint64_t>(static_cast<double>(slots) * static_cast<double>(rawBytes) /
-							 kAssumedCompressionRatio);
-	uint64_t block = std::clamp<uint64_t>(expectedBytes / 16, kArenaMinBlockBytes, kArenaMaxBlockBytes);
-	block = std::max<uint64_t>(block, 2 * rawBytes);
-	block = (block + (1ULL << 20) - 1) & ~((1ULL << 20) - 1); // Whole MiB.
-	FrameArena::Config config;
-	config.blockBytes = static_cast<size_t>(block);
+	const auto expectedBytes =
+		static_cast<uint64_t>(static_cast<double>(slots) * static_cast<double>(rawBytes) / assumedRatio);
 	// Never past the RAM budget (or what the ring was sized for, if that's
 	// more): a sustained run of frames that compress far worse than assumed
 	// drops frames instead of growing without bound.
-	config.limitBytes = std::max<uint64_t>(budgetBytes, expectedBytes + 2 * block);
-	config.maxSpareBlocks = 2;
-	return config;
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	return FrameArena::SizedFor(expectedBytes, budgetBytes);
+#else
+	// No codec (assumed ratio 1): every payload is a raw frame, and blocks
+	// hold a whole number of them.
+	return FrameArena::SizedFor(expectedBytes, budgetBytes, static_cast<size_t>(rawBytes));
+#endif
 }
 
 PipelineLoad LoadFromCause(degradation::Cause cause)
@@ -425,7 +516,7 @@ VideoDelayFilter::BufferFitEstimate
 VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight, uint32_t sourceWidth,
 				    uint32_t sourceHeight, uint32_t baseWidth, uint32_t baseHeight,
 				    uint32_t outputWidth, uint32_t outputHeight, uint32_t fpsNum, uint32_t fpsDen,
-				    bool capToOutput)
+				    bool capToOutput, bufferfit::RingClass ringClass)
 {
 	bufferfit::Input in;
 	in.sourceWidth = sourceWidth;
@@ -439,8 +530,8 @@ VideoDelayFilter::EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t min
 	in.delaySeconds = requestedDelaySeconds;
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
-	in.compressionRatio = kAssumedCompressionRatio;
 	in.capToOutput = capToOutput;
+	bufferfit::ApplyStorageClass(in, RingClassFor(ringClass), kAssumedCompressionRatio);
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return {};
@@ -504,6 +595,18 @@ VideoDelayFilter::VideoDelayFilter(obs_source_t *filterSource) : filterSource_(f
 	// Real fps and mix geometry from the start, not the 30fps placeholders:
 	// the first Render() can come before the first Tick().
 	RefreshVideoInfo();
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	// Created once, here, so the UI thread's procs can reach it without a race
+	// (it only enumerates the GPUs; nothing is opened until a setup asks).
+	hwstorage::ProviderSettings settings;
+	settings.obsAdapterIndex = obsAdapterIndex_;
+	settings.fpsNum = fpsNum_;
+	settings.fpsDen = fpsDen_;
+	settings.log = &PipelineLog;
+	settings.clockNs = &os_gettime_ns;
+	settings.control = interControl_;
+	hwProvider_ = std::make_shared<hwstorage::Provider>(settings);
+#endif
 }
 
 VideoDelayFilter::~VideoDelayFilter()
@@ -549,6 +652,7 @@ bool VideoDelayFilter::RefreshVideoInfo()
 	mixBaseHeight_ = ovi.base_height;
 	mixOutputWidth_ = ovi.output_width;
 	mixOutputHeight_ = ovi.output_height;
+	obsAdapterIndex_ = ovi.adapter;
 	return true;
 }
 
@@ -576,9 +680,14 @@ void VideoDelayFilter::StopCycle(bool releaseCodecs)
 	InvalidatePlaybackCache();
 	effectiveDelaySeconds_ = 0;
 	policy_ = degradation::Policy();
+	interSteps_ = false;
 	captureDivisor_ = 1;
 	lastCause_ = PipelineLoad::None;
 	ClearPolicyWindows();
+	// Disable: the next Enable starts the storage codec over (a hard resize
+	// within the same Enable keeps its state, an evacuation included).
+	if (releaseCodecs)
+		codecCycleFresh_ = true;
 }
 
 void VideoDelayFilter::PerfWindow::Reset()
@@ -596,6 +705,8 @@ void VideoDelayFilter::PerfWindow::Reset()
 	holdsLateDecode = 0;
 	holdsDropped = 0;
 	holdsEncoding = 0;
+	holdsCatchUp = 0;
+	holdsNoKey = 0;
 	reserveFailures = 0;
 	backpressureDrops = 0;
 	captureFailures = 0;
@@ -629,6 +740,7 @@ void VideoDelayFilter::FinishRenderSample(uint64_t renderStartNs)
 		perf_.obsTotalFramesStart = perf_.obsTotalFramesLast;
 		perf_.obsLaggedFramesStart = perf_.obsLaggedFramesLast;
 		perf_.obsSkippedFramesStart = perf_.obsSkippedFramesLast;
+		perfMixSkippedStart_ = reportedMixSkipped_.load();
 	}
 	// The policy judges only what the plugin adds to the graphics thread:
 	// everything but rendering the scene itself into the capture texture,
@@ -690,8 +802,8 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 	TRIGGLOW_LOG_INFO(kComponent,
 			  "perf check (%s, %.1fs): buf=%ux%u (%s) fps=%.2f | render p50/p95/max=%.2f/%.2f/%.2fms "
 			  "own=%.2f/%.2f/%.2f readback=%.2f/%.2f/%.2f upload=%.2f/%.2f/%.2f | calls=%.1f/s "
-			  "captures=%.1f/s uploads=%.1f/s holds=%llu (late decode %llu, dropped %llu, encoding %llu) | "
-			  "obs frames+%llu lagged+%llu skipped+%llu",
+			  "captures=%.1f/s uploads=%.1f/s holds=%llu (late decode %llu, dropped %llu, encoding %llu, "
+			  "catch-up %llu, no key %llu) | obs frames+%llu lagged+%llu skipped+%llu",
 			  reason, seconds, bufferWidth_, bufferHeight_, geometry, fps, renderP50, renderP95, renderMax,
 			  ownP50, ownP95, ownMax, readbackP50, readbackP95, readbackMax, uploadP50, uploadP95,
 			  uploadMax, static_cast<double>(perf_.calls) / seconds,
@@ -700,6 +812,8 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 			  static_cast<unsigned long long>(perf_.holdsLateDecode),
 			  static_cast<unsigned long long>(perf_.holdsDropped),
 			  static_cast<unsigned long long>(perf_.holdsEncoding),
+			  static_cast<unsigned long long>(perf_.holdsCatchUp),
+			  static_cast<unsigned long long>(perf_.holdsNoKey),
 			  delta(perf_.obsTotalFramesLast, perf_.obsTotalFramesStart),
 			  delta(perf_.obsLaggedFramesLast, perf_.obsLaggedFramesStart),
 			  delta(perf_.obsSkippedFramesLast, perf_.obsSkippedFramesStart));
@@ -725,16 +839,23 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 	const size_t rung = policy_.Valid() ? policy_.RungIndex() : 0;
 	const size_t rungs = policy_.Valid() ? policy_.Ladder().size() : 1;
 	constexpr double kMiB = 1024.0 * 1024.0;
+	// v0.7.0: what stores the frames now.
+	char codecName[32] = "mjpeg";
+	if (lastCodecStatus_.interActive)
+		std::snprintf(codecName, sizeof(codecName), "%s", lastCodecStatus_.encoder);
+#ifndef TRIGGLOW_HAVE_FFMPEG
+	std::snprintf(codecName, sizeof(codecName), "raw");
+#endif
 	TRIGGLOW_LOG_INFO(
 		kComponent,
-		"pipeline check (%s): mode=%s rung=%zu/%zu capture=%ux%u@%.2ffps enc=%ux%u L=%u S=%zu | "
+		"pipeline check (%s): mode=%s codec=%s rung=%zu/%zu capture=%ux%u@%.2ffps enc=%ux%u L=%u S=%zu | "
 		"enc0 p50/p95/max=%.2f/%.2f/%.2fms busy=%.0f%% enc1=%.2f/%.2f/%.2f busy=%.0f%% "
 		"dec=%.2f/%.2f/%.2f busy=%.0f%% | drops reserve=%llu backpressure=%llu arena=%llu capture=%llu "
 		"rawFallback=%llu encFail=%llu decFail=%llu staleEnc=%llu decJumps=%llu staleDec=%llu | queue enc "
 		"max=%u avg=%.2f dec ahead avg=%.2f min=%u | ratio=%.1fx arena=%.0fMB committed (live %.0fMB, peak "
 		"%.0fMB, %u blocks of %.0fMB, limit %.0fMB) ring=%zu slots (ready %zu, dropped %zu, in flight %zu, "
 		"pinned %zu)",
-		reason, threaded ? "workers" : "sync", rung, rungs - 1, captureWidth_, captureHeight_,
+		reason, threaded ? "workers" : "sync", codecName, rung, rungs - 1, captureWidth_, captureHeight_,
 		fps / std::max<uint32_t>(1, captureDivisor_), pipeline_ ? pipeline_->ActiveEncodeContexts() : 0,
 		pipeline_ ? pipeline_->SlicesPerContext() : 0, pipeline_ ? pipeline_->LookaheadFrames() : 0,
 		kStagingSlotCount, e0P50, e0P95, e0Max, busy(w.encode[0].frameNs), e1P50, e1P95, e1Max,
@@ -757,11 +878,72 @@ void VideoDelayFilter::LogPerfWindow(const char *reason)
 		ring_ ? ring_->SlotCount() : 0, counts.ready, counts.dropped, counts.reserved + counts.encoding,
 		counts.pinned);
 
+	LogCodecWindow(reason, w);
+
 	const uint64_t drops = perf_.reserveFailures + perf_.backpressureDrops + perf_.captureFailures + w.arenaDrops;
 	lastDropsPerMinute_ = static_cast<double>(drops) * 60.0 / seconds;
 	lastHoldsPerMinute_ = static_cast<double>(perf_.holds) * 60.0 / seconds;
 	PublishHealth(ring_ != nullptr);
 	perf_.Reset();
+}
+
+void VideoDelayFilter::LogCodecWindow(const char *reason, CodecPipeline::WindowStats &w)
+{
+	const uint64_t mainSkipped = perf_.obsSkippedFramesLast >= perf_.obsSkippedFramesStart
+					     ? perf_.obsSkippedFramesLast - perf_.obsSkippedFramesStart
+					     : 0;
+	const uint64_t mixNow = reportedMixSkipped_.load();
+	const uint64_t mixSkipped = mixNow >= perfMixSkippedStart_ ? mixNow - perfMixSkippedStart_ : 0;
+	const CodecPipeline::CodecStatus &status = lastCodecStatus_;
+#ifdef TRIGGLOW_HAVE_FFMPEG
+	const int mjpegQuality = kMjpegQuality;
+#else
+	const int mjpegQuality = 0;
+#endif
+	const char *policy = storagepolicy::StateName(codecPolicy_.GetState());
+	if (!status.interActive && codecPolicy_.GetState() == storagepolicy::State::Mjpeg &&
+	    w.interLatencyNs.count == 0 && w.catchUps == 0 && w.noKeyWaits == 0) {
+		// MJPEG the whole cycle: nothing more to say than the codec.
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "storage codec check (%s): codec=mjpeg(q%d,huff=default) dec=mjpeg policy=%s | obs "
+				  "encode-lag skipped main+%llu mixes+%llu",
+				  reason, mjpegQuality, policy, static_cast<unsigned long long>(mainSkipped),
+				  static_cast<unsigned long long>(mixSkipped));
+		return;
+	}
+	char codec[96];
+	int qp = 0;
+	uint32_t gop = 0;
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	if (hwProvider_) {
+		qp = hwProvider_->QpFor(status.codec);
+		gop = hwProvider_->KeyframeInterval();
+	}
+#endif
+	if (status.interActive)
+		std::snprintf(codec, sizeof(codec), "%s(qp%d,gop%u)", status.encoder, qp, gop);
+	else
+		std::snprintf(codec, sizeof(codec), "mjpeg(q%d,huff=default)%s", mjpegQuality,
+			      codecPolicy_.GetState() == storagepolicy::State::Probing ? " bridging" : "");
+	double latP50 = 0, latP95 = 0, latMax = 0, sendP50 = 0, sendP95 = 0, sendMax = 0;
+	w.interLatencyNs.Summarize(latP50, latP95, latMax);
+	w.interSendNs.Summarize(sendP50, sendP95, sendMax);
+	TRIGGLOW_LOG_INFO(
+		kComponent,
+		"storage codec check (%s): codec=%s dec=%s | hwenc lat p50/p95/max=%.1f/%.1f/%.1fms inflight "
+		"max=%u send p95=%.2fms | keys=%llu forcedIdr=%llu chainBreaks=%llu orphanP=%llu catchUps=%llu "
+		"(frames %llu, max %.0fms) noKeyWaits=%llu noKeySkips=%llu | bridge frames=%llu codecChanges=%llu "
+		"hardErrors=%llu | policy=%s guard=%s | obs encode-lag skipped main+%llu mixes+%llu",
+		reason, codec, status.softwareDecode ? "sw" : (status.hardwareDecode ? "d3d11va" : "mjpeg"), latP50,
+		latP95, latMax, w.inFlightMax, sendP95, static_cast<unsigned long long>(w.interKeys),
+		static_cast<unsigned long long>(w.forcedKeys), static_cast<unsigned long long>(w.chainBreaks),
+		static_cast<unsigned long long>(w.orphanDrops), static_cast<unsigned long long>(w.catchUps),
+		static_cast<unsigned long long>(w.catchUpFrames), static_cast<double>(w.catchUpMaxNs) / 1e6,
+		static_cast<unsigned long long>(w.noKeyWaits), static_cast<unsigned long long>(w.noKeySkips),
+		static_cast<unsigned long long>(w.bridgeFrames), static_cast<unsigned long long>(w.codecChanges),
+		static_cast<unsigned long long>(w.interHardErrors), policy,
+		codecPolicy_.BlockUp(perf_.lastSampleNs) ? "on" : "off", static_cast<unsigned long long>(mainSkipped),
+		static_cast<unsigned long long>(mixSkipped));
 }
 
 void VideoDelayFilter::ReleaseGpuObjects()
@@ -872,8 +1054,12 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	in.delaySeconds = delaySeconds;
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
-	in.compressionRatio = kAssumedCompressionRatio;
 	in.capToOutput = configuredOutputCap_.load();
+	// v0.7.0: the cycle's ring class (invariant I9) -- the same one
+	// PlannedEffectiveDelaySeconds() reads, so audio gets this whole-second delay.
+	const bufferfit::RingClass ringClass =
+		RingClassFor(static_cast<bufferfit::RingClass>(configuredRingClass_.load()));
+	bufferfit::ApplyStorageClass(in, ringClass, kAssumedCompressionRatio);
 	const bufferfit::Result fit = bufferfit::Compute(in);
 	if (fit.bufferWidth == 0 || fit.bufferHeight == 0)
 		return;
@@ -949,9 +1135,19 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 		retiredPipelines_.push_back(std::move(pipeline_));
 	}
 	if (!pipeline_) {
-		pipeline_ = std::make_unique<CodecPipeline>(MakePipelineOptions(threaded, fpsNum_, fpsDen_));
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+		ProviderRef provider = hwProvider_;
+#else
+		ProviderRef provider;
+#endif
+		pipeline_ = std::make_unique<CodecPipeline>(
+			MakePipelineOptions(threaded, fpsNum_, fpsDen_, interControl_, std::move(provider)));
 		pipelineThreaded_ = threaded;
 	}
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	if (hwProvider_)
+		hwProvider_->SetFrameRate(fpsNum_, fpsDen_);
+#endif
 
 	bufferWidth_ = fit.bufferWidth;
 	bufferHeight_ = fit.bufferHeight;
@@ -960,8 +1156,8 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	effectiveDelaySeconds_ = fit.effectiveDelaySeconds;
 	ringFrameIntervalNs_ = frameIntervalNs_;
 
-	const FrameArena::Config arena =
-		ArenaConfigFor(fit.actualFrames, fit.bufferWidth, fit.bufferHeight, in.budgetBytes);
+	const FrameArena::Config arena = ArenaConfigFor(fit.actualFrames, fit.bufferWidth, fit.bufferHeight,
+							in.budgetBytes, in.compressionRatio);
 	ring_ = std::make_shared<FrameRing>(static_cast<size_t>(fit.actualFrames), arena);
 
 	// Degradation ladder (B.8): from the fitted size down to the user's
@@ -978,10 +1174,42 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	policy_ = degradation::Policy(degradation::BuildLadder(fit.bufferWidth, fit.bufferHeight, floorHeight,
 							       allowHalfRate),
 				      std::move(steps), initialStep, runsThreaded);
+	ladderTopWidth_ = fit.bufferWidth;
+	ladderTopHeight_ = fit.bufferHeight;
+	ladderFloorHeight_ = floorHeight;
+	ladderHalfRate_ = allowHalfRate;
+	ApplyEncoderCeiling(true); // The ceiling OBS's encoders put on it, if any.
 	ClearPolicyWindows();
 	nextPolicyEvalNs_ = 0;
 	ApplyCurrentRung();
 	pipeline_->Attach(ring_, fit.bufferWidth, fit.bufferHeight, frameIntervalNs_ * captureDivisor_);
+	interSteps_ = false; // A new ladder on MJPEG's steps: the next evaluation follows the codec in use.
+	if (codecCycleFresh_) {
+		// A new Enable: the storage codec starts over, on hardware if it may
+		// (MJPEG bridges while the setup thread opens and checks it).
+		codecCycleFresh_ = false;
+		bool hardware = configuredBufferCodecAuto_.load() && runsThreaded;
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+		hardware = hardware && hwProvider_ && hwProvider_->AnyHardware();
+#else
+		hardware = false;
+#endif
+		codecPolicy_ = storagepolicy::Policy(hardware);
+		interControl_->yielded = false;
+		pipeline_->SetSoftwareDecode(false);
+		pipeline_->SetStorageTarget(hardware);
+		lastCodecStatus_ = pipeline_->GetCodecStatus();
+		skippedEvents_.Clear();
+		lastObsSkippedFrames_ = UINT64_MAX;
+		lastMixSkipped_ = reportedMixSkipped_.load();
+		lastObsEncodeErrors_ = obsEncodeErrors_.load();
+		TRIGGLOW_LOG_INFO(kComponent, "storage codec: %s (buffer_codec=%s%s)",
+				  hardware ? "hardware inter-frame where it works, MJPEG bridging meanwhile" : "MJPEG",
+				  configuredBufferCodecAuto_.load() ? "auto" : "mjpeg",
+				  !runsThreaded ? ", codec_workers=false: MJPEG only"
+						: (configuredBufferCodecAuto_.load() && !hardware ? ", no hardware here"
+												  : ""));
+	}
 
 	stagingNext_ = 0;
 	lastCaptureCell_ = UINT64_MAX;
@@ -989,17 +1217,27 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 
 	const degradation::Rung &lowest = policy_.Ladder().back();
 	const degradation::Parallelism &par = policy_.CurrentParallelism();
-	TRIGGLOW_LOG_INFO(kComponent,
-			  "delay pipeline: %s, buffer %ux%u, %llu slots, delay %us, %u encode context%s x %u slice "
-			  "thread%s, decode-ahead %u frames, %zu staging slots, degradation ladder %zu rungs down to "
-			  "%ux%u%s, arena blocks %zuMB (limit %lluMB)",
-			  runsThreaded ? "codec workers" : "sync (codec on the graphics thread, codec_workers=false)",
-			  fit.bufferWidth, fit.bufferHeight, static_cast<unsigned long long>(fit.actualFrames),
-			  fit.effectiveDelaySeconds, par.contexts, par.contexts == 1 ? "" : "s", par.slices,
-			  par.slices == 1 ? "" : "s", pipeline_->LookaheadFrames(), kStagingSlotCount,
-			  policy_.Ladder().size(), lowest.width, lowest.height,
-			  lowest.captureDivisor > 1 ? " at half frame rate" : "", arena.blockBytes / (1024 * 1024),
-			  static_cast<unsigned long long>(arena.limitBytes / (1024 * 1024)));
+	char storageClass[96];
+	if (in.keyframeIntervalFrames > 0)
+		std::snprintf(
+			storageClass, sizeof(storageClass), "%s (assumed %.0fx, ring +%llu slots of GOP margin)",
+			bufferfit::RingClassName(ringClass), in.compressionRatio,
+			static_cast<unsigned long long>(bufferfit::SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen,
+									       in.keyframeIntervalFrames) -
+							bufferfit::SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen)));
+	else
+		std::snprintf(storageClass, sizeof(storageClass), "intra (assumed %.0fx)", in.compressionRatio);
+	TRIGGLOW_LOG_INFO(
+		kComponent,
+		"delay pipeline: %s, buffer %ux%u, %llu slots, delay %us, storage class %s, %u encode "
+		"context%s x %u slice thread%s, decode-ahead %u frames, %zu staging slots, degradation ladder "
+		"%zu rungs down to %ux%u%s, arena blocks %zuMB (limit %lluMB)",
+		runsThreaded ? "codec workers" : "sync (codec on the graphics thread, codec_workers=false)",
+		fit.bufferWidth, fit.bufferHeight, static_cast<unsigned long long>(fit.actualFrames),
+		fit.effectiveDelaySeconds, storageClass, par.contexts, par.contexts == 1 ? "" : "s", par.slices,
+		par.slices == 1 ? "" : "s", pipeline_->LookaheadFrames(), kStagingSlotCount, policy_.Ladder().size(),
+		lowest.width, lowest.height, lowest.captureDivisor > 1 ? " at half frame rate" : "",
+		arena.blockBytes / (1024 * 1024), static_cast<unsigned long long>(arena.limitBytes / (1024 * 1024)));
 	PublishHealth(true);
 
 	if (restarted) {
@@ -1030,6 +1268,62 @@ void VideoDelayFilter::ApplyCurrentRung()
 	}
 }
 
+void VideoDelayFilter::ApplyEncoderCeiling(bool force)
+{
+	const uint64_t serial = ceilingSerial_.load();
+	if (!force && serial == appliedCeilingSerial_)
+		return;
+	appliedCeilingSerial_ = serial;
+	if (!policy_.Valid() || bufferWidth_ == 0 || bufferHeight_ == 0)
+		return;
+	// Only below the ring's own size, and only for the live scene the size of
+	// the canvas (the case the output cap applies to): a soft ceiling.
+	uint32_t topWidth = bufferWidth_;
+	uint32_t topHeight = bufferHeight_;
+	const uint32_t width = ceilingWidth_.load();
+	const uint32_t height = ceilingHeight_.load();
+	const bool canvasSized = lastFitInput_.sourceWidth == mixBaseWidth_ &&
+				 lastFitInput_.sourceHeight == mixBaseHeight_;
+	if (configuredOutputCap_.load() && canvasSized && width > 0 && height > 0 && height < bufferHeight_ &&
+	    width <= bufferWidth_) {
+		topWidth = width;
+		topHeight = height;
+	}
+	if (topWidth == ladderTopWidth_ && topHeight == ladderTopHeight_ && !force)
+		return;
+	const bool changed = topWidth != ladderTopWidth_ || topHeight != ladderTopHeight_;
+	ladderTopWidth_ = topWidth;
+	ladderTopHeight_ = topHeight;
+	if (!changed)
+		return;
+	std::vector<degradation::Rung> ladder =
+		degradation::BuildLadder(topWidth, topHeight, std::min(ladderFloorHeight_, topHeight), ladderHalfRate_);
+	// The same capture size or a smaller one: never up because of the ceiling
+	// unless the buffer was at its top already.
+	size_t rung = 0;
+	if (policy_.RungIndex() > 0) {
+		rung = ladder.size() - 1;
+		for (size_t i = 0; i < ladder.size(); ++i) {
+			if (ladder[i].height <= captureHeight_ && ladder[i].captureDivisor == captureDivisor_) {
+				rung = i;
+				break;
+			}
+		}
+	}
+	policy_.Rebase(std::move(ladder), rung);
+	ApplyCurrentRung();
+	ClearPolicyWindows();
+	++healthChanges_;
+	if (topWidth != bufferWidth_ || topHeight != bufferHeight_)
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "encoder ceiling: capturing at most %ux%u (the largest encoder of the main canvas) "
+				  "instead of %ux%u -- the ring, its RAM limit and the delay are unchanged",
+				  topWidth, topHeight, bufferWidth_, bufferHeight_);
+	else
+		TRIGGLOW_LOG_INFO(kComponent, "encoder ceiling lifted: capturing up to %ux%u again", topWidth,
+				  topHeight);
+}
+
 void VideoDelayFilter::ClearPolicyWindows()
 {
 	renderRecent_.Clear();
@@ -1047,6 +1341,13 @@ void VideoDelayFilter::MaybeEvaluateDegradation(uint64_t nowNs)
 	if (!policy_.Valid() || !pipeline_ || nowNs < nextPolicyEvalNs_)
 		return;
 	nextPolicyEvalNs_ = nowNs + kPolicyEvalIntervalNs;
+	// v0.7.0: a new ceiling from OBS's encoders, then the storage codec; a
+	// rung or steps change resets the degradation policy's windows, so it
+	// waits for the next evaluation.
+	const uint64_t ladderSerial = healthChanges_;
+	ApplyEncoderCeiling(false);
+	if (EvaluateCodecPolicy(nowNs) || healthChanges_ != ladderSerial)
+		return;
 
 	// OBS's lagged frames since the last evaluation.
 	const uint64_t lagged = obs_get_lagged_frames();
@@ -1070,16 +1371,23 @@ void VideoDelayFilter::MaybeEvaluateDegradation(uint64_t nowNs)
 	// they're this rung's (degradation::Sample::decodeRung).
 	const auto rung = static_cast<uint32_t>(policy_.RungIndex());
 	const CodecPipeline::RecentLoad load = pipeline_->GetRecentLoad(nowNs, kPolicyWindowNs, rung);
+	// Decode samples are tagged (rung, codec class): the hardware decoder's
+	// load says nothing about MJPEG's and the other way round, so only the
+	// frames of the codec stored now count (v0.7.0).
+	const uint32_t classBit = ClassBit(interSteps_);
 	uint32_t decodeTag = load.decodeTag;
 	if (decodeTag == RollingWindow::kAnyTag)
 		decodeTag = dueEvents_.NewestTag(nowNs);
 	if (decodeTag == RollingWindow::kAnyTag)
-		decodeTag = rung;
+		decodeTag = rung | classBit;
 	sample.encodeSamples = load.encode.samples;
 	sample.encodeP95Ms = load.encode.p95Ms;
 	sample.decodeSamples = load.decode.samples;
 	sample.decodeP95Ms = load.decode.p95Ms;
-	sample.decodeRung = decodeTag;
+	sample.decodeRung = (decodeTag & CodecPipeline::kInterTagBit) == classBit
+				    ? (decodeTag & ~CodecPipeline::kInterTagBit)
+				    : degradation::Sample::kSameRung - 1; // Another codec's frames: never this rung.
+	sample.blockUp = codecPolicy_.BlockUp(nowNs);
 	sample.captures = captureEvents_.Count(nowNs, kPolicyWindowNs);
 	sample.encodeDrops = dropEvents_.Count(nowNs, kPolicyWindowNs);
 	sample.dueFrames = dueEvents_.Count(nowNs, kPolicyWindowNs, decodeTag);
@@ -1138,6 +1446,181 @@ void VideoDelayFilter::ApplyDegradation(const degradation::Decision &decision, c
 	PublishHealth(true);
 }
 
+storage::EngineShare VideoDelayFilter::CurrentEngineShare(const CodecPipeline::CodecStatus &status)
+{
+	ObsEncoderSet obs;
+	{
+		std::lock_guard<std::mutex> lock(obsEncodersMutex_);
+		obs = obsEncoders_;
+	}
+	const std::vector<storage::EncoderFamily> families(obs.families,
+							   obs.families + std::min(obs.count, ObsEncoderSet::kMax));
+	storage::GpuVendor decodeVendor = storage::GpuVendor::Unknown;
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	if (hwProvider_)
+		decodeVendor = hwProvider_->DecodeVendor();
+#endif
+	return storage::ComputeEngineShare(status.backend, status.hardwareDecode, decodeVendor, obs.known, families);
+}
+
+bool VideoDelayFilter::EvaluateCodecPolicy(uint64_t nowNs)
+{
+	const CodecPipeline::CodecStatus status = pipeline_->GetCodecStatus();
+	const bool threaded = pipeline_->Threaded();
+	bool changed = false;
+	// The parallelism steps follow the codec in use: the
+	// hardware encoder is one context; MJPEG starts again from its initial step.
+	if (status.interActive != interSteps_) {
+		interSteps_ = status.interActive;
+		std::vector<degradation::Parallelism> steps = degradation::BuildParallelismSteps(threaded, interSteps_);
+		const size_t initial = interSteps_ ? 0
+						   : degradation::InitialParallelism(steps, threaded, captureWidth_,
+										     captureHeight_,
+										     frameIntervalNs_ * captureDivisor_,
+										     EncodeSliceThreadCount());
+		policy_.SetParallelism(std::move(steps), initial);
+		ApplyCurrentRung();
+		ClearPolicyWindows();
+		changed = true;
+	}
+
+	// Frames OBS skipped for encoding lag: the main mix's counter (read here)
+	// and those of its encoders' own mixes (reported by the UI).
+	video_t *video = obs_get_video();
+	const uint64_t mainSkipped = video ? video_output_get_skipped_frames(video) : 0;
+	if (lastObsSkippedFrames_ != UINT64_MAX && mainSkipped > lastObsSkippedFrames_)
+		skippedEvents_.Push(nowNs, mainSkipped - lastObsSkippedFrames_);
+	lastObsSkippedFrames_ = mainSkipped;
+	const uint64_t mixSkipped = reportedMixSkipped_.load();
+	if (mixSkipped > lastMixSkipped_)
+		skippedEvents_.Push(nowNs, mixSkipped - lastMixSkipped_);
+	lastMixSkipped_ = mixSkipped;
+
+	const storage::EngineShare share = CurrentEngineShare(status);
+	const CodecPipeline::InterLoad inter = pipeline_->GetInterLoad(nowNs, kCodecLatencyWindowNs);
+	storagepolicy::Sample s;
+	s.nowNs = nowNs;
+	s.captureIntervalNs = frameIntervalNs_ * captureDivisor_;
+	s.interActive = status.interActive;
+	s.setupFailed = status.setupFailures > lastCodecStatus_.setupFailures;
+	// A hardware decoder that failed counts like the encoder failing: the
+	// decode is in software from then on, too slow for some sizes, so the
+	// frames that follow leave the hardware codec too.
+	const uint64_t encoderErrors = status.hardErrors - lastCodecStatus_.hardErrors;
+	const uint64_t decoderErrors = status.decoderFailures - lastCodecStatus_.decoderFailures;
+	s.hardErrors = static_cast<uint32_t>(std::min<uint64_t>(encoderErrors + decoderErrors, UINT32_MAX));
+	s.yielded = interControl_->yielded.load();
+	s.engineShared = share.Any();
+	const uint64_t encodeErrors = obsEncodeErrors_.load();
+	s.obsEncodeError = encodeErrors != lastObsEncodeErrors_;
+	lastObsEncodeErrors_ = encodeErrors;
+	s.obsSkipped = static_cast<uint32_t>(
+		std::min<uint64_t>(skippedEvents_.Summarize(nowNs, kPolicyWindowNs).sumNs, UINT32_MAX));
+	s.latencySamples = inter.latency.samples;
+	s.latencyP95Ms = inter.latency.p95Ms;
+	s.inFlightMax = inter.inFlightMax;
+	const std::vector<degradation::Rung> &ladder = policy_.Ladder();
+	const size_t rung = policy_.RungIndex();
+	s.canLowerRung = rung + 1 < ladder.size() && ladder[rung + 1].captureDivisor == ladder[rung].captureDivisor;
+	lastCodecStatus_ = status;
+
+	const storagepolicy::Decision d = codecPolicy_.Evaluate(s);
+	bool nvidia = false;
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	nvidia = hwProvider_ && hwProvider_->HasVendor(storage::GpuVendor::Nvidia);
+#endif
+	// What yield_hw_encoder acts on: an NVENC session open, or one a setup may open.
+	mayUseNvenc_ = codecPolicy_.Hardware() && nvidia &&
+		       (!status.interActive || status.backend == storage::Backend::Nvenc);
+	if (d.action == storagepolicy::Action::None)
+		return changed;
+
+	++codecChanges_;
+	const char *encoder = status.encoder[0] ? status.encoder : "the hardware encoder";
+	switch (d.action) {
+	case storagepolicy::Action::Adopted:
+		TRIGGLOW_LOG_INFO(
+			kComponent,
+			"storage codec: %s (%s) took over from the MJPEG bridge -- engine shared with OBS: %s", encoder,
+			BackendLabel(status.backend),
+			!share.known ? "unknown" : (share.encode || share.decode ? "yes" : "no"));
+		break;
+	case storagepolicy::Action::NoHardware:
+		pipeline_->SetStorageTarget(false);
+		TRIGGLOW_LOG_INFO(kComponent, "storage codec: staying on MJPEG (%s)",
+				  storagepolicy::ReasonText(d.reason));
+		break;
+	case storagepolicy::Action::LowerRung: {
+		const degradation::Decision lowered = policy_.ForceLower(
+			degradation::Cause::Encode,
+			d.value / std::max(1.0, static_cast<double>(s.captureIntervalNs) / 1e6), nowNs);
+		TRIGGLOW_LOG_WARN(
+			kComponent,
+			"storage codec %s: %s (%s %.1f%s, last 1 s) -- %s, no going back up for 5 minutes. The "
+			"delay itself is unchanged.",
+			encoder, storagepolicy::ReasonText(d.reason),
+			d.reason == storagepolicy::Reason::Latency ? "latency p95" : "frames in flight", d.value,
+			d.reason == storagepolicy::Reason::Latency ? " ms" : "",
+			lowered.action != degradation::Action::None ? "one rung down" : "no rung left to lower");
+		if (lowered.action != degradation::Action::None) {
+			ApplyCurrentRung();
+			ClearPolicyWindows();
+			++healthChanges_;
+			lastCause_ = PipelineLoad::Encode;
+		}
+		changed = true;
+		break;
+	}
+	case storagepolicy::Action::Evacuate: {
+		pipeline_->SetStorageTarget(false);
+		// The decode shares the engine with OBS (AMD, Intel): what's left of the
+		// hardware stretch in the ring is decoded in software.
+		const bool softwareDecode = d.reason == storagepolicy::Reason::ObsSkipped && share.decode;
+		if (softwareDecode)
+			pipeline_->SetSoftwareDecode(true);
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+		// Only an encoder that failed is never tried again this session; a
+		// decoder failing (a lost device) says nothing about the encoder.
+		if (d.reason == storagepolicy::Reason::HardError && encoderErrors > 0 && hwProvider_ &&
+		    status.encoder[0])
+			hwProvider_->Blacklist(status.encoder, status.lastError);
+#endif
+		char detail[160] = "";
+		if (d.reason == storagepolicy::Reason::ObsSkipped)
+			std::snprintf(detail, sizeof(detail), " (%.0f frames skipped in 2 s)", d.value);
+		else if (d.reason == storagepolicy::Reason::HardError && status.lastError[0])
+			std::snprintf(detail, sizeof(detail), " (%s)", status.lastError);
+		TRIGGLOW_LOG_WARN(
+			kComponent,
+			"delay buffer codec %s -> mjpeg: %s%s; buffer encoder latency p95 %.0f ms%s -- the delay "
+			"itself is unchanged, the buffer only takes more RAM until the delay is turned off",
+			encoder, storagepolicy::ReasonText(d.reason), detail, s.latencyP95Ms,
+			softwareDecode ? "; the hardware frames left in the buffer are decoded in software" : "");
+		break;
+	}
+	case storagepolicy::Action::Yield:
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "storage codec: %s yielded its engine to an OBS output starting -- MJPEG "
+				  "meanwhile",
+				  encoder);
+		break;
+	case storagepolicy::Action::Resume:
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "storage codec: the OBS output is up, setting the hardware codec up again");
+		break;
+	case storagepolicy::Action::VetoLifted:
+		TRIGGLOW_LOG_INFO(kComponent,
+				  "storage codec %s: 5 minutes without an engine warning -- the buffer may "
+				  "go back up again",
+				  encoder);
+		break;
+	case storagepolicy::Action::None:
+		break;
+	}
+	PublishHealth(true);
+	return changed;
+}
+
 void VideoDelayFilter::PublishHealth(bool running)
 {
 	PipelineHealth health;
@@ -1160,6 +1643,24 @@ void VideoDelayFilter::PublishHealth(bool running)
 		health.repeatedPerMinute = lastHoldsPerMinute_;
 	}
 	health.changes = healthChanges_;
+	// v2: the storage codec (support diagnostics; the dock shows none of it).
+	static_assert(sizeof(health.encoder) >= sizeof(lastCodecStatus_.encoder),
+		      "the encoder name is copied whole, never truncated");
+	if (lastCodecStatus_.interActive) {
+		health.codec = static_cast<uint8_t>(lastCodecStatus_.codec);
+		std::snprintf(health.encoder, sizeof(health.encoder), "%s", lastCodecStatus_.encoder);
+	} else {
+#ifdef TRIGGLOW_HAVE_FFMPEG
+		health.codec = static_cast<uint8_t>(storage::CodecId::Mjpeg);
+		std::snprintf(health.encoder, sizeof(health.encoder), "mjpeg");
+#else
+		health.codec = static_cast<uint8_t>(storage::CodecId::Raw);
+		std::snprintf(health.encoder, sizeof(health.encoder), "raw");
+#endif
+	}
+	health.hwDecode = lastCodecStatus_.hardwareDecode && !lastCodecStatus_.softwareDecode;
+	health.codecPolicyState = static_cast<uint8_t>(codecPolicy_.GetState());
+	health.codecChanges = codecChanges_;
 	std::lock_guard<std::mutex> lock(healthMutex_);
 	health_ = health;
 }
@@ -1354,6 +1855,36 @@ void VideoDelayFilter::Update(obs_data_t *settings)
 		configuredCodecWorkers_ = codecWorkers;
 		TRIGGLOW_LOG_INFO(kComponent, "codec workers %s (codec_workers=%s)", codecWorkers ? "on" : "off",
 				  codecWorkers ? "true" : "false");
+	}
+
+	// v0.7.0 buffer_codec, as strict as in the plugin settings file: only
+	// "auto" or "mjpeg"; anything else keeps auto with a WARN. Takes effect at
+	// the next Enable (a codec cycle starts there).
+	const storage::BufferCodecSetting bufferCodec = storage::ParseBufferCodec(
+		storage::SettingType::String, obs_data_get_string(settings, kSettingBufferCodec));
+	if (bufferCodec.warn)
+		TRIGGLOW_LOG_WARN(kComponent,
+				  "\"%s\" is neither \"auto\" nor \"mjpeg\" -- keeping auto; only the literal string "
+				  "\"mjpeg\" forces MJPEG",
+				  kSettingBufferCodec);
+	const bool bufferCodecAuto = bufferCodec.mode == storage::BufferCodecMode::Auto;
+	{
+		// Normally applied already by the set_storage_class proc (this
+		// Update() comes a video tick later); the settings say the same.
+		std::lock_guard<std::mutex> lock(managedMutex_);
+		const bufferfit::RingClass ringClass =
+			bufferfit::ParseRingClass(obs_data_get_string(settings, kSettingStorageClass));
+		if (static_cast<uint8_t>(ringClass) != configuredRingClass_.load()) {
+			configuredRingClass_ = static_cast<uint8_t>(ringClass);
+			TRIGGLOW_LOG_INFO(kComponent, "storage class %s for the next delay cycle",
+					  bufferfit::RingClassName(ringClass));
+		}
+	}
+	if (bufferCodecAuto != configuredBufferCodecAuto_.load()) {
+		configuredBufferCodecAuto_ = bufferCodecAuto;
+		TRIGGLOW_LOG_INFO(kComponent, "storage codec %s (buffer_codec=%s)",
+				  bufferCodecAuto ? "auto: hardware where it works" : "MJPEG",
+				  storage::BufferCodecName(bufferCodec.mode));
 	}
 
 	// Always reset, even if seconds didn't change: Enable() calls this via
@@ -1681,7 +2212,11 @@ void VideoDelayFilter::DrawDelayed(uint32_t sourceWidth, uint32_t sourceHeight, 
 	// one already in the textures (Render() runs once per view of the scene:
 	// only the first call for a new frame uploads it).
 	DecodedLease lease;
-	if (pipeline_->AcquireForDisplay(targetNs, lastShownCaptureNs_, lease)) {
+	const bool acquired = pipeline_->AcquireForDisplay(targetNs, lastShownCaptureNs_, lease);
+	// Kept past ReleaseDisplay(): due frames the decoder holds on purpose.
+	const DecodeWait decodeWait = lease.wait;
+	const uint64_t decodeWaitUntilNs = lease.waitUntilNs;
+	if (acquired) {
 		const DecodedImage &image = lease.image;
 		if (EnsurePlaybackTextures(image.width, image.height)) {
 			const uint64_t uploadStartNs = os_gettime_ns();
@@ -1701,12 +2236,24 @@ void VideoDelayFilter::DrawDelayed(uint32_t sourceWidth, uint32_t sourceHeight, 
 	const FrameRing::DueSlot due = ring_->Due(targetNs);
 	if (due.exists && due.captureNs > lastDueCaptureNs_) {
 		lastDueCaptureNs_ = due.captureNs;
-		dueEvents_.Push(nowNs, 0, due.tag); // Tagged with the rung that frame was captured at.
+		// Tagged with the rung that frame was captured at and its codec's class
+		// (the one stored now when it isn't Ready).
+		const uint32_t tag = due.tag |
+				     (due.state == SlotState::Ready ? ClassBitOf(due.codec) : ClassBit(interSteps_));
+		dueEvents_.Push(nowNs, 0, tag);
 		if (havePlaybackFrame_ && lastShownCaptureNs_ < due.captureNs) {
 			++perf_.holds;
-			if (due.state == SlotState::Ready) {
+			if (due.state == SlotState::Ready && decodeWait != DecodeWait::None &&
+			    due.captureNs <= decodeWaitUntilNs) {
+				// Held by the decoder catching up from a key, or waiting for
+				// the next one: on purpose, never a slow decoder.
+				if (decodeWait == DecodeWait::CatchUp)
+					++perf_.holdsCatchUp;
+				else
+					++perf_.holdsNoKey;
+			} else if (due.state == SlotState::Ready) {
 				++perf_.holdsLateDecode; // Encoded, but the decoder didn't get to it in time.
-				missEvents_.Push(nowNs, 0, due.tag);
+				missEvents_.Push(nowNs, 0, tag);
 			} else if (due.state == SlotState::Dropped) {
 				++perf_.holdsDropped;
 			} else {
@@ -1757,12 +2304,26 @@ void *VideoDelayFilter::Create(obs_data_t *settings, obs_source_t *source)
 		proc_handler_add(procHandler, "void release_buffers()", &VideoDelayFilter::ReleaseBuffersProc, filter);
 		proc_handler_add(procHandler, "void get_effective_delay_seconds(out int seconds)",
 				 &VideoDelayFilter::GetEffectiveDelaySecondsProc, filter);
-		proc_handler_add(procHandler, "void get_pipeline_state(in ptr health)",
+		proc_handler_add(procHandler, "void get_pipeline_state(in ptr health, in int size)",
 				 &VideoDelayFilter::GetPipelineStateProc, filter);
 		proc_handler_add(procHandler, "void set_managed_delay_seconds(in int seconds)",
 				 &VideoDelayFilter::SetManagedDelaySecondsProc, filter);
 		proc_handler_add(procHandler, "void set_managed_min_resolution_height(in int height)",
 				 &VideoDelayFilter::SetManagedMinResolutionHeightProc, filter);
+		proc_handler_add(procHandler, "void set_encoder_ceiling(in int width, in int height)",
+				 &VideoDelayFilter::SetEncoderCeilingProc, filter);
+		proc_handler_add(procHandler, "void set_obs_encoders(in ptr encoders)",
+				 &VideoDelayFilter::SetObsEncodersProc, filter);
+		proc_handler_add(procHandler, "void report_encoder_lag(in int skipped)",
+				 &VideoDelayFilter::ReportEncoderLagProc, filter);
+		proc_handler_add(procHandler, "void yield_hw_encoder(in bool wait)",
+				 &VideoDelayFilter::YieldHwEncoderProc, filter);
+		proc_handler_add(procHandler, "void resume_hw_encoder()", &VideoDelayFilter::ResumeHwEncoderProc,
+				 filter);
+		proc_handler_add(procHandler, "void report_obs_encode_error()",
+				 &VideoDelayFilter::ReportObsEncodeErrorProc, filter);
+		proc_handler_add(procHandler, "void set_storage_class(in int ring_class)",
+				 &VideoDelayFilter::SetStorageClassProc, filter);
 	}
 
 	return filter;
@@ -1853,12 +2414,15 @@ uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
 	if (minResolutionHeight == 0)
 		minResolutionHeight = kDefaultMinResolutionHeight;
 	const bool capToOutput = obs_data_get_bool(settings, kSettingBufferOutputCap);
+	// The same ring class EnsureRingSized() sizes with (invariant I9).
+	const bufferfit::RingClass ringClass =
+		bufferfit::ParseRingClass(obs_data_get_string(settings, kSettingStorageClass));
 	obs_data_release(settings);
 	if (delaySeconds == 0)
 		return 0;
 	return EstimateBufferFit(delaySeconds, minResolutionHeight, sourceWidth, sourceHeight, ovi.base_width,
 				 ovi.base_height, ovi.output_width, ovi.output_height, ovi.fps_num, ovi.fps_den,
-				 capToOutput)
+				 capToOutput, ringClass)
 		.effectiveSeconds;
 }
 
@@ -1868,8 +2432,16 @@ void VideoDelayFilter::GetPipelineStateProc(void *data, calldata_t *params)
 	void *out = nullptr;
 	if (!calldata_get_ptr(params, "health", &out) || !out)
 		return;
-	std::lock_guard<std::mutex> lock(filter->healthMutex_);
-	*static_cast<PipelineHealth *>(out) = filter->health_;
+	// Only what the caller's struct holds ("size"; a caller without it gets
+	// the version 1 part): never the newer, bigger struct over a smaller one.
+	long long size = 0;
+	const bool sizeGiven = calldata_get_int(params, "size", &size);
+	PipelineHealth health;
+	{
+		std::lock_guard<std::mutex> lock(filter->healthMutex_);
+		health = filter->health_;
+	}
+	CopyPipelineHealth(health, out, PipelineHealthCopySize(sizeGiven, size));
 }
 
 void VideoDelayFilter::SetManagedDelaySecondsProc(void *data, calldata_t *params)
@@ -1884,6 +2456,116 @@ void VideoDelayFilter::SetManagedMinResolutionHeightProc(void *data, calldata_t 
 	const long long height = calldata_int(params, "height");
 	static_cast<VideoDelayFilter *>(data)->SetManagedSetting(
 		kSettingMinResolutionHeight, static_cast<uint32_t>(std::clamp<long long>(height, 0, UINT32_MAX)));
+}
+
+void VideoDelayFilter::SetEncoderCeilingProc(void *data, calldata_t *params)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(data);
+	long long width = calldata_int(params, "width");
+	long long height = calldata_int(params, "height");
+	obs_video_info ovi = {};
+	// Never above the canvas, never odd: anything else is no ceiling.
+	if (!obs_get_video_info(&ovi) || width <= 0 || height <= 0 || width > static_cast<long long>(ovi.base_width) ||
+	    height > static_cast<long long>(ovi.base_height) || width % 8 != 0 || height % 2 != 0) {
+		width = 0;
+		height = 0;
+	}
+	if (static_cast<uint32_t>(width) == filter->ceilingWidth_.load() &&
+	    static_cast<uint32_t>(height) == filter->ceilingHeight_.load())
+		return;
+	filter->ceilingWidth_ = static_cast<uint32_t>(width);
+	filter->ceilingHeight_ = static_cast<uint32_t>(height);
+	filter->ceilingSerial_.fetch_add(1);
+}
+
+void VideoDelayFilter::SetObsEncodersProc(void *data, calldata_t *params)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(data);
+	void *in = nullptr;
+	if (!calldata_get_ptr(params, "encoders", &in) || !in)
+		return;
+	ObsEncoderSet set = *static_cast<const ObsEncoderSet *>(in);
+	set.count = std::min(set.count, ObsEncoderSet::kMax);
+	{
+		std::lock_guard<std::mutex> lock(filter->obsEncodersMutex_);
+		filter->obsEncoders_ = set;
+	}
+#ifdef TRIGGLOW_HAVE_HW_STORAGE
+	if (filter->hwProvider_)
+		filter->hwProvider_->SetObsEncoders(
+			set.known, std::vector<storage::EncoderFamily>(set.families, set.families + set.count));
+#endif
+}
+
+void VideoDelayFilter::ReportEncoderLagProc(void *data, calldata_t *params)
+{
+	const long long skipped = calldata_int(params, "skipped");
+	if (skipped > 0)
+		static_cast<VideoDelayFilter *>(data)->reportedMixSkipped_.fetch_add(static_cast<uint64_t>(skipped));
+}
+
+void VideoDelayFilter::YieldHwEncoderProc(void *data, calldata_t *params)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(data);
+	// Only NVENC has a session limit worth giving way for (some drivers allow
+	// few sessions at once, and an output that can't open one fails to start).
+	if (!filter->mayUseNvenc_.load() || filter->interControl_->yielded.load())
+		return;
+	const bool wait = calldata_bool(params, "wait");
+	filter->interControl_->yielded = true;
+	filter->interControl_->Wake();
+	if (!wait) {
+		TRIGGLOW_LOG_INFO(kComponent, "storage codec: giving the NVENC engine to an OBS output starting");
+		return;
+	}
+	// Near the session limit: give the encode worker up to 100 ms to close it.
+	const uint64_t startNs = os_gettime_ns();
+	while (filter->interControl_->openEncoders.load() > 0 && os_gettime_ns() - startNs < 100000000ULL)
+		os_sleep_ms(5);
+	const int open = filter->interControl_->openEncoders.load();
+	TRIGGLOW_LOG_INFO(kComponent,
+			  "storage codec: gave the NVENC session to an OBS output starting (%s after %.0f ms)",
+			  open == 0 ? "closed" : "still closing", static_cast<double>(os_gettime_ns() - startNs) / 1e6);
+}
+
+void VideoDelayFilter::SetStorageClassProc(void *data, calldata_t *params)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(data);
+	const long long value = calldata_int(params, "ring_class");
+	const bufferfit::RingClass ringClass = value == static_cast<long long>(bufferfit::RingClass::Inter)
+						       ? bufferfit::RingClass::Inter
+					       : value == static_cast<long long>(bufferfit::RingClass::IntraWithGop)
+						       ? bufferfit::RingClass::IntraWithGop
+						       : bufferfit::RingClass::Intra;
+	// At once, and into the settings in the same step (what the scene
+	// collection saves, and what PlannedEffectiveDelaySeconds() and the
+	// deferred Update() read): a video filter's obs_source_update() only
+	// reaches Update() on the next video tick, and the first ring could be
+	// sized with the previous cycle's class meanwhile.
+	std::lock_guard<std::mutex> lock(filter->managedMutex_);
+	if (static_cast<uint8_t>(ringClass) != filter->configuredRingClass_.load()) {
+		filter->configuredRingClass_ = static_cast<uint8_t>(ringClass);
+		TRIGGLOW_LOG_INFO(kComponent, "storage class %s for the next delay cycle",
+				  bufferfit::RingClassName(ringClass));
+	}
+	if (obs_data_t *settings = obs_source_get_settings(filter->filterSource_)) {
+		obs_data_set_string(settings, kSettingStorageClass, bufferfit::RingClassName(ringClass));
+		obs_data_release(settings);
+	}
+}
+
+void VideoDelayFilter::ReportObsEncodeErrorProc(void *data, calldata_t * /*params*/)
+{
+	static_cast<VideoDelayFilter *>(data)->obsEncodeErrors_.fetch_add(1);
+}
+
+void VideoDelayFilter::ResumeHwEncoderProc(void *data, calldata_t * /*params*/)
+{
+	auto *filter = static_cast<VideoDelayFilter *>(data);
+	if (!filter->interControl_->yielded.load())
+		return;
+	filter->interControl_->yielded = false;
+	filter->interControl_->Wake();
 }
 
 void VideoDelayFilter::UpdateCb(void *data, obs_data_t *settings)
@@ -1936,6 +2618,8 @@ void VideoDelayFilter::GetDefaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, kSettingMinResolutionHeight, kDefaultMinResolutionHeight);
 	obs_data_set_default_bool(settings, kSettingBufferOutputCap, true);
 	obs_data_set_default_bool(settings, kSettingCodecWorkers, true);
+	obs_data_set_default_string(settings, kSettingBufferCodec, kDefaultBufferCodec);
+	obs_data_set_default_string(settings, kSettingStorageClass, "intra");
 }
 
 } // namespace trigglow

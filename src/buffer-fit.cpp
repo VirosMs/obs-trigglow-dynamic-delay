@@ -29,17 +29,19 @@ uint64_t Nv12FrameBytes(uint32_t width, uint32_t height)
 	return (static_cast<uint64_t>(width) * height * 3) / 2;
 }
 
-uint64_t SlackFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen)
+uint64_t SlackFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen, uint32_t keyframeIntervalFrames)
 {
 	if (fpsNum == 0 || fpsDen == 0 || delaySeconds == 0)
 		return 0;
 	// A quarter second of slack (ceil(fps / 4)): playback is by capture time,
 	// and capture jitter must never leave the oldest slot younger than the
-	// requested delay.
-	return (static_cast<uint64_t>(fpsNum) + 4ULL * fpsDen - 1) / (4ULL * fpsDen);
+	// requested delay. With an inter-frame codec, at least a GOP: the key a
+	// restarted decoder needs for the frame due is then never overwritten yet.
+	const uint64_t quarter = (static_cast<uint64_t>(fpsNum) + 4ULL * fpsDen - 1) / (4ULL * fpsDen);
+	return std::max<uint64_t>(quarter, keyframeIntervalFrames);
 }
 
-uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen)
+uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen, uint32_t keyframeIntervalFrames)
 {
 	if (fpsNum == 0 || fpsDen == 0)
 		return 0;
@@ -47,7 +49,42 @@ uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen)
 	// and 60000/1001 gives 1799 (not a float-rounded 1798 or 1800).
 	const uint64_t delayFrames = (static_cast<uint64_t>(delaySeconds) * fpsNum + fpsDen - 1) / fpsDen;
 	// +1 so a full N-second delay has a slot old enough to read from.
-	return delayFrames + SlackFrames(delaySeconds, fpsNum, fpsDen) + 1;
+	return delayFrames + SlackFrames(delaySeconds, fpsNum, fpsDen, keyframeIntervalFrames) + 1;
+}
+
+uint32_t KeyframeIntervalFrames(uint32_t fpsNum, uint32_t fpsDen)
+{
+	if (fpsNum == 0 || fpsDen == 0)
+		return 0;
+	return static_cast<uint32_t>((static_cast<uint64_t>(fpsNum) + 2ULL * fpsDen - 1) / (2ULL * fpsDen));
+}
+
+const char *RingClassName(RingClass ringClass)
+{
+	switch (ringClass) {
+	case RingClass::Intra:
+		return "intra";
+	case RingClass::IntraWithGop:
+		return "intra-gop";
+	case RingClass::Inter:
+		return "inter";
+	}
+	return "intra";
+}
+
+RingClass ParseRingClass(std::string_view name)
+{
+	if (name == "inter")
+		return RingClass::Inter;
+	if (name == "intra-gop")
+		return RingClass::IntraWithGop;
+	return RingClass::Intra;
+}
+
+void ApplyStorageClass(Input &in, RingClass ringClass, double intraRatio)
+{
+	in.compressionRatio = ringClass == RingClass::Inter ? kInterCompressionRatio : intraRatio;
+	in.keyframeIntervalFrames = ringClass == RingClass::Intra ? 0 : KeyframeIntervalFrames(in.fpsNum, in.fpsDen);
 }
 
 uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen)
@@ -118,7 +155,7 @@ Result Compute(const Input &in)
 
 	const double ratio = in.compressionRatio > 0.0 ? in.compressionRatio : 1.0;
 	const double budget = static_cast<double>(in.budgetBytes);
-	const uint64_t desired = DesiredFrames(in.delaySeconds, in.fpsNum, in.fpsDen);
+	const uint64_t desired = DesiredFrames(in.delaySeconds, in.fpsNum, in.fpsDen, in.keyframeIntervalFrames);
 	const double srcH = static_cast<double>(in.sourceHeight);
 
 	const double capScale = OutputCapScale(in);
@@ -177,7 +214,7 @@ Result Compute(const Input &in)
 		// Whole seconds, in integer math (frames * den / num), keeping the
 		// slack in front of the delay when there's room for it.
 		const uint64_t span = r.actualFrames - 1;
-		const uint64_t slack = SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen);
+		const uint64_t slack = SlackFrames(in.delaySeconds, in.fpsNum, in.fpsDen, in.keyframeIntervalFrames);
 		const uint64_t withMargin = span > slack ? span - slack : 0;
 		uint64_t seconds = withMargin * in.fpsDen / in.fpsNum;
 		if (seconds == 0)

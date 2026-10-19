@@ -30,6 +30,22 @@ size_t RoundUp(size_t bytes, size_t to)
 }
 } // namespace
 
+FrameArena::Config FrameArena::SizedFor(uint64_t expectedBytes, uint64_t budgetBytes, size_t fixedPayloadBytes)
+{
+	constexpr uint64_t kMiB = 1ULL << 20;
+	uint64_t block = (expectedBytes / 64 + kMiB - 1) / kMiB * kMiB;
+	block = std::clamp<uint64_t>(block, kMinSizedBlockBytes, kMaxSizedBlockBytes);
+	if (fixedPayloadBytes > 0) {
+		const uint64_t unit = RoundUp(fixedPayloadBytes, kAlignment);
+		block = std::max<uint64_t>(1, block / unit) * unit;
+	}
+	Config config;
+	config.blockBytes = static_cast<size_t>(block);
+	config.limitBytes = std::max<uint64_t>(budgetBytes, expectedBytes + 2 * block);
+	config.maxSpareBlocks = 1;
+	return config;
+}
+
 FrameArena::FrameArena(const Config &config) : config_(config)
 {
 	// Blocks shorter than one alignment unit would make every allocation

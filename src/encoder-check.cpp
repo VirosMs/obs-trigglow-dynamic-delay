@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "encoder-check.hpp"
 
+#include "buffer-fit.hpp"
+
 #include <algorithm>
 
 namespace trigglow::encodercheck {
@@ -66,6 +68,73 @@ bool ShouldWarn(Scope scope, Size encoder, Size cappedBuffer, Size uncappedBuffe
 	if (scope == Scope::OtherCanvas)
 		return false;
 	return encoder.width > cappedBuffer.width || encoder.height > cappedBuffer.height;
+}
+
+Ceiling EncoderCeiling(const std::vector<CeilingEncoder> &encoders, Size base, Size output, bool capToOutput,
+		       bool rawOutputOnMainMix)
+{
+	Ceiling ceiling;
+	if (!capToOutput) {
+		ceiling.why = CeilingWhy::CapOff;
+		return ceiling;
+	}
+	if (rawOutputOnMainMix) {
+		ceiling.why = CeilingWhy::RawOutput;
+		return ceiling;
+	}
+	if (base.width == 0 || base.height == 0 || output.width == 0 || output.height == 0) {
+		ceiling.why = CeilingWhy::NoEncoders;
+		return ceiling;
+	}
+	double need = 0.0;
+	bool any = false;
+	for (const CeilingEncoder &e : encoders) {
+		if (e.source == VideoSource::UnlistedMix && e.scope == Scope::OtherCanvas) {
+			ceiling.why = CeilingWhy::UnknownMix;
+			return ceiling;
+		}
+		if (e.scope == Scope::OtherCanvas || e.size.width == 0 || e.size.height == 0)
+			continue;
+		any = true;
+		need = std::max(need, std::max(static_cast<double>(e.size.width) / base.width,
+					       static_cast<double>(e.size.height) / base.height));
+	}
+	if (!any) {
+		ceiling.why = CeilingWhy::NoEncoders;
+		return ceiling;
+	}
+	// The output cap's own scale (bufferfit::OutputCapScale() for a canvas-sized scene).
+	const double cap = std::min(1.0, std::max(static_cast<double>(output.width) / base.width,
+						  static_cast<double>(output.height) / base.height));
+	const Size size{bufferfit::AlignedWidth(base.width, need), bufferfit::EvenDim(base.height, need)};
+	const Size capped{bufferfit::AlignedWidth(base.width, cap), bufferfit::EvenDim(base.height, cap)};
+	if (need >= cap || (size.width >= capped.width && size.height >= capped.height)) {
+		ceiling.why = CeilingWhy::NotBelowOutput;
+		return ceiling;
+	}
+	ceiling.applies = true;
+	ceiling.size = size;
+	ceiling.why = CeilingWhy::Applied;
+	return ceiling;
+}
+
+const char *CeilingWhyText(CeilingWhy why)
+{
+	switch (why) {
+	case CeilingWhy::Applied:
+		return "every encoder of the main canvas is below OBS's output";
+	case CeilingWhy::NoEncoders:
+		return "no active encoder of the main canvas";
+	case CeilingWhy::RawOutput:
+		return "an output without an encoder takes the main mix as it is";
+	case CeilingWhy::UnknownMix:
+		return "a GPU-rescaled encoder of another aspect ratio might be the main canvas";
+	case CeilingWhy::CapOff:
+		return "buffer_output_cap=false";
+	case CeilingWhy::NotBelowOutput:
+		return "an encoder needs OBS's whole output";
+	}
+	return "?";
 }
 
 } // namespace trigglow::encodercheck

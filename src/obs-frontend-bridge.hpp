@@ -82,8 +82,17 @@ enum class FrontendEvent {
 	StreamingStarted,
 	StreamingStopping,
 	StreamingStopped,
+	RecordingStarting, // v0.7.0: the outputs' starts and stops (the storage codec yields, recounts).
 	RecordingStarted,
+	RecordingStopped,
+	ReplayBufferStarting,
 	ReplayBufferStarted,
+	ReplayBufferStopped,
+	VirtualcamStarted,
+	VirtualcamStopped,
+	// Not an obs_frontend_event: the stream, recording or replay buffer output
+	// stopped with OBS_OUTPUT_ENCODE_ERROR (its "stop" signal), on the UI thread.
+	OutputEncodeError,
 	FinishedLoading,
 	// OBS is about to switch scene collection (switch, new, remove): the
 	// current one is still loaded and is saved right after this event.
@@ -98,11 +107,13 @@ enum class FrontendEvent {
 struct ActiveVideoEncoder {
 	std::string outputName;
 	std::string encoderName;
-	uint32_t width = 0; // obs_encoder_get_width/height: its scaled size, or its mix's output size.
+	std::string encoderId; // obs_encoder_get_id(): its family (storage::FamilyFromObsEncoderId()).
+	uint32_t width = 0;    // obs_encoder_get_width/height: its scaled size, or its mix's output size.
 	uint32_t height = 0;
 	// Whether it renders OBS's main canvas (and so the delayed scene), and how
 	// sure that is: see encodercheck::Classify().
 	encodercheck::Scope scope = encodercheck::Scope::OtherCanvas;
+	encodercheck::VideoSource source = encodercheck::VideoSource::UnlistedMix; // What Classify() was given.
 };
 
 using FrontendEventHandler = std::function<void(FrontendEvent)>;
@@ -166,9 +177,12 @@ public:
 	// capToOutput must be what SetBufferFilterOutputCap() pushes (the hidden
 	// buffer_output_cap setting). Returns a zeroed estimate if liveSceneName
 	// doesn't resolve.
+	// ringClass (v0.7.0): what the ring is (or would be) sized for, as
+	// SetBufferFilterStorageClass() pushes it.
 	VideoDelayFilter::BufferFitEstimate EstimateBufferFit(const std::string &liveSceneName,
 							      uint32_t requestedDelaySeconds,
-							      uint32_t minResolutionHeight, bool capToOutput) const;
+							      uint32_t minResolutionHeight, bool capToOutput,
+							      bufferfit::RingClass ringClass) const;
 
 	// Every video encoder (all MAX_OUTPUT_VIDEO_ENCODERS slots, so Enhanced
 	// Broadcasting's extra tracks too) of every ACTIVE output, each with its
@@ -256,6 +270,68 @@ public:
 	// already-attached filter: false = MJPEG encode/decode on the graphics
 	// thread, no worker threads. Same rules as SetBufferFilterOutputCap().
 	bool SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const;
+
+	// v0.7.0: the cycle's ring class (invariant I9, storage-codec.hpp) into
+	// the filter (bufferfit::RingClass): "inter" sizes its ring for a
+	// hardware inter-frame codec (12x, a GOP of slack), "intra-gop" for
+	// MJPEG with a GOP of slack (hardware may take over), "intra" for
+	// MJPEG. Pushed on every Enable() through the filter's
+	// set_storage_class proc (applied at once), fixed for the cycle. No-op
+	// (false) without the filter.
+	bool SetBufferFilterStorageClass(const std::string &liveSceneName, bufferfit::RingClass ringClass) const;
+
+	// v0.7.0: the hidden buffer_codec setting into the filter ("auto" or
+	// "mjpeg"), on every Enable(). Same rules as SetBufferFilterOutputCap().
+	bool SetBufferFilterCodec(const std::string &liveSceneName, bool autoCodec) const;
+
+	// --- v0.7.0 storage codec (UI thread; the filter's procs, see
+	// VideoDelayFilter::SetObsEncodersProc() and the ones after it) ---
+
+	// The families of OBS's active video encoders, for the filter's setup
+	// ranking and its codec policy's engine sharing.
+	bool SetBufferFilterObsEncoders(const std::string &liveSceneName,
+					const VideoDelayFilter::ObsEncoderSet &encoders) const;
+	// Frames skipped for encoding lag in the mixes of OBS's encoders other
+	// than the main one (TakeMixSkippedFrames()), handed to the filter.
+	bool ReportBufferEncoderLag(const std::string &liveSceneName, uint64_t skippedFrames) const;
+	// An OBS output is starting: the filter gives up an NVENC session it may
+	// hold; with wait, up to 100 ms for it to be closed.
+	bool YieldBufferHwEncoder(const std::string &liveSceneName, bool wait) const;
+	// That output started (or never will): the filter may set hardware up again.
+	bool ResumeBufferHwEncoder(const std::string &liveSceneName) const;
+	// An OBS output stopped on an encoder error: the filter's codec policy
+	// evacuates to MJPEG if the buffer shares that engine.
+	bool ReportBufferObsEncodeError(const std::string &liveSceneName) const;
+	// Frames OBS skipped for encoding lag, since the last call, in the mixes
+	// of active outputs' video encoders that aren't the main mix (another
+	// canvas, an Enhanced Broadcasting track): video_output_get_skipped_frames()
+	// per mix. The main mix's own count the filter reads itself -- including
+	// for encoders that render it at a lower frame rate (their divisor's
+	// video_t counts the main mix's skipped frames, not frames of its own).
+	// A mix seen for the first time only sets its baseline. Takes outputs_mutex.
+	uint64_t TakeMixSkippedFrames() const;
+	// v0.7.0: every active output with a video encoder has its "stop" signal
+	// watched (weak references; outputs destroyed meanwhile are forgotten): a
+	// stop with OBS_OUTPUT_ENCODE_ERROR becomes FrontendEvent::OutputEncodeError.
+	// The frontend's stream, recording and replay buffer outputs (from their
+	// STARTED events on) and any other plugin's (Aitum Vertical, multi-rtmp,
+	// Source Record), found by BufferModeController's once-a-second Tick().
+	// UI thread; takes outputs_mutex.
+	void WatchOutputStops();
+	// The ceiling OBS's main-canvas encoders put on the buffer
+	// (encodercheck::EncoderCeiling()), 0 x 0 for none.
+	bool SetBufferFilterEncoderCeiling(const std::string &liveSceneName, uint32_t width, uint32_t height) const;
+	// Whether an output without an encoder (virtual camera, NDI, DeckLink) is
+	// active on the main mix: it takes OBS's output as it is. Takes outputs_mutex.
+	bool RawVideoOutputOnMainMix() const;
+	// obs_video_info's canvas (base) and output sizes; false without video.
+	bool MainCanvasGeometry(encodercheck::Size &base, encodercheck::Size &output) const;
+	// Whether a hardware storage codec passed its probe this session (and
+	// isn't blacklisted): the next Enable sizes the ring for the inter class.
+	bool HardwareStorageAvailable() const;
+	// Whether this build and machine can try one at all (Windows, a GPU):
+	// before any probe, the ring keeps a GOP of slack for it.
+	bool HardwareStoragePossible() const;
 
 	// Copies the pipeline health (degradation rung, buffered size, encode
 	// threads, drop/repeat rates -- see pipeline-health.hpp) of the video
@@ -421,6 +497,11 @@ private:
 	static void BufferRestartedSignal(void *param, calldata_t *data);
 	static void BufferRestartedTask(void *param);
 
+	void UnwatchOutputStops(); // Shutdown: disconnects every watched output.
+	static void OutputStopSignal(void *param, calldata_t *data);
+	static void OutputEncodeErrorTask(void *param);
+	std::vector<obs_weak_output_t *> watchedOutputs_; // UI thread.
+
 	// Locates the video-delay filter previously attached to `liveSceneName`'s
 	// source by EnsureBufferWrapperScene, if the wrapper scene, its
 	// scene-item, and the filter all still exist. Returns an OWNED reference
@@ -478,6 +559,9 @@ private:
 	// GetBufferPipelineHealth() logged that the filter went away (once per
 	// activation).
 	mutable bool loggedBufferFilterGone_ = false;
+	// TakeMixSkippedFrames()'s baselines, per mix (compared by pointer only,
+	// never dereferenced: a mix gone meanwhile just drops out). UI thread.
+	mutable std::vector<std::pair<const void *, uint64_t>> mixSkippedBaselines_;
 	// Weak references to the audio delay filters SetAudioDelayFiltersEnabled(true)
 	// switched on, until SetAudioDelayFiltersEnabled(false) (or Shutdown()).
 	mutable std::vector<obs_weak_source_t *> activeAudioFilters_;

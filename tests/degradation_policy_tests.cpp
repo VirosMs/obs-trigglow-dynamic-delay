@@ -18,7 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 // Unit tests for trigglow::degradation (src/degradation-policy.hpp): the
 // ladder, the initial parallelism, every down trigger, the cooldown, the 30 s
-// hysteresis going up, the recovery order and the absence of oscillation.
+// hysteresis going up, the recovery order and the absence of oscillation;
+// since v0.7.0 the storage codec policy's hooks.
 
 #include "check.hpp"
 #include "degradation-policy.hpp"
@@ -131,18 +132,23 @@ void TestLadder()
 void TestInitialParallelism()
 {
 	testcheck::g_currentTest = "initial parallelism";
+	// At most 2 slices per context since v0.7.0 (RAM): 1x1 -> 2x1 -> 2x2.
 	const std::vector<Parallelism> threaded = BuildParallelismSteps(true);
-	CHECK_EQ(threaded.size(), 4u);
-	CHECK(threaded.back().contexts == 2 && threaded.back().slices == 4);
-	CHECK_EQ(InitialParallelism(threaded, true, 1920, 1080, kInterval60, 4), 0u);     // 1080p60: one context.
-	CHECK_EQ(InitialParallelism(threaded, true, 2560, 1440, kInterval60, 4), 0u);     // 1440p60: one context.
-	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, kInterval60, 4), 1u);     // 4K60: two.
-	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, 2 * kInterval60, 4), 0u); // 4K30: one.
-	CHECK_EQ(InitialParallelism(threaded, true, 7680, 4320, kInterval60, 4), 3u);     // 8K60: everything.
+	CHECK_EQ(threaded.size(), 3u);
+	CHECK(threaded[1].contexts == 2 && threaded[1].slices == 1);
+	CHECK(threaded.back().contexts == 2 && threaded.back().slices == 2);
+	for (const Parallelism &step : threaded)
+		CHECK(step.slices <= 2 && step.contexts <= 2);
+	CHECK_EQ(InitialParallelism(threaded, true, 1920, 1080, kInterval60, 2), 0u);     // 1080p60: one context.
+	CHECK_EQ(InitialParallelism(threaded, true, 2560, 1440, kInterval60, 2), 0u);     // 1440p60: one context.
+	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, kInterval60, 2), 1u);     // 4K60: two (2x1).
+	CHECK_EQ(InitialParallelism(threaded, true, 3840, 2160, 2 * kInterval60, 2), 0u); // 4K30: one.
+	CHECK_EQ(InitialParallelism(threaded, true, 7680, 4320, kInterval60, 2), 2u);     // 8K60: everything.
 	const std::vector<Parallelism> sync = BuildParallelismSteps(false);
-	CHECK_EQ(sync.size(), 3u);
-	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 4), 2u);
+	CHECK_EQ(sync.size(), 2u);
+	CHECK(sync.back().contexts == 1 && sync.back().slices == 2);
 	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 2), 1u);
+	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 4), 1u); // Never past the last step.
 	CHECK_EQ(InitialParallelism(sync, false, 1920, 1080, kInterval60, 1), 0u);
 	CHECK_NEAR(SliceSpeedup(4), 2.56, 1e-9);
 	CHECK(PredictEncodeP95Ms(2560, 1440) > 9.0 && PredictEncodeP95Ms(2560, 1440) < 10.0);
@@ -187,9 +193,8 @@ void TestEncodeOverload()
 	// Next change only after another full cooldown.
 	CHECK(p.Evaluate(overloaded(4 * kSecond)).action == Action::None);
 	CHECK(p.Evaluate(overloaded(5 * kSecond)).action == Action::MoreParallelism);
-	CHECK(p.Evaluate(overloaded(7 * kSecond)).action == Action::MoreParallelism);
-	CHECK_EQ(p.ParallelismIndex(), 3u);
-	CHECK(p.Evaluate(overloaded(9 * kSecond)).action == Action::LowerQuality);
+	CHECK_EQ(p.ParallelismIndex(), 2u); // 2x2: the last step.
+	CHECK(p.Evaluate(overloaded(7 * kSecond)).action == Action::LowerQuality);
 	CHECK_EQ(p.RungIndex(), 1u);
 	// All the way down, then nothing more to do (but never a crash or a move up).
 	Run(p, 10 * kSecond, 60 * kSecond, overloaded);
@@ -290,13 +295,12 @@ void TestSyncMode()
 		return s;
 	};
 	std::vector<Decision> d = Run(p, kSecond, 10 * kSecond, heavy);
-	CHECK(d.size() >= 3);
-	if (d.size() >= 3) {
+	CHECK(d.size() >= 2);
+	if (d.size() >= 2) {
 		CHECK(d[0].action == Action::MoreParallelism && d[0].cause == Cause::Graphics);
-		CHECK(d[1].action == Action::MoreParallelism);
-		CHECK(d[2].action == Action::LowerQuality);
+		CHECK(d[1].action == Action::LowerQuality);
 	}
-	CHECK(p.CurrentParallelism().contexts == 1 && p.CurrentParallelism().slices == 4);
+	CHECK(p.CurrentParallelism().contexts == 1 && p.CurrentParallelism().slices == 2);
 }
 
 void TestHysteresisUp()
@@ -429,27 +433,26 @@ void TestRecoveryOrder()
 {
 	testcheck::g_currentTest = "recovery order";
 	Policy p = Threaded1080();
-	// Encode overload: 3 parallelism steps and one rung down.
-	Run(p, kSecond, 9 * kSecond, [&](uint64_t t) {
+	// Encode overload: 2 parallelism steps (to 2x2) and one rung down.
+	Run(p, kSecond, 7 * kSecond, [&](uint64_t t) {
 		Sample s = Healthy(t);
 		s.encodeP95Ms = 0.95 * kIntervalMs * p.CurrentParallelism().contexts;
 		return s;
 	});
-	CHECK_EQ(p.ParallelismIndex(), 3u);
+	CHECK_EQ(p.ParallelismIndex(), 2u);
 	CHECK_EQ(p.RungIndex(), 1u);
 	// Calm (cheap frames even single-threaded): quality first, then threads,
 	// one step per 30 s, never below the initial parallelism.
-	const std::vector<Decision> d = Run(p, 10 * kSecond, 400 * kSecond, [](uint64_t t) {
+	const std::vector<Decision> d = Run(p, 8 * kSecond, 400 * kSecond, [](uint64_t t) {
 		Sample s = Healthy(t);
 		s.encodeP95Ms = 1.0;
 		return s;
 	});
-	CHECK_EQ(d.size(), 4u);
-	if (d.size() == 4) {
+	CHECK_EQ(d.size(), 3u);
+	if (d.size() == 3) {
 		CHECK(d[0].action == Action::RaiseQuality);
 		CHECK(d[1].action == Action::LessParallelism);
 		CHECK(d[2].action == Action::LessParallelism);
-		CHECK(d[3].action == Action::LessParallelism);
 	}
 	CHECK_EQ(p.RungIndex(), 0u);
 	CHECK_EQ(p.ParallelismIndex(), 0u);
@@ -485,6 +488,82 @@ void TestNotEnoughSamples()
 	      }).empty());
 }
 
+// v0.7.0: the storage codec policy's hooks -- the hardware steps, a forced
+// rung down, the veto on going up, steps switched with the codec, a new
+// ladder -- and the worker's own time as the only encode load (I6).
+void TestCodecHooks()
+{
+	testcheck::g_currentTest = "codec hooks";
+	const std::vector<Parallelism> hw = BuildParallelismSteps(true, true);
+	CHECK_EQ(hw.size(), 1u);
+	CHECK(hw[0].contexts == 1 && hw[0].slices == 1);
+	CHECK_EQ(BuildParallelismSteps(false, true).size(), 1u);
+
+	// ForceLower: one rung right away; none at the last rung.
+	Policy p = Threaded1080();
+	const Decision d = p.ForceLower(Cause::Encode, 2.4, 10 * kSecond);
+	CHECK(d.action == Action::LowerQuality && d.cause == Cause::Encode);
+	CHECK_EQ(p.RungIndex(), 1u);
+	while (p.RungIndex() + 1 < p.Ladder().size())
+		p.ForceLower(Cause::Encode, 2.4, 11 * kSecond);
+	CHECK(p.ForceLower(Cause::Encode, 2.4, 12 * kSecond).action == Action::None);
+
+	// The veto: calm for a minute, no going up while blockUp; up once it's lifted.
+	Policy q = Threaded1080();
+	q.ForceLower(Cause::Encode, 2.4, kSecond);
+	auto calm = [](uint64_t t) {
+		Sample s = Healthy(t);
+		s.graphicsP95Ms = 0.2;
+		s.encodeP95Ms = 1.0;
+		s.decodeP95Ms = 1.0;
+		return s;
+	};
+	CHECK(Run(q, 2 * kSecond, 90 * kSecond, [&](uint64_t t) {
+		      Sample s = calm(t);
+		      s.blockUp = true;
+		      return s;
+	      }).empty());
+	const std::vector<Decision> up = Run(q, 90 * kSecond + kSecond / 4, 130 * kSecond, calm);
+	CHECK(!up.empty() && up.front().action == Action::RaiseQuality);
+
+	// Steps switched with the codec: 2x2 MJPEG -> 1x1 hardware, rung kept.
+	Policy r = Threaded1080(2);
+	r.ForceLower(Cause::Encode, 1.0, kSecond);
+	r.SetParallelism(BuildParallelismSteps(true, true), 0);
+	CHECK_EQ(r.RungIndex(), 1u);
+	CHECK_EQ(r.ParallelismIndex(), 0u);
+	CHECK(r.CurrentParallelism().contexts == 1 && r.CurrentParallelism().slices == 1);
+	// An encode overload on hardware steps can only lower a rung.
+	const std::vector<Decision> over = Run(r, 2 * kSecond, 6 * kSecond, [](uint64_t t) {
+		Sample s = Healthy(t);
+		s.encodeP95Ms = 16.0;
+		return s;
+	});
+	CHECK(!over.empty() && over.front().action == Action::LowerQuality);
+	// Back to MJPEG's steps, at its initial step.
+	r.SetParallelism(BuildParallelismSteps(true), 1);
+	CHECK_EQ(r.ParallelismIndex(), 1u);
+	CHECK(r.CurrentParallelism().contexts == 2);
+
+	// A new ladder (the encoders' ceiling), on a given rung, parallelism kept.
+	Policy e = Threaded1080(1);
+	e.Rebase(BuildLadder(1280, 720, 720, true), 0);
+	CHECK_EQ(e.Ladder().size(), 2u); // 720p, then 720p at half rate.
+	CHECK_EQ(e.RungIndex(), 0u);
+	CHECK_EQ(e.ParallelismIndex(), 1u);
+	e.Rebase(BuildLadder(1920, 1080, 720, true), 9);
+	CHECK_EQ(e.RungIndex(), e.Ladder().size() - 1);
+
+	// I6: a hardware encoder's ~20 ms latency never reaches the policy; the
+	// worker's own few milliseconds per frame don't move it.
+	Policy g(BuildLadder(1920, 1080, 720, true), BuildParallelismSteps(true, true), 0, true);
+	CHECK(Run(g, kSecond, 60 * kSecond, [](uint64_t t) {
+		      Sample s = Healthy(t);
+		      s.encodeP95Ms = 3.0; // Send(), copies, Publish -- not the 19-21 ms to the packet.
+		      return s;
+	      }).empty());
+}
+
 } // namespace
 
 int main()
@@ -503,5 +582,6 @@ int main()
 	TestNoOscillationDelayedDecode(60);
 	TestRecoveryOrder();
 	TestNotEnoughSamples();
+	TestCodecHooks();
 	return testcheck::Finish("degradation_policy_tests");
 }

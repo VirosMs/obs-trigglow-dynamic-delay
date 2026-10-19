@@ -30,13 +30,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // Before: every slot owned a buffer sized raw/5 up front (grow-only), so the
 // commit charge was slots x raw/5 no matter what the frames really weighed,
 // and freeing the ring meant one VirtualFree per slot (1816 at 1440p60).
-// Now: payloads are bump-allocated, back to back, in large blocks (32 MiB by
-// default); a payload never straddles two blocks. Every block counts its live
-// allocations; when the last one in a block is freed (the ring overwrote all
-// the frames it held) the block is recycled whole. Since the ring frees frames
-// in roughly the order it wrote them, committed memory stays close to the real
-// window of packets plus one or two blocks, and freeing the ring is one call
-// per block.
+// Now: payloads are bump-allocated, back to back, in blocks (8 MiB by default
+// since v0.7.0, see SizedFor()); a payload never straddles two blocks. Every
+// block counts its live allocations; when the last one in a block is freed
+// (the ring overwrote all the frames it held) the block is recycled whole.
+// Since the ring frees frames in roughly the order it wrote them, committed
+// memory stays close to the real window of packets plus one or two blocks,
+// and freeing the ring is one call per block.
 //
 // Allocations and frees can come in any order and from any thread (the codec
 // workers allocate, the graphics thread frees when it overwrites a slot): the
@@ -50,14 +50,34 @@ public:
 	static constexpr uint32_t kNoBlock = UINT32_MAX;
 	static constexpr size_t kAlignment = 64; // Every allocation starts on a cache line.
 
+	// SizedFor()'s block size range (v0.7.0; v0.6.0 used 4-32 MiB).
+	static constexpr size_t kMinSizedBlockBytes = 4ULL * 1024 * 1024;
+	static constexpr size_t kMaxSizedBlockBytes = 8ULL * 1024 * 1024;
+
 	struct Config {
-		size_t blockBytes = 32ULL * 1024 * 1024;
+		size_t blockBytes = kMaxSizedBlockBytes;
 		// Cap on committed bytes (all blocks, spares included). An allocation
 		// that would need a new block past it fails instead (the caller drops
 		// that frame): the ring can never grow without bound.
 		uint64_t limitBytes = UINT64_MAX;
-		size_t maxSpareBlocks = 2; // Empty blocks kept for reuse by Trim().
+		size_t maxSpareBlocks = 1; // Empty blocks kept for reuse by Trim().
 	};
+
+	// The arena of a delay ring expected to hold about expectedBytes of
+	// payloads (v0.7.0: smaller blocks, less RAM committed past the live
+	// packets). Blocks of expectedBytes/64 in whole MiB, between 4 and 8
+	// MiB, and at most one spare: in the steady state the committed memory
+	// past the live packets (the current block's free tail, the oldest
+	// block's freed head and the spare) stays within about two blocks,
+	// against 35-71 MB with v0.6.0's 32 MiB blocks and two spares. A
+	// payload bigger than a block (a raw 2160p frame, the MJPEG fallback)
+	// gets a dedicated block of its own. fixedPayloadBytes > 0: every
+	// payload is that size (frames stored uncompressed, no FFmpeg): blocks
+	// then hold a whole number of them instead, so none ends in a tail too
+	// short for the next one (one raw 1440p frame per 8 MiB block would
+	// leave a third unused). The limit: the RAM budget, or what the ring
+	// was sized for plus two blocks if that's more.
+	static Config SizedFor(uint64_t expectedBytes, uint64_t budgetBytes, size_t fixedPayloadBytes = 0);
 
 	// A live allocation. Trivially copyable handle; Free() takes it back.
 	struct Allocation {
