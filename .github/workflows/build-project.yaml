@@ -123,15 +123,16 @@ jobs:
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
           # The suites around the codec worker threads (src/frame-arena.*,
-          # src/frame-ring.*, src/codec-pipeline.*), built with GCC like the
-          # Ubuntu plugin build. A build failure here is a real error, so this
-          # step is allowed to fail the job.
+          # src/frame-ring.*, src/codec-pipeline.*) and the background jobs'
+          # lifecycle (src/cancel-token.*, src/background-tasks.*), built with
+          # GCC like the Ubuntu plugin build. A build failure here is a real
+          # error, so this step is allowed to fail the job.
           cmake -S tests -B build_tsan \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
           cmake --build build_tsan --parallel \
-            --target frame_arena_tests frame_ring_tests pipeline_stress_tests
+            --target frame_arena_tests frame_ring_tests pipeline_stress_tests background_tasks_tests
 
       - name: Run Threaded Unit Tests under ThreadSanitizer 🧪
         # Deliberately non-blocking. This job is part of this reusable
@@ -160,13 +161,13 @@ jobs:
 
           set +e
           ctest --test-dir build_tsan --output-on-failure --timeout 600 \
-            --tests-regex '^(frame_arena|frame_ring|pipeline_stress)_tests$' 2>&1 | tee tsan.log
+            --tests-regex '^(frame_arena|frame_ring|pipeline_stress|background_tasks)_tests$' 2>&1 | tee tsan.log
           status=${PIPESTATUS[0]}
           set -e
 
           reports=$(grep -c '^WARNING: ThreadSanitizer' tsan.log || true)
           {
-            echo '### ThreadSanitizer: frame_arena, frame_ring, pipeline_stress'
+            echo '### ThreadSanitizer: frame_arena, frame_ring, pipeline_stress, background_tasks'
             echo
             echo "- ctest exit code: ${status}"
             echo "- ThreadSanitizer reports: ${reports}"

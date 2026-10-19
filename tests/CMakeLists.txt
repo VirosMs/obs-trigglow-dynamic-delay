@@ -1,8 +1,9 @@
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
 # src/encoder-check.*, and since v0.6.0 src/ui-tokens.*, src/auto-names.*,
 # src/overlay-layout.*, src/frame-arena.*, src/frame-ring.*,
-# src/degradation-policy.*, a stress test of src/codec-pipeline.*, and the
-# account, Trigi and ticket client: src/json.*, src/log-redact.*,
+# src/degradation-policy.*, a stress test of src/codec-pipeline.*, the
+# background jobs' lifecycle (src/cancel-token.*, src/background-tasks.*), and
+# the account, Trigi and ticket client: src/json.*, src/log-redact.*,
 # src/chat-text.*, src/support-diagnostics.*, src/api-client.*,
 # src/token-store.*, src/auth-client.*, src/support-client.*) and the support
 # dialog's Trigi states (src/trigi-states.*). No libobs, no Qt, no FFmpeg, no
@@ -131,6 +132,23 @@ target_link_libraries(pipeline_stress_tests PRIVATE Threads::Threads)
 set_target_properties(pipeline_stress_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME pipeline_stress_tests COMMAND pipeline_stress_tests)
 
+# Lifecycle of the plugin's background jobs (src/cancel-token.*,
+# src/background-tasks.*): cancellation, results only for owners still alive,
+# nothing after shutdown, and shutdown within its time limit.
+add_executable(
+  background_tasks_tests
+  background_tasks_tests.cpp
+  check.hpp
+  "${_src}/cancel-token.cpp"
+  "${_src}/cancel-token.hpp"
+  "${_src}/background-tasks.cpp"
+  "${_src}/background-tasks.hpp"
+)
+target_include_directories(background_tasks_tests PRIVATE "${_src}")
+target_link_libraries(background_tasks_tests PRIVATE Threads::Threads)
+set_target_properties(background_tasks_tests PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME background_tasks_tests COMMAND background_tasks_tests)
+
 # v0.6.0 account, Trigi and ticket client. Every network call goes through a
 # scripted stand-in (tests/fake-transport.hpp), so these never touch the network;
 # win-http.cpp is only linked for http::Send()'s symbol.
@@ -148,6 +166,8 @@ set(
   _client_sources
   "${_src}/json.cpp"
   "${_src}/json.hpp"
+  "${_src}/cancel-token.cpp"
+  "${_src}/cancel-token.hpp"
   "${_src}/win-http.cpp"
   "${_src}/win-http.hpp"
   "${_src}/api-client.cpp"

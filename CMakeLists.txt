@@ -183,6 +183,10 @@ target_sources(
     src/buffer-mode-controller.hpp
     src/auth-manager.cpp
     src/auth-manager.hpp
+    src/cancel-token.cpp
+    src/cancel-token.hpp
+    src/background-tasks.cpp
+    src/background-tasks.hpp
     src/win-http.cpp
     src/win-http.hpp
     src/json.cpp
@@ -242,8 +246,9 @@ set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_nam
 
 # Unit tests for the pure, OBS-free parts of the plugin (src/buffer-fit.*,
 # src/encoder-check.*, src/ui-tokens.*, src/auto-names.*, src/overlay-layout.*,
-# src/frame-arena.*, src/frame-ring.*, src/degradation-policy.*, the account,
-# Trigi and ticket client) and a stress test of src/codec-pipeline.*. Off by
+# src/frame-arena.*, src/frame-ring.*, src/degradation-policy.*, the background
+# jobs' lifecycle, the account, Trigi and ticket client) and a stress test of
+# src/codec-pipeline.*. Off by
 # default so plugin packaging is unchanged:
 #   cmake --preset <preset> -DTRIGGLOW_BUILD_TESTS=ON
 #   cmake --build <dir> --config RelWithDebInfo
