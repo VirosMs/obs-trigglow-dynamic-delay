@@ -126,6 +126,9 @@ private:
 	void DisableForm();
 	void OnTicketDone(const SupportService::TicketOutcome &outcome);
 	void ShowLogPreview();
+	// The attachment row's hint and box: the box can only be ticked once the
+	// user has seen the log in the preview.
+	void UpdateAttachRow();
 	void SaveLog();
 	void SignIn();
 	// The message without the version footer the form prefills.
@@ -138,6 +141,10 @@ private:
 	Page page_ = Page::Form;
 	QString footer_;
 	bool logLocatable_ = false;
+	// The preview showed the redacted log at least once: only then can the
+	// "Attach OBS's log" box (unticked at first) be ticked.
+	bool logPreviewed_ = false;
+	bool busy_ = false;
 	bool trigiAvailable_ = false; // The Trigi page can still be used ("Back to Trigi").
 	bool guestChecked_ = false;
 	bool formDisabled_ = false;

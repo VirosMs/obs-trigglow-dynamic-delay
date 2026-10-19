@@ -459,8 +459,10 @@ QWidget *ReportBugDialog::BuildFormPage()
 	linkedNote_->setVisible(false);
 	body->addWidget(linkedNote_);
 
-	// Attachment row (contract A5.3): ticked when a log can be found; what is
-	// hidden in it, and "See what is sent" with the redacted text.
+	// Attachment row: unticked, and it can only be ticked once the user has
+	// looked at the redacted log in "See what is sent" (the log goes only if
+	// they choose to, knowing what it holds). What is hidden in it, and what
+	// may still show.
 	body->addSpacing(6);
 	auto *attachment = new QFrame(formContent_);
 	attachment->setProperty("tgCard", QStringLiteral("inset"));
@@ -473,20 +475,11 @@ QWidget *ReportBugDialog::BuildFormPage()
 		auto *texts = new QVBoxLayout();
 		texts->setSpacing(3);
 		attachCheck_ = new QCheckBox(T("ReportDialog.AttachLog"), attachment);
-		attachCheck_->setChecked(logLocatable_);
-		attachCheck_->setEnabled(logLocatable_);
+		attachCheck_->setChecked(false);
 		attachCheck_->setFocusPolicy(Qt::TabFocus);
 		logStatusLabel_ = new QLabel(attachment);
 		logStatusLabel_->setWordWrap(true);
 		logStatusLabel_->setTextFormat(Qt::PlainText);
-		if (logLocatable_) {
-			logStatusLabel_->setText(T("ReportDialog.LogRedacted"));
-			logStatusLabel_->setProperty("tgRole", QStringLiteral("hint"));
-		} else {
-			logStatusLabel_->setText(T("ReportDialog.LogNotFound"));
-			logStatusLabel_->setProperty("tgTone", QStringLiteral("warning"));
-		}
-		attachCheck_->setAccessibleDescription(logStatusLabel_->text());
 		previewButton_ = MakeButton(T("ReportDialog.SeeWhatIsSent"), "link", attachment);
 		previewButton_->setAccessibleName(T("ReportDialog.SeeWhatIsSentName"));
 		previewButton_->setVisible(logLocatable_);
@@ -497,6 +490,7 @@ QWidget *ReportBugDialog::BuildFormPage()
 		layout->addLayout(texts, 1);
 	}
 	body->addWidget(attachment);
+	UpdateAttachRow();
 	formScroll_->setWidget(formContent_);
 
 	connect(teaserSignIn_, &QPushButton::clicked, this, [this] { SignIn(); });
@@ -1171,7 +1165,17 @@ void ReportBugDialog::ShowLogPreview()
 	service_->PrepareLog([self](const SupportService::PreparedLog &log) {
 		if (!self)
 			return;
-		self->previewButton_->setEnabled(!self->formDisabled_);
+		self->previewButton_->setEnabled(!self->formDisabled_ && !self->busy_);
+		if (!log.found) {
+			// No log of this OBS to attach: say so where the box is.
+			self->logLocatable_ = false;
+			self->logPreviewed_ = false;
+			self->UpdateAttachRow();
+			self->ApplyTheme();
+			supportui::OpenTextPreview(self, self->theme_, T("ReportDialog.PreviewTitle"),
+						   T("ReportDialog.LogRedacted"), T("ReportDialog.LogNotFound"));
+			return;
+		}
 		QString content = QString::fromUtf8(log.preview.head.c_str());
 		if (log.preview.truncated)
 			content += QStringLiteral("\n[...]\n\n") + QString::fromUtf8(log.preview.tail.c_str());
@@ -1179,9 +1183,40 @@ void ReportBugDialog::ShowLogPreview()
 			log.preview.truncated || log.capped
 				? T("ReportDialog.LogRedacted") + QLatin1Char(' ') + T("ReportDialog.PreviewTruncated")
 				: T("ReportDialog.LogRedacted");
-		supportui::OpenTextPreview(self, self->theme_, T("ReportDialog.PreviewTitle"), note,
-					   log.found ? content : T("ReportDialog.LogNotFound"));
+		QDialog *preview =
+			supportui::OpenTextPreview(self, self->theme_, T("ReportDialog.PreviewTitle"), note, content);
+		// Seen: the box can be ticked now. Focus goes back to it, so the next
+		// key press can tick it.
+		QObject::connect(preview, &QDialog::finished, self, [self] {
+			if (!self)
+				return;
+			self->logPreviewed_ = true;
+			self->UpdateAttachRow();
+			if (self->attachCheck_->isEnabled())
+				self->attachCheck_->setFocus(Qt::OtherFocusReason);
+		});
 	});
+}
+
+void ReportBugDialog::UpdateAttachRow()
+{
+	QString hint;
+	if (!logLocatable_) {
+		hint = T("ReportDialog.LogNotFound");
+		ui::SetStyleProperty(logStatusLabel_, "tgRole", QString());
+		ui::SetStyleProperty(logStatusLabel_, "tgTone", QStringLiteral("warning"));
+		attachCheck_->setChecked(false);
+	} else {
+		hint = T("ReportDialog.LogRedacted");
+		if (!logPreviewed_)
+			hint += QLatin1Char(' ') + T("ReportDialog.LogReviewFirst");
+		ui::SetStyleProperty(logStatusLabel_, "tgRole", QStringLiteral("hint"));
+		ui::SetStyleProperty(logStatusLabel_, "tgTone", QString());
+	}
+	logStatusLabel_->setText(hint);
+	attachCheck_->setAccessibleDescription(hint);
+	attachCheck_->setEnabled(logLocatable_ && logPreviewed_ && !busy_ && !formDisabled_);
+	previewButton_->setVisible(logLocatable_);
 }
 
 void ReportBugDialog::SaveLog()
@@ -1230,8 +1265,9 @@ void ReportBugDialog::SetBusy(bool busy)
 	emailEdit_->setEnabled(!busy && guestFields);
 	subjectEdit_->setEnabled(!busy);
 	messageEdit_->setEnabled(!busy);
-	attachCheck_->setEnabled(!busy && logLocatable_);
-	previewButton_->setEnabled(!busy);
+	busy_ = busy;
+	attachCheck_->setEnabled(!busy && logLocatable_ && logPreviewed_ && !formDisabled_);
+	previewButton_->setEnabled(!busy && !formDisabled_);
 	backButton_->setEnabled(!busy);
 	cancelButton_->setEnabled(!busy);
 	submitButton_->setEnabled(!busy);
