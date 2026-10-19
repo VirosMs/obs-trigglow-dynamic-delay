@@ -334,8 +334,9 @@ private:
 	void RefreshObsEncoders(bool force);
 	std::vector<std::string> encoderSignature_; // What RefreshObsEncoders() pushed last.
 	void PushObsEncoders(const std::vector<ActiveVideoEncoder> &active);
-	// v0.7.0 (design 6.3): the ceiling OBS's main-canvas encoders put on the
-	// buffer (Enhanced Broadcasting's tracks only exist after Go Live).
+	// v0.7.0: the ceiling OBS's main-canvas encoders put on the buffer
+	// (encodercheck::EncoderCeiling(); Enhanced Broadcasting's tracks only
+	// exist after Go Live).
 	void PushEncoderCeiling(const std::vector<ActiveVideoEncoder> &active);
 	uint32_t lastCeilingWidth_ = UINT32_MAX; // What was pushed (UINT32_MAX: nothing yet this cycle).
 	uint32_t lastCeilingHeight_ = UINT32_MAX;
@@ -343,7 +344,8 @@ private:
 	// inter only with buffer_codec auto, the codec workers, and a hardware
 	// codec that passed its probe this session; before that (the first Enable
 	// of a session) intra with a GOP of slack, in case the hardware takes
-	// over during the cycle; plain intra when it can't. Design 6.4, I9.
+	// over during the cycle; plain intra when it can't. Invariant I9
+	// (storage-codec.hpp): the class never changes within a cycle.
 	bufferfit::RingClass PlannedRingClass() const;
 	bufferfit::RingClass NextCycleRingClass() const;
 	bufferfit::RingClass cycleRingClass_ = bufferfit::RingClass::Intra; // Fixed at Enable(), pushed to the filter.

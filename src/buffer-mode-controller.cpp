@@ -42,9 +42,9 @@ uint64_t SteadyNowNs()
 					     .count());
 }
 
-// The buffer's hardware encoder gets its engine back this long after an
-// output that made it yield started (design 4.5), or this long after the
-// yield whatever happened.
+// The buffer's hardware encoder gets its engine back this long after an output
+// that made it yield started (the new output has its NVENC session by then), or
+// this long after the yield whatever happened.
 constexpr uint64_t kResumeAfterStartNs = 3000000000ULL;
 constexpr uint64_t kResumeAtMostNs = 10000000000ULL;
 

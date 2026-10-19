@@ -98,7 +98,7 @@ bool CapLimitsBuffer(Size cappedBuffer, Size uncappedBuffer);
 // on and off, as the filter would size its ring.
 bool ShouldWarn(Scope scope, Size encoder, Size cappedBuffer, Size uncappedBuffer, bool capToOutput);
 
-// --- v0.7.0: the ceiling OBS's encoders put on the buffer (RAM design 6.3) ---
+// --- v0.7.0: the ceiling OBS's encoders put on the buffer ---
 //
 // The buffer never needs more pixels than the encoders that see the delayed
 // scene emit: when every one of them rescales below OBS's output (Rescale
@@ -129,14 +129,13 @@ struct Ceiling {
 	CeilingWhy why = CeilingWhy::NoEncoders;
 };
 
-// The rule (design 6.3): E = every active encoder with Scope MainCanvas or
-// MainCanvasByAspect (other canvases never count). No ceiling when E is
-// empty, a raw output runs on the main mix, an UnlistedMix encoder has an
-// aspect ratio of neither the canvas nor the output (OtherCanvas from an
-// UnlistedMix), or the cap is off. Otherwise, with base the canvas:
-// s = max over E of max(w / baseW, h / baseH), and the ceiling is the
-// canvas scaled by s when s is below the output cap's scale -- only ever
-// lower than the output, never above it.
+// The rule: E = every active encoder with Scope MainCanvas or
+// MainCanvasByAspect (other canvases never count). No ceiling when E is empty,
+// a raw output runs on the main mix, an UnlistedMix encoder has an aspect ratio
+// of neither the canvas nor the output (OtherCanvas from an UnlistedMix), or
+// the cap is off. Otherwise, with base the canvas: s = max over E of max(w /
+// baseW, h / baseH), and the ceiling is the canvas scaled by s when s is below
+// the output cap's scale -- only ever lower than the output, never above it.
 Ceiling EncoderCeiling(const std::vector<CeilingEncoder> &encoders, Size base, Size output, bool capToOutput,
 		       bool rawOutputOnMainMix);
 

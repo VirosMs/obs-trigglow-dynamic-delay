@@ -55,7 +55,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //     With MJPEG and raw every packet comes out with its own Send().
 //   Setup thread (v0.7.0, "trigglow-codec-setup", only with
 //     Options::interSetup): opens and checks the inter-frame (hardware)
-//     encoder for a frame size when worker 0 asks for one (RAM design 2.7),
+//     encoder for a frame size when worker 0 asks for one (InterSetupFn),
 //     while worker 0 goes on encoding with the intra codec (the MJPEG bridge).
 //     Worker 0 adopts the encoder at a frame boundary, on a new chain from a
 //     key; the decoder the probe warmed up goes to the decode worker. While
@@ -110,7 +110,8 @@ struct RawFrame {
 	size_t capacity = 0;
 };
 
-// Why the decoder can't show the frame due yet, on purpose (v0.7.0, design 2.6).
+// Why the decoder can't show the frame due yet, on purpose (v0.7.0): G
+// counts those repeated frames apart, never as a slow decoder.
 enum class DecodeWait : uint8_t {
 	None,
 	CatchUp, // Decoding from a key, unshown, up to the frame due.
@@ -131,7 +132,7 @@ struct DecodedLease {
 class CodecPipeline {
 public:
 	static constexpr uint32_t kMaxEncodeContexts = 2;
-	static constexpr uint32_t kMaxSlicesPerContext = 2; // 4 until v0.6.0 (design 6.2: RAM).
+	static constexpr uint32_t kMaxSlicesPerContext = 2; // 4 until v0.6.0 (each slice's buffers cost RAM).
 	static constexpr uint32_t kStaleIntervals = 4;      // See AcquireForDisplay().
 	// A worker with frames in flight and no new job polls its encoder this often.
 	static constexpr uint64_t kInFlightPollNs = 2000000ULL;

@@ -93,7 +93,7 @@ extern "C" {
 // Since v0.6.0 a shortened delay is a whole number of seconds that video and
 // audio both use (bufferfit::Result::effectiveDelaySeconds, design A.4).
 //
-// v0.7.0 (RAM design): on Windows the frames can be stored with a hardware
+// v0.7.0: on Windows the frames can be stored with a hardware
 // inter-frame codec instead (HEVC or H.264 on NVENC, AMF or Quick Sync,
 // decoded with D3D11VA: hw-storage-codec.hpp), 50-70% less RAM for a better
 // final picture, set up off every hot thread while MJPEG bridges. A storage
@@ -171,7 +171,7 @@ public:
 		// in whole seconds (the requested delay when it fits).
 		uint32_t effectiveSeconds = 0;
 	};
-	// ringClass (v0.7.0): what the cycle's ring is sized for (design 6.4, I9)
+	// ringClass (v0.7.0): what the cycle's ring is sized for (invariant I9)
 	// -- inter assumes 12x and keeps a GOP of slack, intra-gop keeps intra's
 	// 5x with a GOP of slack.
 	static BufferFitEstimate EstimateBufferFit(uint32_t requestedDelaySeconds, uint32_t minResolutionHeight,
@@ -409,8 +409,8 @@ private:
 	//   "resume_hw_encoder()": that output started (or never will): the
 	//     buffer may set up hardware again.
 	//   "set_encoder_ceiling(in int width, in int height)": the size OBS's
-	//     encoders of the main canvas need at most (encodercheck::EncoderCeiling(),
-	//     design 6.3), 0 x 0 for none: the ladder starts there instead of at
+	//     encoders of the main canvas need at most (encodercheck::EncoderCeiling()),
+	//     0 x 0 for none: the ladder starts there instead of at
 	//     the ring's size -- a soft ceiling, the ring and the delay unchanged.
 	static void SetEncoderCeilingProc(void *data, calldata_t *params);
 	static void SetObsEncodersProc(void *data, calldata_t *params);
@@ -448,7 +448,7 @@ private:
 	// Hidden "buffer_codec" setting (v0.7.0): true = "auto" (the hardware
 	// codec where it works), false = "mjpeg". Read strictly in Update().
 	std::atomic<bool> configuredBufferCodecAuto_{false};
-	// "storage_class" (v0.7.0, design 6.4 and invariant I9): what sizes the
+	// "storage_class" (v0.7.0, invariant I9): what sizes the
 	// ring, a bufferfit::RingClass -- "inter" (assumed 12x, a GOP of slack),
 	// "intra-gop" (5x, a GOP of slack: hardware may take over this cycle) or
 	// "intra" (5x, a quarter second). BufferModeController pushes it at every

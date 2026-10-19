@@ -16,15 +16,15 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-// Unit tests for the storage codec interface (src/storage-codec.hpp, v0.7.0
-// RAM design 8.1): the in-flight queue (packets matched to their frames by
-// seq, any latency, mismatches), the chain tracker (forced keys, no P-frame
-// stored after a loss until the next key), chain ids, the raw codec, the I420
-// helpers and the small pure functions -- plus a single-threaded simulation of
-// an asynchronous inter-frame encoder (tests/fake-gop-codec.hpp) driven the
-// way the pipeline drives one, with random packet losses: every chain stored
-// must start on a key and stay consecutive, and the fake decoder must never
-// meet a P-frame without its reference.
+// Unit tests for the storage codec interface (src/storage-codec.hpp, v0.7.0):
+// the in-flight queue (packets matched to their frames by seq, any latency,
+// mismatches), the chain tracker (forced keys, no P-frame stored after a loss
+// until the next key), chain ids, the raw codec, the I420 helpers and the small
+// pure functions -- plus a single-threaded simulation of an asynchronous
+// inter-frame encoder (tests/fake-gop-codec.hpp) driven the way the pipeline
+// drives one, with random packet losses: every chain stored must start on a key
+// and stay consecutive, and the fake decoder must never meet a P-frame without
+// its reference.
 
 #include "annexb.hpp"
 #include "check.hpp"

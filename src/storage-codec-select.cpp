@@ -48,7 +48,8 @@ struct Known {
 	GpuVendor vendor;
 };
 
-// Design D4, in order.
+// The order a setup tries them: HEVC before H.264 (smaller for the same
+// picture), NVENC, AMF, then Quick Sync within each.
 constexpr Known kCandidates[] = {
 	{"hevc_nvenc", CodecId::Hevc, Backend::Nvenc, GpuVendor::Nvidia},
 	{"hevc_amf", CodecId::Hevc, Backend::Amf, GpuVendor::Amd},

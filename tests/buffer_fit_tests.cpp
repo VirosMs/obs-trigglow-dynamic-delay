@@ -686,8 +686,8 @@ void TestHighFloors()
 	CHECK(WithinBudget(uhd, u));
 }
 
-// v0.7.0 (RAM design 2.4, 6.4): the storage class fixed per cycle. Inter: the
-// assumed ratio 12 and a GOP of slack; intra: 5 and a quarter second, as before.
+// v0.7.0: the storage class fixed per cycle (invariant I9). Inter: the assumed
+// ratio 12 and a GOP of slack; intra: 5 and a quarter second, as before.
 void TestStorageClass()
 {
 	g_currentTest = "21 storage class (v0.7.0)";
@@ -744,7 +744,7 @@ void TestStorageClass()
 	CHECK_EQ(b.effectiveDelaySeconds, 30u);
 
 	// 4K60, 60 s on a 16 GB machine (8 GiB budget): reduced with intra, full
-	// resolution with inter (design 6.4).
+	// resolution with inter.
 	Input k4 = MakeInput(3840, 2160, 3840, 2160, 720);
 	k4.delaySeconds = 60;
 	k4.budgetBytes = 8 * kGiB;

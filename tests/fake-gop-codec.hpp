@@ -18,16 +18,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
-// A fake inter-frame storage codec for the tests (RAM design 8.2): no
-// FFmpeg, but it behaves like a hardware HEVC encoder as far as the pipeline
-// can tell -- a key every `gop` frames (or when forced), P-frames that
-// reference the frame before them, packets coming out `latency` later than
-// their Send() (frames in flight), and failures or Busy on demand. Each
-// packet carries the stamp of its own frame and of the frame it references,
-// so FakeGopDecoder knows when it is handed a P-frame without its reference:
-// it then returns a picture visibly marked as corrupt (like a real decoder
-// would return garbage) and counts it. The same encoder can also pose as an
-// intra codec (inter = false: every packet a key), for rings that mix both.
+// A fake inter-frame storage codec for the tests: no FFmpeg, but it behaves
+// like a hardware HEVC encoder as far as the pipeline can tell -- a key every
+// `gop` frames (or when forced), P-frames that reference the frame before them,
+// packets coming out `latency` later than their Send() (frames in flight), and
+// failures or Busy on demand. Each packet carries the stamp of its own frame
+// and of the frame it references, so FakeGopDecoder knows when it is handed a
+// P-frame without its reference: it then returns a picture visibly marked as
+// corrupt (like a real decoder would return garbage) and counts it. The same
+// encoder can also pose as an intra codec (inter = false: every packet a key),
+// for rings that mix both.
 //
 // Frames are the stress tests' stamped I420 frames: the first 8 Y bytes are
 // the capture time ("stamp").

@@ -211,9 +211,9 @@ void TestFifoSteadyState()
 		    static_cast<unsigned long long>(maxCommitted / kKiB));
 }
 
-// The delay ring's sizing (v0.7.0, design 6.1): 8 MiB blocks at every real
-// resolution, 4 MiB for small rings, whole MiB in between, one spare, and the
-// limit; raw payloads tile their blocks exactly.
+// The delay ring's sizing (v0.7.0): 8 MiB blocks at every real resolution, 4
+// MiB for small rings, whole MiB in between, one spare, and the limit; raw
+// payloads tile their blocks exactly.
 void TestSizedFor()
 {
 	testcheck::g_currentTest = "sized for a ring";

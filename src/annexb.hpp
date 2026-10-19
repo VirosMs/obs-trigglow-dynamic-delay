@@ -24,10 +24,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <cstdint>
 #include <vector>
 
-// Annex B byte streams (H.264 and HEVC as hardware encoders hand them out:
-// NAL units behind 00 00 01 or 00 00 00 01 start codes), for the delay
-// buffer's inter-frame storage codec (v0.7.0 RAM design 2.3 and 2.7). Pure: no
-// FFmpeg, so tests/storage_codec_tests.cpp covers it.
+// Annex B byte streams (H.264 and HEVC as hardware encoders hand them out: NAL
+// units behind 00 00 01 or 00 00 00 01 start codes), for the delay buffer's
+// inter-frame storage codec (v0.7.0, hw-storage-codec.hpp). Pure: no FFmpeg, so
+// tests/storage_codec_tests.cpp covers it.
 //
 // Why: every key the buffer stores must start a decoder that has never seen
 // the stream (a decoder reopened, the software one after a hardware failure),

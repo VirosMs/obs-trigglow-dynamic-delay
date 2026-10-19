@@ -64,18 +64,19 @@ public:
 	};
 
 	// The arena of a delay ring expected to hold about expectedBytes of
-	// payloads (v0.7.0, design 6.1). Blocks of expectedBytes/64 in whole MiB,
-	// between 4 and 8 MiB, and at most one spare: in the steady state the
-	// committed memory past the live packets (the current block's free tail,
-	// the oldest block's freed head and the spare) stays within about two
-	// blocks, against 35-71 MB with v0.6.0's 32 MiB blocks and two spares. A
-	// payload bigger than a block (a raw 2160p frame, the MJPEG fallback) gets
-	// a dedicated block of its own. fixedPayloadBytes > 0: every payload is
-	// that size (frames stored uncompressed, no FFmpeg): blocks then hold a
-	// whole number of them instead, so none ends in a tail too short for the
-	// next one (one raw 1440p frame per 8 MiB block would leave a third
-	// unused). The limit: the RAM budget, or what the ring was sized for plus
-	// two blocks if that's more.
+	// payloads (v0.7.0: smaller blocks, less RAM committed past the live
+	// packets). Blocks of expectedBytes/64 in whole MiB, between 4 and 8
+	// MiB, and at most one spare: in the steady state the committed memory
+	// past the live packets (the current block's free tail, the oldest
+	// block's freed head and the spare) stays within about two blocks,
+	// against 35-71 MB with v0.6.0's 32 MiB blocks and two spares. A
+	// payload bigger than a block (a raw 2160p frame, the MJPEG fallback)
+	// gets a dedicated block of its own. fixedPayloadBytes > 0: every
+	// payload is that size (frames stored uncompressed, no FFmpeg): blocks
+	// then hold a whole number of them instead, so none ends in a tail too
+	// short for the next one (one raw 1440p frame per 8 MiB block would
+	// leave a third unused). The limit: the RAM budget, or what the ring
+	// was sized for plus two blocks if that's more.
 	static Config SizedFor(uint64_t expectedBytes, uint64_t budgetBytes, size_t fixedPayloadBytes = 0);
 
 	// A live allocation. Trivially copyable handle; Free() takes it back.

@@ -21,7 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // dropped slots in the way, decode-ahead, and payload freeing; since v0.7.0
 // the per-packet storage metadata (codec, key, chain, seq) with several codecs
 // in one ring, ringselect::Decodable(), PlanDecodeStart() and
-// ChooseDecodeStart() (RAM design 2.4, invariants I2/I5).
+// ChooseDecodeStart() (invariants I2 and I5, storage-codec.hpp).
 
 #include "check.hpp"
 #include "frame-ring.hpp"

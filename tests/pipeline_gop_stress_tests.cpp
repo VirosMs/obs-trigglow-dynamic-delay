@@ -16,17 +16,17 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-// Concurrency stress test of FrameRing + FrameArena + CodecPipeline with a
-// fake INTER-FRAME storage codec (tests/fake-gop-codec.hpp; v0.7.0 RAM design
-// 8.2). Same simulated graphics thread as pipeline_stress_tests.cpp (250 fps
-// captures with a 2-frame staging delay, playback by age), but the encoder
-// keeps frames in flight (0-3 frames of latency, polled by the worker), makes
-// P-frames that reference the frame before them, a key every 2-8 frames or
-// when forced, and now and then fails or is busy; the factory alternates it
-// with an intra codec, so rings hold both. Chaos on top: Disable/Enable and
-// hard resizes, frame-size changes (new encoder, new chain), capture-rate
-// changes, rings whose arena is too small (packets lost after their encode:
-// chain breaks), render pauses and slow-decoder phases.
+// Concurrency stress test of FrameRing + FrameArena + CodecPipeline with a fake
+// INTER-FRAME storage codec (tests/fake-gop-codec.hpp, v0.7.0). Same simulated
+// graphics thread as pipeline_stress_tests.cpp (250 fps captures with a 2-frame
+// staging delay, playback by age), but the encoder keeps frames in flight (0-3
+// frames of latency, polled by the worker), makes P-frames that reference the
+// frame before them, a key every 2-8 frames or when forced, and now and then
+// fails or is busy; the factory alternates it with an intra codec, so rings
+// hold both. Chaos on top: Disable/Enable and hard resizes, frame-size changes
+// (new encoder, new chain), capture-rate changes, rings whose arena is too
+// small (packets lost after their encode: chain breaks), render pauses and
+// slow-decoder phases.
 //
 // Correctness checks, always strict: the fake decoder is never handed a
 // P-frame without its reference (invariant I2) and no picture shown is

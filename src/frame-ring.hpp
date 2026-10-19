@@ -53,12 +53,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // it. It's never nested with any other lock (the arena's own mutex is always
 // taken after releasing it).
 //
-// Since v0.7.0 (RAM design 2.4) every payload says which storage codec made
-// it, whether it is a key (decodable on its own) and where it sits in its
-// bitstream (chain, seq): one ring can hold several codecs at once (raw
-// fallbacks between MJPEG frames today; a hardware inter-frame codec and its
-// MJPEG fallback later), and the reader decodes a P-frame only right after its
-// reference (ringselect::Decodable()). Raw and MJPEG payloads are all keys.
+// Since v0.7.0 every payload says which storage codec made it, whether it is a
+// key (decodable on its own) and where it sits in its bitstream (chain, seq):
+// one ring can hold several codecs at once (raw fallbacks between MJPEG frames
+// today; a hardware inter-frame codec and its MJPEG fallback later), and the
+// reader decodes a P-frame only right after its reference
+// (ringselect::Decodable()). Raw and MJPEG payloads are all keys.
 namespace trigglow {
 
 enum class SlotState : uint8_t { Free, Reserved, Encoding, Ready, Dropped };

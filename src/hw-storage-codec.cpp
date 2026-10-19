@@ -114,7 +114,9 @@ AVCodecID AvCodecOf(CodecId codec)
 	return codec == CodecId::Hevc ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
 }
 
-// --- The session's registry (design 2.7 step 3) ---
+// --- The session's registry: what each encoder did this session (a probe
+// passed, a size it failed at, a hard error), so a later setup knows what to
+// skip and what only needs a short check ---
 
 struct RegistryEntry {
 	std::string encoder;
@@ -260,8 +262,9 @@ public:
 		discards_ = static_cast<uint32_t>(pending_.size());
 	}
 
-	// Keys without their parameter sets get a copy of the first key's (design
-	// 2.7); `sets`: those already seen (the probe's first key), if any.
+	// Keys without their parameter sets get a copy of the first key's, so
+	// every key starts a fresh decoder; `sets`: those already seen (the
+	// probe's first key), if any.
 	void CopyParameterSets(std::vector<uint8_t> sets = {})
 	{
 		copyParameterSets_ = true;

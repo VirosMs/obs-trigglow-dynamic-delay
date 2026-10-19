@@ -25,10 +25,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string_view>
 #include <vector>
 
-// Which storage codec the delay buffer may use (v0.7.0 RAM design 2.7, 4.1
-// and 5): the hidden "buffer_codec" setting, the families of OBS's own video
-// encoders, and the ranking of the hardware encoders worth probing. Pure, no
-// OBS, no FFmpeg: tests/storage_codec_tests.cpp covers it.
+// Which storage codec the delay buffer may use (v0.7.0): the hidden
+// "buffer_codec" setting, the families of OBS's own video encoders, and the
+// ranking of the hardware encoders worth probing. Pure, no OBS, no FFmpeg:
+// tests/storage_codec_tests.cpp covers it.
 namespace trigglow::storage {
 
 enum class GpuVendor : uint8_t { Unknown, Nvidia, Amd, Intel, Other };
@@ -48,7 +48,7 @@ EncoderFamily FamilyFromObsEncoderId(std::string_view id);
 EncoderFamily FamilyOf(Backend backend);
 GpuVendor VendorOf(Backend backend);
 
-// The hidden "buffer_codec" key of buffer-mode-settings.json (design 5):
+// The hidden "buffer_codec" key of buffer-mode-settings.json:
 // "auto" (the default) lets the buffer use a hardware inter-frame codec;
 // "mjpeg" forces MJPEG.
 enum class BufferCodecMode : uint8_t { Auto, Mjpeg };
@@ -96,18 +96,19 @@ struct RankInput {
 
 uint32_t CountFamily(const std::vector<EncoderFamily> &families, EncoderFamily family);
 
-// Design D4: hevc_nvenc, hevc_amf, hevc_qsv, then the h264 ones, keeping only
-// the vendors present, NVENC only under kMaxObsNvencForBuffer, Quick Sync only
-// when quickSyncAllowed, nothing blacklisted; engines OBS doesn't encode on
-// first (an iGPU, say), each group in that order. Empty with buffer_codec=mjpeg, without workers, or off
+// The order a setup tries them: hevc_nvenc, hevc_amf, hevc_qsv, then the h264
+// ones, keeping only the vendors present, NVENC only under
+// kMaxObsNvencForBuffer, Quick Sync only when quickSyncAllowed, nothing
+// blacklisted; engines OBS doesn't encode on first (an iGPU, say), each group
+// in that order. Empty with buffer_codec=mjpeg, without workers, or off
 // Windows: MJPEG then.
 std::vector<HwCandidate> RankCandidates(const RankInput &in);
 
 // Whether the buffer's hardware codec shares an engine with OBS's encoders
-// (design 4.1): its encoder is of the same family as one of them, or its
-// decode runs on an AMD or Intel GPU whose video engine also encodes for OBS
-// (NVIDIA decodes on NVDEC, apart from NVENC). Unknown OBS encoders count as
-// shared.
+// (what the codec policy's evacuations hinge on): its encoder is of the same
+// family as one of them, or its decode runs on an AMD or Intel GPU whose video
+// engine also encodes for OBS (NVIDIA decodes on NVDEC, apart from NVENC).
+// Unknown OBS encoders count as shared.
 struct EngineShare {
 	bool known = false;
 	bool encode = false;

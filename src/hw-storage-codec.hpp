@@ -29,10 +29,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <string>
 #include <vector>
 
-// The delay buffer's hardware inter-frame storage codec (v0.7.0 RAM design
-// 2.3, 2.7, D3/D4), Windows only (TRIGGLOW_HAVE_HW_STORAGE), over the
-// vendored FFmpeg: no new DLL, the encoders come with avcodec and their
-// runtimes with the GPU driver. No OBS dependency, so the benchmarks link it.
+// The delay buffer's hardware inter-frame storage codec (v0.7.0), Windows only
+// (TRIGGLOW_HAVE_HW_STORAGE), over the vendored FFmpeg: no new DLL, the
+// encoders come with avcodec and their runtimes with the GPU driver. No OBS
+// dependency, so the benchmarks link it.
 //
 // Encoders, in RankCandidates() order: hevc_nvenc, hevc_amf, hevc_qsv, then
 // the h264 ones. Constant QP (HEVC 20, H.264 18), a key every half second, no
@@ -62,8 +62,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace trigglow::hwstorage {
 
 // The hardware path is worth trying this session: a candidate passed a probe
-// and isn't blacklisted (VideoDelayFilter sizes the next cycle's ring for the
-// inter class on it, design 6.4). Any thread.
+// and isn't blacklisted (BufferModeController sizes the next cycle's ring for
+// the inter class on it: bufferfit::RingClass). Any thread.
 bool RegistryHasWorkingEncoder();
 
 struct ProviderSettings {

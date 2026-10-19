@@ -271,12 +271,13 @@ public:
 	// thread, no worker threads. Same rules as SetBufferFilterOutputCap().
 	bool SetBufferFilterCodecWorkers(const std::string &liveSceneName, bool codecWorkers) const;
 
-	// v0.7.0: the cycle's ring class (design 6.4, invariant I9) into the
-	// filter (bufferfit::RingClass): "inter" sizes its ring for a hardware
-	// inter-frame codec (12x, a GOP of slack), "intra-gop" for MJPEG with a
-	// GOP of slack (hardware may take over), "intra" for MJPEG. Pushed on
-	// every Enable() through the filter's set_storage_class proc (applied at
-	// once), fixed for the cycle. No-op (false) without the filter.
+	// v0.7.0: the cycle's ring class (invariant I9, storage-codec.hpp) into
+	// the filter (bufferfit::RingClass): "inter" sizes its ring for a
+	// hardware inter-frame codec (12x, a GOP of slack), "intra-gop" for
+	// MJPEG with a GOP of slack (hardware may take over), "intra" for
+	// MJPEG. Pushed on every Enable() through the filter's
+	// set_storage_class proc (applied at once), fixed for the cycle. No-op
+	// (false) without the filter.
 	bool SetBufferFilterStorageClass(const std::string &liveSceneName, bufferfit::RingClass ringClass) const;
 
 	// v0.7.0: the hidden buffer_codec setting into the filter ("auto" or

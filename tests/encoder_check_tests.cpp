@@ -274,7 +274,7 @@ void TestInvalidInput()
 	CHECK(ShouldWarn(Scope::MainCanvasByAspect, {1920, 1080}, {1280, 720}, {1920, 1080}, true));
 }
 
-// v0.7.0 (RAM design 6.3): the ceiling the main canvas's encoders put on the buffer.
+// v0.7.0: the ceiling the main canvas's encoders put on the buffer.
 void TestEncoderCeiling()
 {
 	g_currentTest = "encoder ceiling";

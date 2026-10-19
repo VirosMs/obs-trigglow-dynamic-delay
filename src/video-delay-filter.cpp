@@ -126,14 +126,14 @@ constexpr double kAssumedCompressionRatio = 1.0;
 
 // Sync path (codec_workers=false) only: slice threads for the MJPEG encoder
 // running on the graphics thread, as in v0.5.1 -- hardware_concurrency()/4
-// (logical CPUs), clamped to [1, CodecPipeline::kMaxSlicesPerContext]: 2 on
-// an 8C/16T CPU, 1 on a 4-thread one. They cut the encode's WALL time there
+// (logical CPUs), clamped to [1, CodecPipeline::kMaxSlicesPerContext]: 2 on an
+// 8C/16T CPU, 1 on a 4-thread one. They cut the encode's WALL time there
 // (1080p: 5.1 ms p50 with 1 slice, ~3 ms with 2, 1.8 ms with the 4 v0.6.0
 // allowed; same total CPU, ~3.5% bigger packets). v0.7.0 caps them at 2 for
-// RAM (design 6.2): every slice holds its own encoder buffers, and this path
-// is the kill switch's rescue mode. With codec workers the degradation policy
-// starts at one context and one slice and adds threads only when the
-// measured load asks for them.
+// RAM: every slice holds its own encoder buffers, and this path is the kill
+// switch's rescue mode. With codec workers the degradation policy starts at one
+// context and one slice and adds threads only when the measured load asks for
+// them.
 uint32_t EncodeSliceThreadCount()
 {
 	const unsigned logicalCpus = std::thread::hardware_concurrency(); // 0 = unknown -> 1 thread.
@@ -153,7 +153,7 @@ constexpr uint64_t kDecodePrimeWindowNs = 250000000ULL;
 constexpr uint64_t kPolicyEvalIntervalNs = 250000000ULL;
 constexpr uint64_t kPolicyWindowNs = 2000000000ULL;
 constexpr uint64_t kPolicyShortWindowNs = 500000000ULL;
-// The storage codec policy's latency window (design 4.2: held for a second).
+// The storage codec policy's latency window: a warning must hold for a second.
 constexpr uint64_t kCodecLatencyWindowNs = 1000000000ULL;
 
 // v0.5.1 telemetry: one "perf check" line per this much rendering (plus, since
@@ -1055,7 +1055,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	in.minResolutionHeight = minResolutionHeight;
 	in.budgetBytes = GetBufferBudget();
 	in.capToOutput = configuredOutputCap_.load();
-	// v0.7.0 (design 6.4): the cycle's ring class -- the same one
+	// v0.7.0: the cycle's ring class (invariant I9) -- the same one
 	// PlannedEffectiveDelaySeconds() reads, so audio gets this whole-second delay.
 	const bufferfit::RingClass ringClass =
 		RingClassFor(static_cast<bufferfit::RingClass>(configuredRingClass_.load()));
@@ -1178,7 +1178,7 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	ladderTopHeight_ = fit.bufferHeight;
 	ladderFloorHeight_ = floorHeight;
 	ladderHalfRate_ = allowHalfRate;
-	ApplyEncoderCeiling(true); // The ceiling OBS's encoders put on it (design 6.3), if any.
+	ApplyEncoderCeiling(true); // The ceiling OBS's encoders put on it, if any.
 	ClearPolicyWindows();
 	nextPolicyEvalNs_ = 0;
 	ApplyCurrentRung();
@@ -1373,7 +1373,7 @@ void VideoDelayFilter::MaybeEvaluateDegradation(uint64_t nowNs)
 	const CodecPipeline::RecentLoad load = pipeline_->GetRecentLoad(nowNs, kPolicyWindowNs, rung);
 	// Decode samples are tagged (rung, codec class): the hardware decoder's
 	// load says nothing about MJPEG's and the other way round, so only the
-	// frames of the codec stored now count (v0.7.0, design 4.3).
+	// frames of the codec stored now count (v0.7.0).
 	const uint32_t classBit = ClassBit(interSteps_);
 	uint32_t decodeTag = load.decodeTag;
 	if (decodeTag == RollingWindow::kAnyTag)
@@ -1468,7 +1468,7 @@ bool VideoDelayFilter::EvaluateCodecPolicy(uint64_t nowNs)
 	const CodecPipeline::CodecStatus status = pipeline_->GetCodecStatus();
 	const bool threaded = pipeline_->Threaded();
 	bool changed = false;
-	// The parallelism steps follow the codec in use (design 4.3): the
+	// The parallelism steps follow the codec in use: the
 	// hardware encoder is one context; MJPEG starts again from its initial step.
 	if (status.interActive != interSteps_) {
 		interSteps_ = status.interActive;
@@ -2505,7 +2505,8 @@ void VideoDelayFilter::ReportEncoderLagProc(void *data, calldata_t *params)
 void VideoDelayFilter::YieldHwEncoderProc(void *data, calldata_t *params)
 {
 	auto *filter = static_cast<VideoDelayFilter *>(data);
-	// Only NVENC has a session limit worth giving way for (design 4.5).
+	// Only NVENC has a session limit worth giving way for (some drivers allow
+	// few sessions at once, and an output that can't open one fails to start).
 	if (!filter->mayUseNvenc_.load() || filter->interControl_->yielded.load())
 		return;
 	const bool wait = calldata_bool(params, "wait");

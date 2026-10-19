@@ -30,9 +30,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <utility>
 #include <vector>
 
-// Storage codecs of the delay buffer (v0.7.0, RAM design 2.2-2.4): how the
-// frames waiting out the delay are compressed in the ring. Pure C++17 (no OBS,
-// no FFmpeg), so tests drive the pipeline with fake codecs.
+// Storage codecs of the delay buffer (v0.7.0): how the frames waiting out the
+// delay are compressed in the ring. Pure C++17 (no OBS, no FFmpeg), so tests
+// drive the pipeline with fake codecs.
 //
 // Since v0.7.0 encode and decode are two separate objects, and the encoder is
 // asynchronous: Send() hands it a frame, Receive() takes out the packets that
@@ -59,6 +59,32 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 // thread). Intra ones are opened, used and closed by that thread; hardware
 // ones are opened by the setup thread, handed over under the pipeline's mutex
 // and closed by the worker using them or by the reaper (invariant I8).
+//
+// Invariants of the inter-frame path, cited by number across the pipeline:
+//   I1  Inside a chain the bitstream follows capture order: one inter encode
+//       context, packets matched in Send() order (InFlightQueue); a packet out
+//       of order is a hard error.
+//   I2  A P-frame is never decoded without its reference: a key, or the next
+//       seq of the chain the decoder decoded last (ringselect::Decodable()).
+//   I3  Captures dropped before their encode consume no seq; once a packet
+//       already encoded is lost, the next frame is a forced key and no P-frame
+//       depending on the lost one is stored (ChainTracker).
+//   I4  With an inter-frame codec, the key of the frame due is always still in
+//       the ring: a GOP of slack (bufferfit::SlackFrames()).
+//   I5  Playback (re)starts on a key: it catches up from the key unshown, or
+//       waits for the next one, holding the view meanwhile
+//       (FrameRing::PlanDecodeStart()).
+//   I6  An encoder's latency never counts as load: the degradation policy only
+//       sees the worker's own time in its calls; the latency (Send() to
+//       packet) goes to the codec policy.
+//   I7  No change of codec, chain or resolution empties the ring or moves the
+//       delay: rings hold several codecs, decoded frames are always I420.
+//   I8  Every encoder and decoder is used by one thread at a time, never the
+//       graphics thread; a hardware one is opened on the setup thread, handed
+//       over under the pipeline's mutex, and closed by its worker or the reaper.
+//   I9  The storage class that sizes a cycle's ring is fixed for that cycle,
+//       so the filter (graphics thread) and the planned delay (UI thread) get
+//       the same whole-second delay.
 //
 // Header-only: the interface, the raw codec and the bookkeeping helpers are
 // all inline, so every target that uses the ring or the pipeline (the plugin,
@@ -160,8 +186,8 @@ namespace storage {
 enum class CodecId : uint8_t { Raw = 0, Mjpeg = 1, H264 = 2, Hevc = 3 };
 constexpr size_t kCodecCount = 4;
 enum class Backend : uint8_t { Cpu, Nvenc, Amf, Qsv, D3d12va };
-// Which compression ratio sizes the ring (design 6.4): intra codecs (every
-// packet a key) or inter-frame ones.
+// Which compression ratio sizes the ring (bufferfit::RingClass): intra
+// codecs (every packet a key) or inter-frame ones.
 enum class StorageClass : uint8_t { Intra, Inter };
 
 // "raw", "mjpeg", "h264", "hevc".
@@ -295,7 +321,7 @@ using EncoderFactory = std::function<std::unique_ptr<Encoder>(const EncoderConfi
 // this build can't decode it.
 using DecoderFactory = std::function<std::unique_ptr<Decoder>(CodecId codec)>;
 
-// --- The inter-frame (hardware) storage codec, v0.7.0 RAM design 2.5-2.7 ---
+// --- The inter-frame (hardware) storage codec, v0.7.0 ---
 //
 // Opening a hardware encoder and checking it (the setup probe: a few frames,
 // forced keys, a decode from a key) takes 50-1000 ms, so the pipeline does it
@@ -327,14 +353,14 @@ using SetupCancelled = std::function<bool()>;
 // one step and Disable or shutdown never wait for a whole setup.
 using InterSetupFn = std::function<InterSession(const EncoderConfig &config, const SetupCancelled &cancelled)>;
 
-// State shared between the UI thread and the pipeline's encode worker, for
-// what can't wait for the graphics thread's next policy evaluation (design
-// 4.5): while `yielded`, the worker closes its hardware encoder and stores
+// State shared between the UI thread and the pipeline's encode worker, for what
+// can't wait for the graphics thread's next policy evaluation (an OBS output
+// starting): while `yielded`, the worker closes its hardware encoder and stores
 // with the intra codec, so OBS can open an encoder of its own on that engine
-// (the NVENC session limit); clearing it lets the worker set up hardware
-// again. openEncoders: hardware encoders alive, counted from before their
-// session is opened (the UI waits for 0 after a yield; a setup opening one
-// then closes it as soon as it's open).
+// (the NVENC session limit); clearing it lets the worker set up hardware again.
+// openEncoders: hardware encoders alive, counted from before their session is
+// opened (the UI waits for 0 after a yield; a setup opening one then closes it
+// as soon as it's open).
 struct InterControl {
 	std::atomic<bool> yielded{false};
 	std::atomic<int> openEncoders{0};
@@ -455,7 +481,7 @@ inline uint32_t NewChainId()
 	return id;
 }
 
-// The encode side of one chain (design 2.5, invariant I3). Seqs are only
+// The encode side of one chain (invariant I3). Seqs are only
 // consumed by frames the encoder accepted (captures dropped before the encode,
 // or whose Send() failed, never leave a gap). Once a packet already encoded is
 // lost -- no room in the arena, its slot reused, unusable bytes -- every later
@@ -510,7 +536,7 @@ private:
 };
 
 // Frames sent to an asynchronous encoder and not received yet, oldest first
-// (design 2.5, invariant I1): packets come out in Send() order, so each one
+// (invariant I1): packets come out in Send() order, so each one
 // must match the oldest entry; anything else means the bitstream can't be
 // trusted (a hard error). T is the caller's bookkeeping (ring slot, ...).
 template<typename T> class InFlightQueue {

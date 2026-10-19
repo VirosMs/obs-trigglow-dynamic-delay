@@ -74,18 +74,20 @@ struct Input {
 	// false = no output cap at all (OutputCapScale() returns 1.0). Support's
 	// escape hatch for a case the cap gets wrong, see the header comment.
 	bool capToOutput = true;
-	// v0.7.0 (RAM design 2.4, 6.4): the inter-frame storage codec's GOP, in
-	// frames (0 = intra, every frame a key). The slack becomes at least one GOP,
-	// so the key of the frame due always stays in the ring (invariant I4).
+	// v0.7.0: the inter-frame storage codec's GOP, in frames (0 = intra,
+	// every frame a key). The slack becomes at least one GOP, so the key of
+	// the frame due always stays in the ring (invariant I4,
+	// storage-codec.hpp).
 	uint32_t keyframeIntervalFrames = 0;
 };
 
-// v0.7.0 storage classes (RAM design 6.4, fixed per delay cycle: invariant
-// I9). The assumed ratio only decides how many seconds fit when RAM is short
-// (the arena commits what the packets really weigh). Intra (MJPEG): 5, as
-// since 2026-09-07 (real MJPEG runs at 15-20x). Inter (a hardware HEVC/H.264
-// cycle): 12, below what was measured even if that cycle falls back to MJPEG
-// (HEVC 51x typical and 17x on the worst content, MJPEG 13-17x).
+// v0.7.0 storage classes (fixed per delay cycle: invariant I9,
+// storage-codec.hpp). The assumed ratio only decides how many seconds fit when
+// RAM is short (the arena commits what the packets really weigh). Intra
+// (MJPEG): 5, as since 2026-09-07 (real MJPEG runs at 15-20x). Inter (a
+// hardware HEVC/H.264 cycle): 12, below what was measured even if that cycle
+// falls back to MJPEG (HEVC 51x typical and 17x on the worst content, MJPEG
+// 13-17x).
 constexpr double kInterCompressionRatio = 12.0;
 // The inter codec's keyframe interval: half a second of frames, ceil(fps / 2).
 uint32_t KeyframeIntervalFrames(uint32_t fpsNum, uint32_t fpsDen);
@@ -144,7 +146,7 @@ uint32_t EvenDim(uint32_t orig, double scale);
 uint32_t AlignedWidth(uint32_t orig, double scale);
 uint64_t DesiredFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen, uint32_t keyframeIntervalFrames = 0);
 // The slack DesiredFrames() includes: a quarter second, ceil(fps / 4), or the
-// GOP if that's longer (design 2.4: max(ceil(fps/4), GOP)); 0 for a 0s delay.
+// GOP if that's longer (max(ceil(fps/4), GOP)); 0 for a 0s delay.
 uint64_t SlackFrames(uint32_t delaySeconds, uint32_t fpsNum, uint32_t fpsDen, uint32_t keyframeIntervalFrames = 0);
 uint64_t FrameIntervalNs(uint32_t fpsNum, uint32_t fpsDen); // 1e9 * den / num; 0 if num == 0.
 uint64_t Nv12FrameBytes(uint32_t width, uint32_t height);   // width * height * 3 / 2.

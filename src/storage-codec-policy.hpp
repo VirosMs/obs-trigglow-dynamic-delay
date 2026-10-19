@@ -20,12 +20,12 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <cstdint>
 
-// The delay buffer's storage codec policy (v0.7.0 RAM design 4.2): when the
-// hardware inter-frame codec may keep running and when the buffer goes back to
-// MJPEG, so that it never costs OBS's own encoders their engine ("Encoding
-// overloaded"). Pure: it only sees numbers (tests/storage_policy_tests.cpp);
-// VideoDelayFilter evaluates it on the graphics thread every 250 ms, next to
-// the degradation policy, and acts on its decisions.
+// The delay buffer's storage codec policy (v0.7.0): when the hardware
+// inter-frame codec may keep running and when the buffer goes back to MJPEG, so
+// that it never costs OBS's own encoders their engine ("Encoding overloaded").
+// Pure: it only sees numbers (tests/storage_policy_tests.cpp); VideoDelayFilter
+// evaluates it on the graphics thread every 250 ms, next to the degradation
+// policy, and acts on its decisions.
 //
 //   Mjpeg      buffer_codec=mjpeg, the sync kill switch, no hardware: nothing to do.
 //   Probing    the setup thread looks for an encoder (MJPEG bridges meanwhile).
@@ -35,16 +35,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 //   Evacuated  back on MJPEG until the next Enable (the user's decision: no
 //              second try in the same cycle).
 //
-// Two speeds (design 4.2): with no visible symptom yet -- the encoder's
-// latency or its queue growing on an engine OBS also encodes on -- one rung
-// down (fewer pixels: -31% of the engine per rung) and on with hardware; with
-// a symptom -- OBS skipped frames for encoding lag, or one of its outputs
-// stopped on an encoder error, with the engine shared -- or a warning at the
-// last rung, or any hard error, MJPEG, which never touches the engine. Hard
-// errors (ours, or OBS's encoder's) and OBS skipping frames act at once (an
-// OBS encoder error while probing or yielded is kept until the hardware
-// encoder stores again); the early warning waits 2 s after the previous
-// transition and must hold for 1 s with enough samples.
+// Two speeds: with no visible symptom yet -- the encoder's latency or its queue
+// growing on an engine OBS also encodes on -- one rung down (fewer pixels: -31%
+// of the engine per rung) and on with hardware; with a symptom -- OBS skipped
+// frames for encoding lag, or one of its outputs stopped on an encoder error,
+// with the engine shared -- or a warning at the last rung, or any hard error,
+// MJPEG, which never touches the engine. Hard errors (ours, or OBS's encoder's)
+// and OBS skipping frames act at once (an OBS encoder error while probing or
+// yielded is kept until the hardware encoder stores again); the early warning
+// waits 2 s after the previous transition and must hold for 1 s with enough
+// samples.
 namespace trigglow::storagepolicy {
 
 enum class State : uint8_t { Mjpeg, Probing, Hw, HwGuarded, Yielded, Evacuated };
