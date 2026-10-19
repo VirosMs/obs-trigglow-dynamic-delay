@@ -137,7 +137,8 @@ public:
 	static constexpr uint64_t kInFlightPollNs = 2000000ULL;
 	// What an encoder being replaced or closed gets to hand over what it has in flight.
 	static constexpr uint64_t kDrainDeadlineNs = 50000000ULL;
-	// An inter-frame encoder with a frame in flight this long and no packet: a stall (a hard error).
+	// An inter-frame encoder with its oldest frame in flight this long, newer
+	// ones sent after it, and no packet: a stall (a hard error).
 	static constexpr uint64_t kStallNs = 500000000ULL;
 	// A decoder that decoded nothing for this long while others did is closed (its
 	// codec left the ring: after a fallback, or MJPEG once the hardware took over).

@@ -783,8 +783,11 @@ void CodecPipeline::CheckInterHealth(EncodeContext &ctx, EncodeTally &tally,
 		FailInter(ctx, "encoder error", tally, released);
 		return;
 	}
+	// A stall: frames went in after the oldest one, and for 500 ms none came
+	// out. One frame alone may wait: an encoder like AMF hands a frame's packet
+	// out only once the next one is in (a render pause, say).
 	const auto *oldest = ctx.inFlight.Front();
-	if (oldest && options_.clockNs() > oldest->submitNs + kStallNs)
+	if (oldest && ctx.inFlight.Size() >= 2 && options_.clockNs() > oldest->submitNs + kStallNs)
 		FailInter(ctx, "stalled: no packet for 500 ms", tally, released);
 }
 

@@ -65,6 +65,14 @@ if(OS_WINDOWS)
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_FFMPEG)
   target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/mjpeg-codec.cpp src/mjpeg-codec.hpp)
 
+  # v0.7.0: the delay buffer's hardware inter-frame storage codec (NVENC, AMF,
+  # Quick Sync, D3D11VA decode), Windows only: everything it needs is already
+  # in avcodec-63.dll and avutil-61.dll, the encoders' runtimes come with the
+  # GPU driver. dxgi: the adapters present (src/hardware-info.cpp).
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_HW_STORAGE)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/hw-storage-codec.cpp src/hw-storage-codec.hpp)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE dxgi)
+
   # Same DESTINATION set_target_properties_plugin() (cmake/windows/helpers.cmake)
   # uses for the plugin binary itself -- these need to land right next to it,
   # not just anywhere under the packaged output. Deliberately not also
@@ -168,6 +176,11 @@ target_sources(
     src/frame-arena.hpp
     src/frame-ring.cpp
     src/frame-ring.hpp
+    src/storage-codec.hpp
+    src/storage-codec-select.cpp
+    src/storage-codec-select.hpp
+    src/annexb.cpp
+    src/annexb.hpp
     src/perf-stats.cpp
     src/perf-stats.hpp
     src/pipeline-health.hpp
