@@ -526,6 +526,10 @@ RunStats RunScenario(const Scenario &s)
 	pipeline->TakeWindowStats(w);
 	Accumulate(stats.total, w);
 	const CodecPipeline::CodecStatus status = pipeline->GetCodecStatus();
+	// I6 at the pipeline level: the encoder's latency shows in its own window
+	// (the codec policy's), never in the encode load the degradation policy reads.
+	const CodecPipeline::RecentLoad recent = pipeline->GetRecentLoad(NowNs(), 2000000000ULL);
+	const CodecPipeline::InterLoad interLoad = pipeline->GetInterLoad(NowNs(), 2000000000ULL);
 	pipeline->Shutdown();
 	const FrameArena::Stats arenaStats = ring->Arena().GetStats();
 	CHECK(arenaStats.liveBytes <= ring->SlotCount() * (I420FrameBytes(64, 32) + 64));
@@ -604,6 +608,15 @@ RunStats RunScenario(const Scenario &s)
 	CHECK_EQ(g_ringsFreed.load() - ringsFreedBefore, g_ringsCreated.load() - ringsCreatedBefore);
 	if (s.maxLatencyFrames > 0)
 		CHECK(stats.total.inFlightMax >= 2); // Frames really stayed in flight.
+	if (!s.chaos && s.fixedLatency && s.maxLatencyFrames > 0) {
+		const double latencyMs = static_cast<double>(s.maxLatencyFrames * s.periodNs) / 1e6;
+		std::printf("    I6: encoder latency p50 %.2f ms (in flight max %u), encode load p95 %.3f ms\n",
+			    interLoad.latency.p50Ms, interLoad.inFlightMax, recent.encode.p95Ms);
+		CHECK(interLoad.latency.samples > 0);
+		CHECK(interLoad.latency.p50Ms >= 0.8 * latencyMs);
+		CHECK(interLoad.inFlightMax >= 2);
+		CHECK(recent.encode.samples > 0 && recent.encode.p95Ms < interLoad.latency.p50Ms / 2);
+	}
 	if (s.expectLosses) {
 		CHECK(stats.total.chainBreaks > 0);
 		CHECK(stats.total.orphanDrops > 0);
