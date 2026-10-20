@@ -116,9 +116,38 @@ if(OS_WINDOWS)
     )
   endforeach()
 elseif(OS_LINUX)
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE PkgConfig::FFMPEG)
+  # v0.7.1: our own FFmpeg, an LGPL static build of avcodec and avutil with
+  # only the MJPEG encoder and decoder (.github/scripts/linux/build-ffmpeg.sh,
+  # pinned by buildspec.json's ffmpeg-source). Linked into the plugin, so the
+  # package depends on no distro FFmpeg (libavcodec60/61/62 depending on the
+  # release), and compiled with hidden visibility, so none of its symbols is
+  # exported to clash with the avcodec OBS itself loads. The version script
+  # exports only the obs_module_* entry points.
+  set(_ffmpeg_root "${CMAKE_CURRENT_SOURCE_DIR}/.deps/ffmpeg-linux-${CMAKE_SYSTEM_PROCESSOR}")
+  if(NOT EXISTS "${_ffmpeg_root}/lib/libavcodec.a" OR NOT EXISTS "${_ffmpeg_root}/lib/libavutil.a")
+    message(
+      FATAL_ERROR
+      "No static FFmpeg in ${_ffmpeg_root}: run .github/scripts/linux/build-ffmpeg.sh first "
+      "(it builds the version pinned in buildspec.json)."
+    )
+  endif()
+  target_include_directories(${CMAKE_PROJECT_NAME} BEFORE PRIVATE "${_ffmpeg_root}/include")
+  target_link_libraries(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE "${_ffmpeg_root}/lib/libavcodec.a" "${_ffmpeg_root}/lib/libavutil.a" m
+  )
+  target_link_options(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE
+      "LINKER:--exclude-libs,ALL"
+      "LINKER:-Bsymbolic"
+      "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux/plugin-exports.map"
+  )
+  set_property(
+    TARGET ${CMAKE_PROJECT_NAME}
+    APPEND
+    PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux/plugin-exports.map"
+  )
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_FFMPEG)
   target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/mjpeg-codec.cpp src/mjpeg-codec.hpp)
 endif()

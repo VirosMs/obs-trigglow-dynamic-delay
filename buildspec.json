@@ -6,7 +6,8 @@
             "label": "OBS sources",
             "hashes": {
                 "macos": "39751f067bacc13d44b116c5138491b5f1391f91516d3d590d874edd21292291",
-                "windows-x64": "2c8427c10b55ac6d68008df2e9a3e82f4647aaad18f105e30d4713c2de678ccf"
+                "windows-x64": "2c8427c10b55ac6d68008df2e9a3e82f4647aaad18f105e30d4713c2de678ccf",
+                "linux-x86_64": "39751f067bacc13d44b116c5138491b5f1391f91516d3d590d874edd21292291"
             }
         },
         "prebuilt": {
@@ -36,6 +37,22 @@
             "label": "FFmpeg (avcodec/avutil, BtbN LGPL-shared build, Windows only for now)",
             "hashes": {
                 "windows-x64": "7157177b8a6cb2174c1650ba8c71b363f2c78cba5330f88c4c02cf5b2b880646"
+            }
+        },
+        "ffmpeg-source": {
+            "version": "9.0.2",
+            "baseUrl": "https://ffmpeg.org/releases",
+            "label": "FFmpeg sources (Linux: static LGPL build of avcodec/avutil, MJPEG only)",
+            "hashes": {
+                "linux-x86_64": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
+            }
+        },
+        "nfpm": {
+            "version": "2.47.0",
+            "baseUrl": "https://github.com/goreleaser/nfpm/releases/download",
+            "label": "nfpm (Linux .deb/.rpm/.pkg.tar.zst packaging, CI only)",
+            "hashes": {
+                "linux-x86_64": "0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783"
             }
         }
     },
