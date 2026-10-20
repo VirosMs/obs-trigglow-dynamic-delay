@@ -41,11 +41,10 @@
         },
         "ffmpeg-source": {
             "version": "9.0.2",
-            "baseUrl": "https://ffmpeg.org/releases",
-            "label": "FFmpeg sources (Linux: static LGPL build of avcodec/avutil, MJPEG only)",
-            "hashes": {
-                "linux-x86_64": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
-            }
+            "baseUrl": "https://github.com/FFmpeg/FFmpeg",
+            "label": "FFmpeg sources (Linux: static LGPL build of avcodec/avutil, MJPEG only; git tag, pinned by commit)",
+            "tag": "n9.0.2",
+            "commit": "946fcce07b6dcd0331c8cc609192aeff5e1924f8"
         },
         "nfpm": {
             "version": "2.47.0",

@@ -67,8 +67,8 @@ en sí no cambia.
   la comprobación del plugin), el script del instalador de Windows y el empaquetado de Linux.
 - libobs en Linux: compilado desde las fuentes fijadas de OBS 31.1.1 en `.deps`, como en Windows y
   macOS (`cmake/linux/buildspec.cmake`).
-- FFmpeg 9.0.2 en Linux: compilado desde el tarball oficial fijado por SHA-256 en `buildspec.json`
-  (`.github/scripts/linux/build-ffmpeg.sh`); el build se detiene ante una configuración GPL,
+- FFmpeg 9.0.2 en Linux: compilado desde el repositorio git de FFmpeg en la etiqueta firmada
+  `n9.0.2`, solo si es el commit fijado en `buildspec.json` (`.github/scripts/linux/build-ffmpeg.sh`); el build se detiene ante una configuración GPL,
   version 3 o nonfree. Exportaciones limitadas por `cmake/linux/plugin-exports.map`.
 - Paquetes con nfpm 2.47.0, también fijado con su SHA-256 (`.github/scripts/linux/package.sh`). El
   script falla si hay un FFmpeg compartido, un símbolo de FFmpeg exportado, un RPATH o una glibc

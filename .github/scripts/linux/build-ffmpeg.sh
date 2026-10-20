@@ -10,8 +10,9 @@
 # none of its symbols is exported, so it never clashes with the avcodec OBS
 # itself loads into the same process.
 #
-# Source: the release tarball pinned by buildspec.json's "ffmpeg-source"
-# (version and SHA-256), checked before it is unpacked. Licence: LGPL 2.1 or
+# Source: FFmpeg's own git repository (its GitHub mirror) at the release tag
+# pinned by buildspec.json's "ffmpeg-source" ("tag", signed by FFmpeg), built
+# only if that tag is the pinned commit ("commit"). Licence: LGPL 2.1 or
 # later. The build stops if FFmpeg's configure reports anything else (a GPL,
 # version 3 or nonfree build), the same guard the Windows job applies to its
 # FFmpeg DLLs.
@@ -26,38 +27,36 @@ arch=$(uname -m)
 spec="${root}/buildspec.json"
 
 version=$(jq -r '.dependencies["ffmpeg-source"].version' "${spec}")
-base_url=$(jq -r '.dependencies["ffmpeg-source"].baseUrl' "${spec}")
-hash=$(jq -r --arg platform "linux-${arch}" '.dependencies["ffmpeg-source"].hashes[$platform] // empty' "${spec}")
+repo_url=$(jq -r '.dependencies["ffmpeg-source"].baseUrl' "${spec}")
+tag=$(jq -r '.dependencies["ffmpeg-source"].tag' "${spec}")
+commit=$(jq -r '.dependencies["ffmpeg-source"].commit // empty' "${spec}")
 
-if [[ ! ${hash} =~ ^[0-9a-f]{64}$ ]]; then
-  echo "${0##*/}: buildspec.json has no ffmpeg-source hash for linux-${arch}" >&2
+if [[ ! ${commit} =~ ^[0-9a-f]{40}$ ]]; then
+  echo "${0##*/}: buildspec.json has no ffmpeg-source commit" >&2
   exit 1
 fi
 
 prefix="${root}/.deps/ffmpeg-linux-${arch}"
-tarball="${root}/.deps/ffmpeg-${version}.tar.xz"
 work="${root}/.deps/ffmpeg-${version}-build"
 stamp="${prefix}/.trigglow-build"
-want="${version} ${hash} $(sha256sum "${BASH_SOURCE[0]}" | cut -d ' ' -f 1)"
+want="${version} ${tag} ${commit} $(sha256sum "${BASH_SOURCE[0]}" | cut -d ' ' -f 1)"
 
 if [[ -f ${stamp} && $(<"${stamp}") == "${want}" && -f ${prefix}/lib/libavcodec.a ]]; then
   echo "FFmpeg ${version} (static, MJPEG only) is up to date in ${prefix}"
   exit 0
 fi
 
-mkdir -p "${root}/.deps"
-if [[ ! -f ${tarball} ]] || ! echo "${hash}  ${tarball}" | sha256sum --check --status; then
-  rm -f "${tarball}"
-  curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --silent --show-error \
-    --output "${tarball}.part" "${base_url}/ffmpeg-${version}.tar.xz"
-  mv "${tarball}.part" "${tarball}"
-fi
-# Never unpack anything else than the pinned tarball.
-echo "${hash}  ${tarball}" | sha256sum --check -
-
 rm -rf "${work}" "${prefix}"
 mkdir -p "${work}"
-tar -xJf "${tarball}" -C "${work}" --strip-components=1
+git -C "${work}" init --quiet
+git -C "${work}" fetch --quiet --depth 1 "${repo_url}.git" "refs/tags/${tag}:refs/tags/${tag}"
+# Never build anything else than the pinned commit.
+fetched=$(git -C "${work}" rev-parse "refs/tags/${tag}^{commit}")
+if [[ ${fetched} != "${commit}" ]]; then
+  echo "::error title=FFmpeg source::${tag} is ${fetched}, not the pinned ${commit}" >&2
+  exit 1
+fi
+git -C "${work}" -c advice.detachedHead=false checkout --quiet "${commit}"
 
 configure_args=(
   --prefix="${prefix}"
@@ -113,8 +112,8 @@ mkdir -p "${prefix}/share/licenses"
 cp COPYING.LGPLv2.1 "${prefix}/share/licenses/COPYING.LGPLv2.1"
 {
   echo "FFmpeg ${version}"
-  echo "Source: ${base_url}/ffmpeg-${version}.tar.xz"
-  echo "SHA-256: ${hash}"
+  echo "Source: ${repo_url}, tag ${tag}"
+  echo "Commit: ${commit}"
   echo "Configure: ${configure_args[*]#--prefix=*}"
 } | sed "s|${prefix}|<prefix>|g" > "${prefix}/share/licenses/ffmpeg-build.txt"
 popd > /dev/null

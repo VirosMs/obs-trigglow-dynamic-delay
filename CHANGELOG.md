@@ -64,8 +64,8 @@ Linux, and a check of the minimum OBS version. The delay itself doesn't change.
   the Windows installer script and the Linux packaging.
 - Linux libobs: built from the pinned OBS 31.1.1 sources into `.deps` like on Windows and macOS
   (`cmake/linux/buildspec.cmake`).
-- Linux FFmpeg 9.0.2: built from the official tarball pinned by SHA-256 in `buildspec.json`
-  (`.github/scripts/linux/build-ffmpeg.sh`); the build stops on a GPL, version 3 or nonfree
+- Linux FFmpeg 9.0.2: built from FFmpeg's git repository at the signed `n9.0.2` tag, only if it is
+  the commit pinned in `buildspec.json` (`.github/scripts/linux/build-ffmpeg.sh`); the build stops on a GPL, version 3 or nonfree
   configuration. Exports limited by `cmake/linux/plugin-exports.map`.
 - Packages by nfpm 2.47.0, also pinned with its SHA-256 (`.github/scripts/linux/package.sh`).
   The script fails on a shared FFmpeg, an exported FFmpeg symbol, an RPATH or a glibc newer than

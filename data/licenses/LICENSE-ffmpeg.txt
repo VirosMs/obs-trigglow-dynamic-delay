@@ -41,11 +41,11 @@ Linux packages
 The Linux packages (.deb, .rpm, .pkg.tar.zst and the per-user .tar.xz) ship
 no FFmpeg library files: libavcodec and libavutil are linked statically into
 obs-trigglow-dynamic-delay.so. They are built by the plugin's
-.github/scripts/linux/build-ffmpeg.sh from the official FFmpeg release
-tarball that buildspec.json pins ("ffmpeg-source"):
+.github/scripts/linux/build-ffmpeg.sh from FFmpeg's own git repository, at the
+signed release tag and commit that buildspec.json pins ("ffmpeg-source"):
 
-  Source:   https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
-  SHA-256:  8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+  Source:   https://github.com/FFmpeg/FFmpeg/commit/946fcce07b6dcd0331c8cc609192aeff5e1924f8
+  Tag:      n9.0.2 (FFmpeg 9.0.2, release/9.0 branch)
   Enabled:  libavcodec and libavutil only, with the MJPEG encoder and decoder,
             no external libraries, and without --enable-gpl, --enable-version3
             or --enable-nonfree
