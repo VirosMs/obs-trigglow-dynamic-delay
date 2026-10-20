@@ -321,7 +321,23 @@ void SaveBufferSettings(const trigglow::BufferModeController &controller)
 
 bool obs_module_load(void)
 {
-	obs_log(LOG_INFO, "loading Trigglow Dynamic Delay v%s", PLUGIN_VERSION);
+	// The OBS this runs in and where it loaded the plugin from: with two copies
+	// installed (OBS 33's folder and the legacy one for OBS 31 and 32) the log
+	// says which one is in use. OBS's own module list logs the same paths.
+	const char *modulePath = obs_get_module_binary_path(obs_current_module());
+	obs_log(LOG_INFO, "loading Trigglow Dynamic Delay v%s on OBS Studio %s, from %s", PLUGIN_VERSION,
+		obs_get_version_string(), modulePath ? modulePath : "(unknown path)");
+
+	// v0.7.1: the oldest OBS supported, from buildspec.json's obsCompat. The
+	// plugin is built against that libobs; an older OBS may lack functions it
+	// calls, so it stops here with a clear line in the log instead.
+	constexpr uint32_t kObsMinVersion = MAKE_SEMANTIC_VERSION(
+		TRIGGLOW_OBS_MIN_VERSION_MAJOR, TRIGGLOW_OBS_MIN_VERSION_MINOR, TRIGGLOW_OBS_MIN_VERSION_PATCH);
+	if (obs_get_version() < kObsMinVersion) {
+		obs_log(LOG_ERROR, "Trigglow Dynamic Delay v%s requires OBS Studio %s or newer, running %s: not loaded",
+			PLUGIN_VERSION, TRIGGLOW_OBS_MIN_VERSION_STRING, obs_get_version_string());
+		return false;
+	}
 
 #ifdef TRIGGLOW_HAVE_FFMPEG
 	// v0.3.0 Phase 0 smoke test (see docs/ROADMAP.md) -- proves FFmpeg

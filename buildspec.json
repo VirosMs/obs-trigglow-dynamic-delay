@@ -44,6 +44,10 @@
             "bundleId": "com.trigglow.dynamic-delay"
         }
     },
+    "obsCompat": {
+        "minimum": "31.1.0",
+        "testedUpTo": "32.2.2"
+    },
     "name": "obs-trigglow-dynamic-delay",
     "displayName": "Trigglow Dynamic Delay",
     "version": "0.7.0",

@@ -25,6 +25,17 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 find_package(libobs REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 
+# The oldest OBS Studio the plugin loads in, from buildspec.json's obsCompat
+# (cmake/common/bootstrap.cmake): obs_module_load() refuses older ones.
+target_compile_definitions(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+    TRIGGLOW_OBS_MIN_VERSION_STRING="${PLUGIN_OBS_MIN_VERSION}"
+    TRIGGLOW_OBS_MIN_VERSION_MAJOR=${PLUGIN_OBS_MIN_VERSION_MAJOR}
+    TRIGGLOW_OBS_MIN_VERSION_MINOR=${PLUGIN_OBS_MIN_VERSION_MINOR}
+    TRIGGLOW_OBS_MIN_VERSION_PATCH=${PLUGIN_OBS_MIN_VERSION_PATCH}
+)
+
 # FFmpeg (avcodec/avutil) -- v0.3.0 real-compression groundwork (see
 # docs/ROADMAP.md, docs/SPEC.md). Phase 0 only: link + a version-string smoke
 # test (src/plugin-main.cpp), no codec logic uses it yet. Windows + Linux
