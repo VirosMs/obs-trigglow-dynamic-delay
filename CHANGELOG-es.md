@@ -90,7 +90,15 @@ en sí no cambia.
   usuario normal), comprobando `ldd`, símbolos sin resolver, símbolos exportados y los enlaces
   legacy. En Debian 13 comprueba que el `.deb` se rechaza.
 - `data/licenses/LICENSE-ffmpeg.txt` describe el build estático de Linux; los paquetes de Linux
-  llevan además el texto de la LGPL 2.1 y la configuración exacta de FFmpeg.
+  llevan además el texto de la LGPL 2.1 y la configuración exacta de FFmpeg, y cada release lleva
+  la fuente exacta de ese FFmpeg (`obs-trigglow-dynamic-delay-<versión>-ffmpeg-n9.0.2-source.tar.xz`,
+  un `git archive` del commit fijado).
+- La firma de la etiqueta `n9.0.2` se comprueba con `git verify-tag` contra la clave guardada en el
+  repositorio (`.github/scripts/linux/ffmpeg-tag-signing-key.asc`, huella fijada en
+  `build-ffmpeg.sh`); nfpm es siempre la descarga fijada y comprobada por hash, nunca uno del `PATH`.
+- CI: acciones de terceros fijadas por SHA de commit e imágenes de contenedor por digest; la
+  comprobación de paquetes también falla si algún archivo instalado es escribible por el grupo u
+  otros.
 
 **Limitaciones conocidas:**
 - OBS 33 sigue en release candidate: las ubicaciones nuevas siguen su cargador de plugins, pero el

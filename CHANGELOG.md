@@ -84,7 +84,14 @@ Linux, and a check of the minimum OBS version. The delay itself doesn't change.
   ordinary user), checking `ldd`, unresolved symbols, exported symbols and the legacy symlinks.
   On Debian 13 it checks that the `.deb` is refused.
 - `data/licenses/LICENSE-ffmpeg.txt` describes the Linux static build; the Linux packages also
-  carry the LGPL 2.1 text and the exact FFmpeg configuration.
+  carry the LGPL 2.1 text and the exact FFmpeg configuration, and every release carries the exact
+  source of that FFmpeg (`obs-trigglow-dynamic-delay-<version>-ffmpeg-n9.0.2-source.tar.xz`, a
+  `git archive` of the pinned commit).
+- The `n9.0.2` tag's signature is checked with `git verify-tag` against the key kept in the
+  repository (`.github/scripts/linux/ffmpeg-tag-signing-key.asc`, fingerprint pinned in
+  `build-ffmpeg.sh`); nfpm is always the pinned, hash-checked download, never one on `PATH`.
+- CI: third-party actions pinned by commit SHA and container images by digest; the package check
+  also fails on any installed file writable by group or others.
 
 **Known limitations:**
 - OBS 33 is still a release candidate: the new locations follow its plugin loader, but the plugin

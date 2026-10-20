@@ -7,6 +7,7 @@
 #   release/<name>-<version>-x86_64-linux-gnu.pkg.tar.zst  Arch, Manjaro, EndeavourOS
 #   release/<name>-<version>-x86_64-linux-gnu.tar.xz       any distro, per-user install
 #   release/<name>-<version>-x86_64-linux-gnu-dbgsym.tar.xz  debug symbols (CI artifact only)
+#   release/<name>-<version>-ffmpeg-<tag>-source.tar.xz  source of the FFmpeg linked in (LGPL)
 #
 # The website looks for the "-x86_64-linux-gnu.deb" suffix: keep the names.
 #
@@ -25,8 +26,8 @@
 # (each family's names; the Debian ones with and without the t64 suffix), and
 # OBS Studio at buildspec.json's obsCompat minimum. FFmpeg is linked in.
 #
-# The packager, nfpm, is the release pinned in buildspec.json, downloaded and
-# checked against its SHA-256 when it isn't already on PATH.
+# The packager, nfpm, is always the release pinned in buildspec.json,
+# downloaded and checked against its SHA-256 (never one already on PATH).
 #
 # Usage: package.sh
 
@@ -109,26 +110,36 @@ echo "::group::FFmpeg licence"
 cp "${ffmpeg}/share/licenses/COPYING.LGPLv2.1" "${data}/licenses/LICENSE-ffmpeg-LGPL-2.1.txt"
 cp "${ffmpeg}/share/licenses/ffmpeg-build.txt" "${data}/licenses/ffmpeg-build-linux.txt"
 cat "${data}/licenses/ffmpeg-build-linux.txt"
+# The LGPL also asks for the source of that FFmpeg: the exact tree it was
+# built from (git archive of the pinned commit, build-ffmpeg.sh), published
+# with the release next to the packages.
+ffmpeg_tag=$(jq -r '.dependencies["ffmpeg-source"].tag' "${spec}")
+ffmpeg_source="${ffmpeg}/share/source/ffmpeg-${ffmpeg_tag}.tar.xz"
+[[ -s ${ffmpeg_source} ]] || fail "no FFmpeg source tarball at ${ffmpeg_source} (build-ffmpeg.sh)"
+cp "${ffmpeg_source}" "${out}/${name}-${version}-ffmpeg-${ffmpeg_tag}-source.tar.xz"
+echo "${name}-${version}-ffmpeg-${ffmpeg_tag}-source.tar.xz: $(sha256sum "${ffmpeg_source}" | cut -d ' ' -f 1)"
 echo "::endgroup::"
 
 echo "::group::nfpm"
-nfpm_bin=$(command -v nfpm || true)
-if [[ -z ${nfpm_bin} ]]; then
-  nfpm_version=$(jq -r '.dependencies.nfpm.version' "${spec}")
-  nfpm_url=$(jq -r '.dependencies.nfpm.baseUrl' "${spec}")
-  nfpm_hash=$(jq -r --arg platform "linux-${arch}" '.dependencies.nfpm.hashes[$platform] // empty' "${spec}")
-  [[ ${nfpm_hash} =~ ^[0-9a-f]{64}$ ]] || fail "buildspec.json has no nfpm hash for linux-${arch}"
-  nfpm_dir="${root}/.deps/nfpm-${nfpm_version}"
-  nfpm_tar="${nfpm_dir}/nfpm_${nfpm_version}_Linux_${arch}.tar.gz"
-  mkdir -p "${nfpm_dir}"
-  if [[ ! -f ${nfpm_tar} ]] || ! echo "${nfpm_hash}  ${nfpm_tar}" | sha256sum --check --status; then
-    curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --silent --show-error \
-      --output "${nfpm_tar}" "${nfpm_url}/v${nfpm_version}/nfpm_${nfpm_version}_Linux_${arch}.tar.gz"
-  fi
-  echo "${nfpm_hash}  ${nfpm_tar}" | sha256sum --check -
-  tar -xzf "${nfpm_tar}" -C "${nfpm_dir}" nfpm
-  nfpm_bin="${nfpm_dir}/nfpm"
+# Always the release pinned in buildspec.json, checked against its SHA-256,
+# never an nfpm found on PATH: what builds the packages is part of the build.
+nfpm_version=$(jq -r '.dependencies.nfpm.version' "${spec}")
+nfpm_url=$(jq -r '.dependencies.nfpm.baseUrl' "${spec}")
+nfpm_hash=$(jq -r --arg platform "linux-${arch}" '.dependencies.nfpm.hashes[$platform] // empty' "${spec}")
+[[ ${nfpm_hash} =~ ^[0-9a-f]{64}$ ]] || fail "buildspec.json has no nfpm hash for linux-${arch}"
+nfpm_dir="${root}/.deps/nfpm-${nfpm_version}"
+nfpm_tar="${nfpm_dir}/nfpm_${nfpm_version}_Linux_${arch}.tar.gz"
+mkdir -p "${nfpm_dir}"
+if [[ ! -f ${nfpm_tar} ]] || ! echo "${nfpm_hash}  ${nfpm_tar}" | sha256sum --check --status; then
+  rm -f "${nfpm_tar}"
+  curl --fail --location --proto '=https' --tlsv1.2 --retry 3 --silent --show-error \
+    --output "${nfpm_tar}" "${nfpm_url}/v${nfpm_version}/nfpm_${nfpm_version}_Linux_${arch}.tar.gz"
 fi
+echo "${nfpm_hash}  ${nfpm_tar}" | sha256sum --check -
+# Extracted afresh from the checked archive every time.
+rm -f "${nfpm_dir}/nfpm"
+tar -xzf "${nfpm_tar}" -C "${nfpm_dir}" nfpm
+nfpm_bin="${nfpm_dir}/nfpm"
 "${nfpm_bin}" --version
 echo "::endgroup::"
 

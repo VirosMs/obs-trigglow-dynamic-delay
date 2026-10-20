@@ -12,7 +12,8 @@
 #
 # Then, for the installed .so: every library found (ldd), every symbol
 # resolved (ldd -r), no FFmpeg symbol exported (nm -D), no shared FFmpeg
-# linked, and the legacy OBS 31/32 paths linking to the OBS 33 ones.
+# linked, the legacy OBS 31/32 paths linking to the OBS 33 ones, and no
+# installed file writable by group or others (find -perm /022).
 #
 # A distro whose own OBS is below the minimum and has no PPA (Debian 13 ships
 # OBS 30.2) must refuse the .deb: that refusal is checked, then the package is
@@ -126,6 +127,16 @@ check_plugin() {
   echo "Exported: $(nm -D --defined-only "${so}" | awk '{ print $NF }' | tr '\n' ' ')"
 }
 
+# Nothing the package installs may be writable by its group or by others
+# (another local user could then replace the plugin OBS loads). Symlinks are
+# skipped: their own mode is always 0777 and means nothing.
+check_perms() {
+  local writable
+  writable=$(find "$@" ! -type l -perm /022 -printf '%m %u:%g %p\n')
+  [[ -z ${writable} ]] || fail "writable by group or others on ${PRETTY_NAME}: ${writable}"
+  echo "Permissions: nothing writable by group or others in $*"
+}
+
 # A legacy path must be a symlink to the OBS 33 one.
 check_link() {
   local link=$1 expected=$2
@@ -146,6 +157,8 @@ if [[ ${family} == user ]]; then
   work=$(mktemp -d)
   chmod 0755 "${work}"
   tar -xJf "${tarball}" -C "${work}"
+  # As packaged: tar extracted as root keeps the archive's modes.
+  check_perms "${work}"
   chown -R trigglow-test "${work}"
   if "${work}"/*/install.sh 2> /dev/null; then
     fail 'install.sh ran as root: it must refuse'
@@ -153,6 +166,7 @@ if [[ ${family} == user ]]; then
   su trigglow-test -c "${work}/*/install.sh"
   so="${home}/.local/share/obs-studio/plugins/${name}/${name}.so"
   check_plugin "${so}"
+  check_perms "${home}/.local/share/obs-studio/plugins/${name}"
   [[ -f ${home}/.local/share/obs-studio/plugins/${name}/data/locale/en-US.ini ]] || fail 'user data folder missing'
   check_link "${home}/.config/obs-studio/plugins/${name}/bin/64bit/${name}.so" "${so}"
   check_link "${home}/.config/obs-studio/plugins/${name}/data" "${home}/.local/share/obs-studio/plugins/${name}/data"
@@ -169,5 +183,6 @@ check_plugin "${so}"
 check_link "${libdir}/obs-plugins/${name}.so" "${so}"
 [[ -f /usr/share/obs/obs-modules/plugins/${name}/locale/en-US.ini ]] || fail 'data folder missing'
 [[ -f /usr/share/obs/obs-modules/plugins/${name}/licenses/LICENSE-ffmpeg-LGPL-2.1.txt ]] || fail 'FFmpeg licence missing'
+check_perms "${so}" "/usr/share/obs/obs-modules/plugins/${name}"
 check_link "/usr/share/obs/obs-plugins/${name}" "/usr/share/obs/obs-modules/plugins/${name}"
 echo "${family} package checked on ${PRETTY_NAME}"

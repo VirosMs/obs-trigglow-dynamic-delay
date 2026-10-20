@@ -20,7 +20,8 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 packages=(
-  # Toolchain and tools used by the build and packaging scripts
+  # Toolchain and tools used by the build and packaging scripts (gpg: the
+  # FFmpeg tag's signature, build-ffmpeg.sh)
   build-essential
   ca-certificates
   ccache
@@ -28,6 +29,7 @@ packages=(
   curl
   file
   git
+  gpg
   jq
   nasm
   ninja-build

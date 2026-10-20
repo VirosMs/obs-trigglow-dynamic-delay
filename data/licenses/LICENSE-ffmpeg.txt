@@ -54,7 +54,15 @@ That build is licensed under the GNU Lesser General Public License, version
 2.1 or later: libavcodec reports "LGPL version 2.1 or later", and the build
 stops if it reports anything else. The packages carry the text of that
 license (LICENSE-ffmpeg-LGPL-2.1.txt) and the exact configuration
-(ffmpeg-build-linux.txt) next to this file. The plugin itself is free
+(ffmpeg-build-linux.txt) next to this file. The source of that FFmpeg, the
+tree of the pinned commit exactly as built (git archive), is published with
+every release of the plugin next to the Linux packages, as
+
+  obs-trigglow-dynamic-delay-<version>-ffmpeg-n9.0.2-source.tar.xz
+
+on https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases. The tag's
+signature is checked before the build (git verify-tag, key fingerprint
+DD1E C9E8 DE08 5C62 9B3E  1846 B18E 8928 B394 8D64). The plugin itself is free
 software under the GNU General Public License, version 2 or later, and its
 complete source code, including the scripts that build this FFmpeg and link
 it in, is published at
