@@ -22,6 +22,10 @@
 
 set -euo pipefail
 
+# The plugin's files must not be writable by group or others: Ubuntu's default
+# umask for user-private groups (002) would leave them group-writable.
+umask 022
+
 name=obs-trigglow-dynamic-delay
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source_dir="${here}/${name}"
@@ -75,6 +79,7 @@ fi
 remove_installed
 mkdir -p -- "${target}" "${legacy}/bin/64bit"
 cp -R -- "${source_dir}/." "${target}/"
+chmod -R go-w -- "${target}" "${legacy}"
 chmod 0644 "${target}/${name}.so"
 ln -s -- "${target}/${name}.so" "${legacy}/bin/64bit/${name}.so"
 ln -s -- "${target}/data" "${legacy}/data"
