@@ -22,14 +22,20 @@ function(set_target_properties_plugin target)
 
   set_target_properties(${target} PROPERTIES VERSION 0 SOVERSION ${PLUGIN_VERSION})
 
-  install(TARGETS ${target} RUNTIME DESTINATION "${target}/bin/64bit" LIBRARY DESTINATION "${target}/bin/64bit")
+  # Two copies of the DLL, one data folder (v0.7.1), the layout of
+  # C:\ProgramData\obs-studio\plugins\<name>: OBS 33 and later load
+  # <name>\<name>.dll (and skip the bin4bit copy as a legacy duplicate),
+  # OBS 31 and 32 only know <name>in4bit\<name>.dll. Both find <name>\data.
+  foreach(_destination IN ITEMS "${target}" "${target}/bin/64bit")
+    install(TARGETS ${target} RUNTIME DESTINATION "${_destination}" LIBRARY DESTINATION "${_destination}")
 
-  install(
-    FILES "$<TARGET_PDB_FILE:${target}>"
-    CONFIGURATIONS RelWithDebInfo Debug Release
-    DESTINATION "${target}/bin/64bit"
-    OPTIONAL
-  )
+    install(
+      FILES "$<TARGET_PDB_FILE:${target}>"
+      CONFIGURATIONS RelWithDebInfo Debug Release
+      DESTINATION "${_destination}"
+      OPTIONAL
+    )
+  endforeach()
 
   # The binary records only the PDB's file name, not the absolute build path
   # (build machine folders and user name). Same effect as /PDBALTPATH:%_PDB%,

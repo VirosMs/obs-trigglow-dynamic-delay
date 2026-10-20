@@ -102,13 +102,19 @@ if(OS_WINDOWS)
   # never actually exercised at runtime until Phase 1, so this was missing
   # from day one without ever being caught. swresample-7.dll's own only
   # non-system dependency is avutil-61.dll (already shipped below).
-  install(
-    FILES
-      "${_ffmpeg_root}/bin/avcodec-63.dll"
-      "${_ffmpeg_root}/bin/avutil-61.dll"
-      "${_ffmpeg_root}/bin/swresample-7.dll"
-    DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit"
-  )
+  # v0.7.1: next to both copies of the plugin DLL (cmake/windows/helpers.cmake):
+  # <name>/ for OBS 33 and later, <name>/bin/64bit/ for OBS 31 and 32. libobs
+  # loads a module with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, so each copy finds
+  # its imports only in its own folder.
+  foreach(_ffmpeg_destination IN ITEMS "${CMAKE_PROJECT_NAME}" "${CMAKE_PROJECT_NAME}/bin/64bit")
+    install(
+      FILES
+        "${_ffmpeg_root}/bin/avcodec-63.dll"
+        "${_ffmpeg_root}/bin/avutil-61.dll"
+        "${_ffmpeg_root}/bin/swresample-7.dll"
+      DESTINATION "${_ffmpeg_destination}"
+    )
+  endforeach()
 elseif(OS_LINUX)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
