@@ -16,14 +16,12 @@ set(CPACK_PACKAGE_NAME "${CMAKE_PROJECT_NAME}")
 set(CPACK_PACKAGE_VERSION "${CMAKE_PROJECT_VERSION}")
 set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CMAKE_C_LIBRARY_ARCHITECTURE}")
 
-set(CPACK_GENERATOR "DEB")
-set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
-set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${PLUGIN_EMAIL}")
+# v0.7.1: the .deb, .rpm and .pkg.tar.zst are built by nfpm with hand-written
+# dependencies (.github/scripts/linux/package.sh): dpkg-shlibdeps tied the
+# .deb to the exact libavcodec and Qt package names of the build machine's
+# Ubuntu release. CPack only makes the source tarball now.
+set(CPACK_GENERATOR "TXZ")
 set(CPACK_SET_DESTDIR ON)
-
-if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.25.0 OR NOT CMAKE_CROSSCOMPILING)
-  set(CPACK_DEBIAN_DEBUGINFO_PACKAGE ON)
-endif()
 
 set(CPACK_OUTPUT_FILE_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/release")
 
@@ -35,6 +33,7 @@ set(
   \\.github/
   \\.gitignore
   \\.ccache/
+  \\.deps/
   build_.*
   cmake/\\.CMakeBuildNumber
   release/
@@ -45,6 +44,8 @@ set(CPACK_SOURCE_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSIO
 set(CPACK_ARCHIVE_THREADS 0)
 
 include(CPack)
+
+include(buildspec)
 
 find_package(libobs QUIET)
 

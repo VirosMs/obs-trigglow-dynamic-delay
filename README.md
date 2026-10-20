@@ -89,10 +89,24 @@ first release).
 
 ## Usage requirements
 
-**OBS Studio 31.1.0 or newer.** The v0.7.0 binary is built against the OBS 31.1.1 sources (see
-`buildspec.json`); earlier releases have been verified to load and work correctly on OBS
-**32.2.2** (OBS's plugin compatibility mechanism only rejects plugins built against a version
-*newer* than the one currently running; it has never been tested on versions older than 31.1.1).
+**OBS Studio 31.1.0 or newer**, on every platform. The plugin is built against the OBS 31.1.1
+sources (see `buildspec.json`; since OBS 32.0, OBS refuses a plugin built against a *newer* OBS
+than the one running), and from v0.7.1 it refuses to load in an older OBS, with
+`requires OBS Studio 31.1.0 or newer, running X` in the OBS log; the Windows installer checks it
+too. Tested live up to OBS **32.2.2** on Windows. OBS 33 (in release candidate) is supported by the
+v0.7.1 install locations but not tested live yet. The minimum is set in one place,
+`buildspec.json`'s `obsCompat`.
+
+| Plugin | Minimum OBS | Tested up to | Win | macOS | Linux |
+|---|---|---|---|---|---|
+| 0.7.1 | 31.1.0 | 32.2.2 | Installer, `.zip` (OBS 33 location) | `.pkg` | `.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.xz` |
+| 0.7.0 | 31.1.0 | 32.2.2 | Installer, `.zip` ("Legacy" in OBS 33) | `.pkg` | `.deb`, Ubuntu 24.04 with OBS 32.2 only |
+
+Linux: one x86_64 build for Ubuntu 24.04 LTS (OBS from the OBS PPA), Ubuntu 26.04 LTS and 26.10,
+Fedora, Arch and their derivatives (`.deb`, `.rpm`, `.pkg.tar.zst`), and a per-user `.tar.xz` for
+the rest, with Qt 6.4 or newer. Debian 13 ships OBS 30.2, below the minimum: the `.deb` refuses to
+install until OBS 31.1 or newer is there. The Flatpak OBS isn't supported. Details in
+`docs/INSTALL_GUIDE.md`.
 
 **Resolution and frame rate.** Any canvas: the delay buffer follows OBS's **output** resolution
 (`Settings → Video → Output (Scaled) Resolution`) and never goes above it, so a canvas larger than
@@ -154,7 +168,7 @@ enable `ENABLE_FRONTEND_API` and `ENABLE_QT` and register the new source files.
 |---|---|
 | Windows | Visual Studio 17 2022, CMake ≥ 3.30.5 |
 | macOS | Xcode 16.0, CMake ≥ 3.30.5 |
-| Ubuntu 24.04 | CMake ≥ 3.28.3, `ninja-build`, `pkg-config`, `build-essential` |
+| Linux (Ubuntu 24.04) | CMake ≥ 3.28.3, Ninja, GCC 13, `nasm`, `jq`, Qt 6.4: `.github/scripts/linux/install-build-deps.sh` |
 
 **Windows is the priority platform for v0.7.0** (as requested by product); macOS/Linux build green
 in CI on the template's own build system, but have not been run live in this release.
@@ -175,31 +189,54 @@ yourself separately. Requires an internet connection the first time.
 ## Build (macOS / Linux)
 
 ```bash
-cmake --preset macos      # or: ubuntu-x86_64
+cmake --preset macos
 cmake --build --preset macos --config RelWithDebInfo
+```
+
+On Linux the plugin links its own static FFmpeg and builds libobs from the pinned OBS sources on
+the first configure, as CI does in an `ubuntu:24.04` container:
+
+```bash
+sudo .github/scripts/linux/install-build-deps.sh   # Ubuntu 24.04 packages
+.github/scripts/linux/build-ffmpeg.sh              # FFmpeg from buildspec.json, LGPL, MJPEG only
+.github/scripts/linux/build.sh RelWithDebInfo      # stages release/stage/usr
+.github/scripts/linux/package.sh                   # .deb, .rpm, .pkg.tar.zst, .tar.xz
 ```
 
 ## Installing the plugin
 
-**Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.7.0-windows-x64-setup.exe`
+**Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.7.1-windows-x64-setup.exe`
 from the [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)
-and run it — it finds your OBS install automatically and copies the files for you. It isn't code-
+and run it — it installs into OBS's plugin folder for all users and moves an install of v0.7.0 or
+earlier out of OBS's own folder. It isn't code-
 signed yet (Early Access), so Windows SmartScreen will warn you before letting it run. **Full guide
 with screenshots for every step, including the SmartScreen warning: `docs/INSTALL_GUIDE.md`.**
 Install it before you go live, not mid-stream — it needs OBS closed to overwrite its files.
 
-**Manual install (any platform, or if you'd rather not run an installer):**
+**Linux: use your distro's package.** `obs-trigglow-dynamic-delay-0.7.1-x86_64-linux-gnu.deb`
+(Debian, Ubuntu, Mint, Pop!_OS: `sudo apt install ./<file>.deb`), `.rpm` (Fedora, openSUSE:
+`sudo dnf install ./<file>.rpm`) or `.pkg.tar.zst` (Arch, Manjaro, EndeavourOS:
+`sudo pacman -U <file>.pkg.tar.zst`), which pull in what they need. Any other distro: the `.tar.xz`
+and its `./install.sh`, for your user only.
 
-1. Locate the generated binary (`.dll` on Windows inside `build_x64/RelWithDebInfo/`, `.plugin`
-   on macOS, `.so` on Linux) — or extract the `.zip` from the same release.
-2. Copy it into the OBS plugins folder:
-   - Windows: `C:\Program Files\obs-studio\obs-plugins\64bit\`
-   - macOS: `~/Library/Application Support/obs-studio/plugins/`
-   - Linux: `~/.config/obs-studio/plugins/`
-3. Restart OBS.
+**macOS:** the `.pkg` from the same release.
 
-macOS/Linux don't have a one-click installer yet — manual install is the only path there for now
-(see `docs/ROADMAP.md`).
+**Where the files go (v0.7.1):**
+
+| Platform | OBS 33 and later | OBS 31 and 32 (legacy location) |
+|---|---|---|
+| Windows | `C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay\obs-trigglow-dynamic-delay.dll`, `data\` next to it | `...\obs-trigglow-dynamic-delay\bin\64bit\obs-trigglow-dynamic-delay.dll`, same `data\` |
+| Linux, package | `<libdir>/obs-modules/plugins/obs-trigglow-dynamic-delay.so`, `/usr/share/obs/obs-modules/plugins/obs-trigglow-dynamic-delay/` | symlinks in `<libdir>/obs-plugins/` and `/usr/share/obs/obs-plugins/` |
+| Linux, `.tar.xz` | `~/.local/share/obs-studio/plugins/obs-trigglow-dynamic-delay/` | symlinks in `~/.config/obs-studio/plugins/obs-trigglow-dynamic-delay/` |
+| macOS | `~/Library/Application Support/obs-studio/plugins/obs-trigglow-dynamic-delay.plugin` | the same |
+
+`<libdir>` is `/usr/lib/x86_64-linux-gnu` (`.deb`), `/usr/lib64` (`.rpm`) or `/usr/lib`
+(`.pkg.tar.zst`). OBS 33 loads the first column and skips the legacy copy; OBS 31 and 32 only know
+the second. On Windows each copy has its own FFmpeg DLLs next to it.
+
+**Manual install on Windows:** extract the `.zip` into `C:\ProgramData\obs-studio\plugins\` (it
+contains the `obs-trigglow-dynamic-delay` folder) and restart OBS. Don't copy anything into
+`C:\Program Files\obs-studio`: OBS 33 marks plugins there as "Legacy" and OBS 34 won't load them.
 
 ## Using the plugin
 

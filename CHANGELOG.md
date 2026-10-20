@@ -2,6 +2,104 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.7.1 — 2026-10-20 (Early Access)
+
+A fix release for installing and loading the plugin: Linux packages that install and load on the
+distros the Trigglow desktop app supports, an install that keeps working in OBS 33 on Windows and
+Linux, and a check of the minimum OBS version. The delay itself doesn't change.
+
+**Before you update:**
+- **Windows:** close OBS and run the new installer. There's no folder to choose any more: the
+  plugin now lives in `C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay\`, and the
+  installer removes the v0.7.0 (or earlier) copy from OBS's own folder. Your scenes, settings,
+  hotkeys and sign-in are kept. If you installed by hand from a `.zip` into
+  `C:\Program Files\obs-studio`, the installer cleans that up too; installing by hand from now on
+  means extracting the `.zip` into `C:\ProgramData\obs-studio\plugins\`.
+- **Linux:** install the `.deb`, `.rpm` or `.pkg.tar.zst` of your distro, or the per-user `.tar.xz`.
+  OBS Studio 31.1.0 or newer is required: on Ubuntu 24.04 that means the OBS PPA (Ubuntu's own OBS
+  is 30.0), and Debian 13's OBS 30.2 is too old.
+- **macOS:** nothing changes; install the `.pkg` as before.
+- Coming from v0.5.x or earlier, read v0.6.0's "Before you update" below.
+
+**What it fixes:**
+- **The Linux `.deb` only installed on Ubuntu 24.04**, and only loaded in OBS 32.2 or newer. It
+  depended on that Ubuntu's exact FFmpeg (`libavcodec60`, `libavutil58`) and Qt (`t64`) package
+  names, so apt refused it on Ubuntu 25.04 and later and on Debian 13, and it was built against
+  the PPA's libobs 32.2, which OBS 30, 31 and 32.1 refuse. Now one `.so` for x86_64 Linux:
+  - built against OBS 31.1.1's libobs, the oldest supported;
+  - built on Ubuntu 24.04 (glibc 2.39, Qt 6.4), so it runs on Ubuntu 24.04, 26.04 and 26.10,
+    Debian 13, Fedora and Arch;
+  - with its own FFmpeg linked in (LGPL, MJPEG only, none of its symbols exported), so it needs
+    no FFmpeg package and can't clash with the one OBS loads;
+  - with dependencies written by hand: libc, libstdc++, Qt 6.4 or newer Core, Gui, Widgets and Svg
+    under each family's names (Debian's with or without `t64`), and `obs-studio` 31.1.0 or newer.
+- **New Linux packages**, the same formats as the desktop app:
+  `obs-trigglow-dynamic-delay-0.7.1-x86_64-linux-gnu.deb`, `.rpm`, `.pkg.tar.zst`, and a `.tar.xz`
+  with an `install.sh` for a per-user install without root.
+- **OBS 33 install locations.** OBS 33 marks plugins in the old locations as "Legacy" and OBS 34
+  won't load them:
+  - Windows: `C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay\` with the DLL at its
+    root for OBS 33 and a second copy in `bin\64bit\` for OBS 31 and 32, each with its FFmpeg DLLs,
+    and one `data\` folder. The `.zip` has the same layout;
+  - Linux packages: `<libdir>/obs-modules/plugins/` and `/usr/share/obs/obs-modules/plugins/`,
+    with symlinks in the legacy `obs-plugins` folders for OBS 31 and 32;
+  - Linux `.tar.xz`: `~/.local/share/obs-studio/plugins/`, linked from
+    `~/.config/obs-studio/plugins/.../bin/64bit` for OBS 31 and 32.
+- **Minimum OBS version checked.** In an OBS older than 31.1.0 the plugin no longer fails in an
+  unclear way: it doesn't load, and the OBS log says
+  `requires OBS Studio 31.1.0 or newer, running X`. Its first log line now also gives the OBS
+  version and the file it was loaded from. The Windows installer checks `obs64.exe`'s version
+  before installing.
+- **Windows installer:**
+  - asks you to close OBS when it's open;
+  - its "Launch OBS Studio" box starts OBS from OBS's own folder, now that the plugin isn't
+    installed there, and as your user, not as administrator;
+  - the plugin folder is writable only by administrators, so no other user of the computer can
+    place a DLL next to the plugin, and it is emptied before the new files are copied: whatever
+    someone put there before goes;
+  - if OBS's plugins folder (`C:\ProgramData\obs-studio\plugins`) can be written to by users
+    without admin rights, only that folder's permissions are corrected (administrators and SYSTEM
+    write, users read), and the setup log says so;
+  - it stops with a clear message if `C:\ProgramData\obs-studio`, its `plugins` folder or the
+    plugin's folder is a junction or symbolic link, and checks the same before deleting anything
+    in OBS's own folder;
+  - it removes the v0.7.0 copy by deleting our known files, never by running the old uninstaller
+    (in an OBS folder users can write to, it could have been replaced);
+  - it never touches your settings (`plugin_config`).
+
+**Technical detail:**
+- The minimum OBS version is set once, in `buildspec.json`'s new `obsCompat` (`minimum` 31.1.0,
+  `testedUpTo` 32.2.2), and read from there by CMake (compile definitions for the plugin's check),
+  the Windows installer script and the Linux packaging.
+- Linux libobs: built from the pinned OBS 31.1.1 sources into `.deps` like on Windows and macOS
+  (`cmake/linux/buildspec.cmake`).
+- Linux FFmpeg 9.0.2: built from FFmpeg's git repository at the signed `n9.0.2` tag, only if it is
+  the commit pinned in `buildspec.json` (`.github/scripts/linux/build-ffmpeg.sh`); the build stops on a GPL, version 3 or nonfree
+  configuration. Exports limited by `cmake/linux/plugin-exports.map`.
+- Packages by nfpm 2.47.0, also pinned with its SHA-256 (`.github/scripts/linux/package.sh`).
+  The script fails on a shared FFmpeg, an exported FFmpeg symbol, an RPATH or a glibc newer than
+  2.39. The `-dbgsym` `.ddeb` is replaced by a debug-symbols archive kept as a CI artifact.
+- CI builds Linux in an `ubuntu:24.04` container and installs every package in clean containers
+  (Ubuntu 24.04 with the OBS PPA, Ubuntu 26.04, Debian 13, Fedora, Arch, and the `.tar.xz` as an
+  ordinary user), checking `ldd`, unresolved symbols, exported symbols and the legacy symlinks.
+  On Debian 13 it checks that the `.deb` is refused.
+- `data/licenses/LICENSE-ffmpeg.txt` describes the Linux static build; the Linux packages also
+  carry the LGPL 2.1 text and the exact FFmpeg configuration, and every release carries the exact
+  source of that FFmpeg (`obs-trigglow-dynamic-delay-<version>-ffmpeg-n9.0.2-source.tar.xz`, a
+  `git archive` of the pinned commit).
+- The `n9.0.2` tag's signature is checked with `git verify-tag` against the key kept in the
+  repository (`.github/scripts/linux/ffmpeg-tag-signing-key.asc`, fingerprint pinned in
+  `build-ffmpeg.sh`); nfpm is always the pinned, hash-checked download, never one on `PATH`.
+- CI: third-party actions pinned by commit SHA and container images by digest; the package check
+  also fails on any installed file writable by group or others.
+
+**Known limitations:**
+- OBS 33 is still a release candidate: the new locations follow its plugin loader, but the plugin
+  hasn't been run in it live yet.
+- The Linux and macOS packages are built and installed in CI, not tested live in OBS in this
+  release. Sign-in is still Windows-only.
+- Not supported: the Flatpak OBS, ARM and 32-bit Linux, Ubuntu 22.04 and Debian 12 or older.
+
 ## v0.7.0 — 2026-10-20 (Early Access)
 
 An optimization release: on Windows the delay buffer takes about half the RAM. The frames waiting

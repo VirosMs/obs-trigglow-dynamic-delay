@@ -9,6 +9,59 @@
   check that the binary is in the correct plugins folder for your OS (see README) and that the
   architecture (64-bit) matches your OBS installation.
 
+## The log says "requires OBS Studio 31.1.0 or newer"
+Since v0.7.1 the plugin checks the OBS it runs in and stops loading in an OBS older than 31.1.0, with
+this line in the log (`Help → Logs and Profiles → View Current Log`):
+
+```
+[obs-trigglow-dynamic-delay] Trigglow Dynamic Delay v0.7.1 requires OBS Studio 31.1.0 or newer, running 30.2.3: not loaded
+```
+
+Update OBS Studio (on Ubuntu 24.04, from the OBS PPA; see the Linux section of
+`docs/INSTALL_GUIDE.md`). The first line the plugin logs always says which OBS it found and which
+file it was loaded from:
+
+```
+[obs-trigglow-dynamic-delay] loading Trigglow Dynamic Delay v0.7.1 on OBS Studio 32.2.2, from C:/ProgramData/obs-studio/plugins/obs-trigglow-dynamic-delay/bin/64bit/obs-trigglow-dynamic-delay.dll
+```
+
+On Windows the installer already refuses an older OBS, so this mostly shows up after OBS was
+replaced by an older version, or with a portable OBS.
+
+## OBS 33 lists the plugin as "Legacy"
+OBS 33 marks plugins it finds in the old locations as "Legacy" in its plugin manager, and OBS 34
+won't load them at all. v0.7.0 and earlier installed there (inside `C:\Program Files\obs-studio`
+on Windows; `obs-plugins` and `~/.config/obs-studio/plugins/.../bin/64bit` on Linux).
+
+- **Windows:** run the v0.7.1 installer (with OBS closed). It moves the plugin to
+  `C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay\` and removes the old copy from
+  OBS's folder. If the plugin still shows as Legacy, look in
+  `C:\Program Files\obs-studio\obs-plugins\64bit\` for a leftover `obs-trigglow-dynamic-delay.dll`
+  (for example from a `.zip` extracted there by hand) and delete it with OBS closed.
+- **Linux:** install the v0.7.1 package (or run the `.tar.xz`'s `install.sh`). It installs into OBS
+  33's location and only adds symlinks in the legacy ones for OBS 31 and 32, which OBS 33 skips. A
+  copy you made by hand in `~/.config/obs-studio/plugins/obs-trigglow-dynamic-delay/` (not a
+  symlink) is still a legacy plugin: delete it.
+- **macOS** is not affected: the plugin's location doesn't change in OBS 33.
+
+The log line above (`loading ... from <path>`) tells you which copy OBS actually loaded.
+
+## The Linux package doesn't install, or the plugin doesn't load on Linux
+- **`obs-studio (>= 31.1.0)` can't be installed** (apt, dnf or pacman refuses): your distro's OBS
+  is older than the minimum. On Ubuntu 24.04 add the OBS PPA
+  (`sudo add-apt-repository ppa:obsproject/obs-studio`, then `sudo apt update`) and install again.
+  Debian 13 ships OBS 30.2 and has no newer one: the plugin can't run with it.
+- **Other dependencies can't be installed** (`libqt6...`): the package needs Qt 6.4 or newer, on
+  x86_64. Ubuntu 22.04 and older, Debian 12 and older and 32-bit or ARM systems aren't supported.
+- **The Flatpak OBS** doesn't see plugins installed by the packages or by `install.sh`, and isn't
+  supported.
+- **Installed but no dock:** check `/usr/lib/x86_64-linux-gnu/obs-modules/plugins/` (`/usr/lib64/...`
+  on Fedora, `/usr/lib/...` on Arch) or `~/.local/share/obs-studio/plugins/` for
+  `obs-trigglow-dynamic-delay.so`, and run `ldd` on it: no line may say `not found`. Then look for
+  the plugin's lines in the OBS log, as above.
+- **Two copies:** a package and the `.tar.xz` install at the same time. Keep one: remove the package,
+  or run `./install.sh --uninstall`.
+
 ## The "Enable delay" button is greyed out
 - `Enable delay` stays disabled until you've signed in with your free Trigglow account and picked a
   **live scene** in the dock. While it's disabled, a checklist under it shows which of the two is

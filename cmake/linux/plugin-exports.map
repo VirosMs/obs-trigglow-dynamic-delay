@@ -1,0 +1,13 @@
+/* Symbols the Linux plugin exports (CMakeLists.txt, LINKER:--version-script).
+   libobs looks up only the obs_module_* entry points (obs_module_load,
+   obs_module_unload, obs_module_set_pointer, obs_module_ver, the locale and
+   description ones) and obs_current_module. Everything else stays local:
+   above all the statically linked FFmpeg, whose av* and ff_* names would
+   otherwise clash with the avcodec OBS itself loads. */
+{
+  global:
+    obs_module_*;
+    obs_current_module;
+  local:
+    *;
+};
