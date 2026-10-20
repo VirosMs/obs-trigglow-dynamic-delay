@@ -2,6 +2,92 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.7.1 — 2026-10-20 (Early Access)
+
+Una versión de corrección para instalar y cargar el plugin: paquetes de Linux que se instalan y
+cargan en las distribuciones que soporta la app de escritorio de Trigglow, una instalación que sigue
+funcionando en OBS 33 en Windows y Linux, y una comprobación de la versión mínima de OBS. El delay
+en sí no cambia.
+
+**Antes de actualizar:**
+- **Windows:** cierra OBS y ejecuta el instalador nuevo. Ya no hay carpeta que elegir: el plugin
+  vive ahora en `C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay\`, y el instalador
+  quita la copia de la v0.7.0 (o anterior) de la carpeta del propio OBS. Tus escenas, ajustes,
+  atajos e inicio de sesión se conservan. Si instalaste a mano desde un `.zip` en
+  `C:\Program Files\obs-studio`, el instalador también lo limpia; a partir de ahora, instalar a mano
+  es descomprimir el `.zip` en `C:\ProgramData\obs-studio\plugins\`.
+- **Linux:** instala el `.deb`, `.rpm` o `.pkg.tar.zst` de tu distribución, o el `.tar.xz` por
+  usuario. Hace falta OBS Studio 31.1.0 o posterior: en Ubuntu 24.04 eso significa el PPA de OBS
+  (el OBS de Ubuntu es la 30.0), y el OBS 30.2 de Debian 13 es demasiado antiguo.
+- **macOS:** no cambia nada; instala el `.pkg` como siempre.
+- Si vienes de la v0.5.x o anterior, lee el "Antes de actualizar" de la v0.6.0, más abajo.
+
+**Qué arregla:**
+- **El `.deb` de Linux solo se instalaba en Ubuntu 24.04**, y solo cargaba en OBS 32.2 o
+  posterior. Dependía de los nombres exactos de los paquetes de FFmpeg (`libavcodec60`,
+  `libavutil58`) y Qt (`t64`) de ese Ubuntu, así que apt lo rechazaba en Ubuntu 25.04 y posteriores
+  y en Debian 13, y se compilaba contra el libobs 32.2 del PPA, que OBS 30, 31 y 32.1 rechazan.
+  Ahora hay un único `.so` para Linux x86_64:
+  - compilado contra el libobs de OBS 31.1.1, el más antiguo soportado;
+  - compilado en Ubuntu 24.04 (glibc 2.39, Qt 6.4), así que funciona en Ubuntu 24.04, 26.04 y
+    26.10, Debian 13, Fedora y Arch;
+  - con su propio FFmpeg enlazado dentro (LGPL, solo MJPEG, sin exportar ninguno de sus símbolos),
+    así que no necesita ningún paquete de FFmpeg ni puede chocar con el que carga OBS;
+  - con las dependencias escritas a mano: libc, libstdc++, Qt 6.4 o posterior Core, Gui, Widgets y
+    Svg con los nombres de cada familia (los de Debian con o sin `t64`), y `obs-studio` 31.1.0 o
+    posterior.
+- **Paquetes nuevos de Linux**, los mismos formatos que la app de escritorio:
+  `obs-trigglow-dynamic-delay-0.7.1-x86_64-linux-gnu.deb`, `.rpm`, `.pkg.tar.zst`, y un `.tar.xz`
+  con un `install.sh` para instalarlo solo para tu usuario, sin root.
+- **Ubicaciones de instalación de OBS 33.** OBS 33 marca como "Legacy" los plugins de las
+  ubicaciones antiguas y OBS 34 no los cargará:
+  - Windows: `C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay\`, con la DLL en la raíz
+    para OBS 33 y una segunda copia en `bin\64bit\` para OBS 31 y 32, cada una con sus DLL de
+    FFmpeg, y una sola carpeta `data\`. El `.zip` tiene la misma estructura;
+  - paquetes de Linux: `<libdir>/obs-modules/plugins/` y `/usr/share/obs/obs-modules/plugins/`, con
+    enlaces simbólicos en las carpetas legacy `obs-plugins` para OBS 31 y 32;
+  - `.tar.xz` de Linux: `~/.local/share/obs-studio/plugins/`, enlazado desde
+    `~/.config/obs-studio/plugins/.../bin/64bit` para OBS 31 y 32.
+- **Se comprueba la versión mínima de OBS.** En un OBS anterior a la 31.1.0 el plugin ya no falla
+  de forma poco clara: no se carga, y el log de OBS dice
+  `requires OBS Studio 31.1.0 or newer, running X`. Su primera línea del log también indica ahora la
+  versión de OBS y el archivo desde el que se ha cargado. El instalador de Windows comprueba la
+  versión de `obs64.exe` antes de instalar.
+- **Instalador de Windows:**
+  - te pide cerrar OBS si está abierto;
+  - su casilla "Ejecutar OBS Studio" abre OBS desde la carpeta del propio OBS, ahora que el plugin
+    ya no se instala ahí, y con tu usuario, no como administrador;
+  - solo los administradores pueden escribir en la carpeta del plugin, así que ningún otro usuario
+    del equipo puede dejar una DLL junto al plugin;
+  - no toca nunca tus ajustes (`plugin_config`).
+
+**Detalle técnico:**
+- La versión mínima de OBS se define una sola vez, en el nuevo `obsCompat` de `buildspec.json`
+  (`minimum` 31.1.0, `testedUpTo` 32.2.2), y de ahí la leen CMake (definiciones de compilación para
+  la comprobación del plugin), el script del instalador de Windows y el empaquetado de Linux.
+- libobs en Linux: compilado desde las fuentes fijadas de OBS 31.1.1 en `.deps`, como en Windows y
+  macOS (`cmake/linux/buildspec.cmake`).
+- FFmpeg 9.0.2 en Linux: compilado desde el tarball oficial fijado por SHA-256 en `buildspec.json`
+  (`.github/scripts/linux/build-ffmpeg.sh`); el build se detiene ante una configuración GPL,
+  version 3 o nonfree. Exportaciones limitadas por `cmake/linux/plugin-exports.map`.
+- Paquetes con nfpm 2.47.0, también fijado con su SHA-256 (`.github/scripts/linux/package.sh`). El
+  script falla si hay un FFmpeg compartido, un símbolo de FFmpeg exportado, un RPATH o una glibc
+  posterior a la 2.39. El `.ddeb` `-dbgsym` se sustituye por un archivo de símbolos de depuración
+  que se guarda como artefacto del CI.
+- El CI compila Linux en un contenedor `ubuntu:24.04` e instala cada paquete en contenedores limpios
+  (Ubuntu 24.04 con el PPA de OBS, Ubuntu 26.04, Debian 13, Fedora, Arch, y el `.tar.xz` con un
+  usuario normal), comprobando `ldd`, símbolos sin resolver, símbolos exportados y los enlaces
+  legacy. En Debian 13 comprueba que el `.deb` se rechaza.
+- `data/licenses/LICENSE-ffmpeg.txt` describe el build estático de Linux; los paquetes de Linux
+  llevan además el texto de la LGPL 2.1 y la configuración exacta de FFmpeg.
+
+**Limitaciones conocidas:**
+- OBS 33 sigue en release candidate: las ubicaciones nuevas siguen su cargador de plugins, pero el
+  plugin aún no se ha usado en él en directo.
+- Los paquetes de Linux y macOS se compilan e instalan en el CI, no se han probado en directo en OBS
+  en esta versión. El inicio de sesión sigue siendo solo de Windows.
+- No soportados: el OBS de Flatpak, Linux ARM y de 32 bits, Ubuntu 22.04 y Debian 12 o anteriores.
+
 ## v0.7.0 — 2026-10-20 (Early Access)
 
 Una versión de optimización: en Windows el buffer del delay ocupa más o menos la mitad de RAM. Los
