@@ -20,7 +20,7 @@ jobs:
       commitHash: ${{ steps.setup.outputs.commitHash }}
       pluginName: ${{ steps.setup.outputs.pluginName }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
       - name: Check Event Data ☑️
@@ -91,7 +91,7 @@ jobs:
       # tests/pipeline_gop_stress_tests.cpp.
       TRIGGLOW_STRESS_CI: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build and Run Unit Tests 🧪
         run: |
@@ -117,7 +117,7 @@ jobs:
       # under TSAN's 5-15x slowdown the strict ones fail without a race.
       TRIGGLOW_STRESS_CI: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Build Threaded Unit Tests with ThreadSanitizer 🧪
         run: |
@@ -193,7 +193,7 @@ jobs:
       run:
         shell: zsh --no-rcs --errexit --pipefail {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
           fetch-depth: 0
@@ -226,7 +226,7 @@ jobs:
           print "pluginName=${product_name}" >> $GITHUB_OUTPUT
           print "pluginVersion=${product_version}" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: ccache-cache
         with:
           path: ${{ github.workspace }}/.ccache
@@ -271,19 +271,19 @@ jobs:
           codesignPass: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
 
       - name: Upload Artifacts 📡
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal.*
 
       - name: Upload Debug Symbol Artifacts 🪲
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ needs.check-event.outputs.config == 'Release' }}
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal-${{ needs.check-event.outputs.commitHash }}-dSYMs
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal-dSYMs.*
 
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: github.event_name != 'pull_request' && steps.ccache-cache.outputs.cache-hit != 'true'
         with:
           path: ${{ github.workspace }}/.ccache
@@ -298,7 +298,10 @@ jobs:
     # Fedora and Arch. Not the runner image itself: its extra toolchains and
     # libraries could leak newer symbol versions into the plugin. Paths are
     # relative: in a container job github.workspace is the host's path.
-    container: ubuntu:24.04
+    # Pinned by digest (the image index, every architecture): a moved tag
+    # can't change the build environment unnoticed. Update it with
+    # `docker buildx imagetools inspect ubuntu:24.04`.
+    container: ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
     defaults:
       run:
         shell: bash
@@ -312,7 +315,7 @@ jobs:
           apt-get update -q
           DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ca-certificates git
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
           fetch-depth: 0
@@ -332,7 +335,7 @@ jobs:
           echo "pluginName=${product_name}" >> $GITHUB_OUTPUT
           echo "pluginVersion=${product_version}" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: ffmpeg-cache
         with:
           path: .deps/ffmpeg-linux-x86_64
@@ -348,7 +351,7 @@ jobs:
           # hit is only reused when its stamp matches the pin and the script.
           .github/scripts/linux/build-ffmpeg.sh
 
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         id: ccache-cache
         with:
           path: .ccache
@@ -375,13 +378,19 @@ jobs:
           .github/scripts/linux/package.sh
 
       - name: Upload Source Tarball 🗜️
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-sources-${{ needs.check-event.outputs.commitHash }}
-          path: release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-source.*
+          # The plugin's source and, for the LGPL, the exact source of the
+          # FFmpeg linked into the Linux .so (package.sh). push.yaml's
+          # create-release attaches both to the release.
+          if-no-files-found: error
+          path: |
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-source.*
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-ffmpeg-*-source.tar.xz
 
       - name: Upload Artifacts 📡
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}
           if-no-files-found: error
@@ -392,19 +401,19 @@ jobs:
             release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu.tar.xz
 
       - name: Upload Debug Symbol Artifacts 🪲
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
           path: release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu-dbgsym.tar.xz
 
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: github.event_name != 'pull_request' && steps.ccache-cache.outputs.cache-hit != 'true'
         with:
           path: .ccache
           key: linux-ubuntu-24.04-ccache-x86_64-${{ needs.check-event.outputs.config }}
 
   linux-verify:
-    name: Verify Linux Package 🐧 (${{ matrix.image }}, ${{ matrix.family }})
+    name: Verify Linux Package 🐧 (${{ matrix.distro }}, ${{ matrix.family }})
     runs-on: ubuntu-24.04
     needs: [check-event, linux-build]
     # Installs each package in a clean container the way a user would (apt,
@@ -418,26 +427,35 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Images pinned by digest (image index) like the build's; Fedora 44 is
+        # what fedora:latest was when pinned. Arch is rolling: its digest
+        # fixes the base, and pacman -Syu still brings it up to date.
         include:
-          - image: ubuntu:24.04
+          - distro: ubuntu:24.04
+            image: ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
             family: deb
-          - image: ubuntu:26.04
+          - distro: ubuntu:26.04
+            image: ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
             family: deb
-          - image: ubuntu:26.04
+          - distro: ubuntu:26.04
+            image: ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
             family: user
-          - image: debian:13
+          - distro: debian:13
+            image: debian:13@sha256:913f6706df59a68922d1dd08f78c2476560a8d367897200a6005b00e5f67c2d5
             family: deb
-          - image: fedora:latest
+          - distro: fedora:44
+            image: fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
             family: rpm
-          - image: archlinux:latest
+          - distro: archlinux
+            image: archlinux:latest@sha256:e43f1fd80e073992c5f173efbbbf65144170bf60aeb7369940087d63eacea8f4
             family: pacman
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.linux-build.outputs.pluginName }}-${{ needs.linux-build.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}
           path: packages
@@ -456,7 +474,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
           fetch-depth: 0
@@ -604,7 +622,7 @@ jobs:
           }
 
       - name: Upload Artifacts 📡
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*.*
