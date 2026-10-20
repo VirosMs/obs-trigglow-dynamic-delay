@@ -45,16 +45,16 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/common")
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json" buildspec)
 
-string(JSON _name GET ${buildspec} name)
-string(JSON _website GET ${buildspec} website)
-string(JSON _author GET ${buildspec} author)
-string(JSON _email GET ${buildspec} email)
-string(JSON _version GET ${buildspec} version)
-string(JSON _bundleId GET ${buildspec} platformConfig macos bundleId)
+string(JSON _name GET "${buildspec}" name)
+string(JSON _website GET "${buildspec}" website)
+string(JSON _author GET "${buildspec}" author)
+string(JSON _email GET "${buildspec}" email)
+string(JSON _version GET "${buildspec}" version)
+string(JSON _bundleId GET "${buildspec}" platformConfig macos bundleId)
 # The oldest OBS Studio the plugin loads in (src/plugin-main.cpp checks it at
 # load time, the Windows installer before installing). Only set here, in
 # buildspec.json's obsCompat.
-string(JSON _obsMinVersion GET ${buildspec} obsCompat minimum)
+string(JSON _obsMinVersion GET "${buildspec}" obsCompat minimum)
 
 set(PLUGIN_AUTHOR ${_author})
 set(PLUGIN_WEBSITE ${_website})

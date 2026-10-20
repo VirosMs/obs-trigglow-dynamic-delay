@@ -42,7 +42,7 @@
         "ffmpeg-source": {
             "version": "9.0.2",
             "baseUrl": "https://github.com/FFmpeg/FFmpeg",
-            "label": "FFmpeg sources (Linux: static LGPL build of avcodec/avutil, MJPEG only; git tag, pinned by commit)",
+            "label": "FFmpeg sources (Linux: static LGPL build of avcodec/avutil, MJPEG only, git tag pinned by commit)",
             "tag": "n9.0.2",
             "commit": "946fcce07b6dcd0331c8cc609192aeff5e1924f8"
         },

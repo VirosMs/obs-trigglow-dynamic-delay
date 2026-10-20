@@ -35,7 +35,9 @@ packages=(
   xz-utils
   zstd
   # libobs 31.1.1 (libobs/CMakeLists.txt, libobs/cmake/os-linux.cmake,
-  # libobs-opengl) with UI, scripting, PulseAudio and Wayland off
+  # libobs-opengl) with UI, scripting, PulseAudio and Wayland off. OBS's own
+  # cmake/linux/ecmconfig.cmake requires ECM even for libobs alone.
+  extra-cmake-modules
   libavcodec-dev
   libavformat-dev
   libavutil-dev

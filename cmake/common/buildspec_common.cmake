@@ -133,15 +133,15 @@ endfunction()
 function(_check_dependencies)
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json" buildspec)
 
-  string(JSON dependency_data GET ${buildspec} dependencies)
+  string(JSON dependency_data GET "${buildspec}" dependencies)
 
   foreach(dependency IN LISTS dependencies_list)
-    string(JSON data GET ${dependency_data} ${dependency})
-    string(JSON version GET ${data} version)
-    string(JSON hash GET ${data} hashes ${platform})
-    string(JSON url GET ${data} baseUrl)
-    string(JSON label GET ${data} label)
-    string(JSON revision ERROR_VARIABLE error GET ${data} revision ${platform})
+    string(JSON data GET "${dependency_data}" ${dependency})
+    string(JSON version GET "${data}" version)
+    string(JSON hash GET "${data}" hashes ${platform})
+    string(JSON url GET "${data}" baseUrl)
+    string(JSON label GET "${data}" label)
+    string(JSON revision ERROR_VARIABLE error GET "${data}" revision ${platform})
 
     message(STATUS "Setting up ${label} (${arch})")
 
