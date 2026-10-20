@@ -7,10 +7,24 @@ warning you'll see because the installer isn't code-signed yet (Early Access —
 `docs/ROADMAP.md`). Screenshots below are from a real install on an older version, before v0.3.1
 added the Trigglow icon/wizard banner shown in the installer today — the steps and layout are
 otherwise unchanged, only that generic styling and the version number in the corner are out of date.
+Since v0.7.1 there is no folder page and the installer asks you itself to close OBS (step 4).
+Linux and macOS: see their sections below.
+
+## Compatibility
+
+| Plugin | Minimum OBS | Tested up to | Win | macOS | Linux |
+|---|---|---|---|---|---|
+| 0.7.1 | 31.1.0 | 32.2.2 | Installer, `.zip` (OBS 33 location) | `.pkg` | `.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.xz` |
+| 0.7.0 | 31.1.0 | 32.2.2 | Installer, `.zip` ("Legacy" in OBS 33) | `.pkg` | `.deb`, Ubuntu 24.04 with OBS 32.2 only |
+
+"Tested up to" is the newest OBS the plugin was run in live (on Windows). OBS 33 is in release
+candidate: v0.7.1 already installs where it looks for plugins, but hasn't been tested in it live. In
+an OBS older than the minimum the plugin doesn't load, and says why in the OBS log. Linux and macOS
+are covered below.
 
 ## 1. Download
 
-Get `obs-trigglow-dynamic-delay-0.7.0-windows-x64-setup.exe` from the
+Get `obs-trigglow-dynamic-delay-0.7.1-windows-x64-setup.exe` from the
 [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). Prefer to
 install by hand instead? The `.zip` in the same release contains just the plugin files — see
 "Installing the plugin" in `README.md`.
@@ -42,9 +56,8 @@ Firefox), but the underlying choice is the same: confirm you trust the file befo
 ## 3. Close OBS before installing
 
 **Install before you go live, not during a stream.** The installer needs to overwrite files that
-OBS has open while it's running — if OBS is open when you start the install, it will ask to close it
-automatically (see step 4 below) and relaunch it afterward. Plan the install for before a session,
-not mid-broadcast.
+OBS has open while it's running — if OBS is open when you start the install, it asks you to close it
+(see step 4 below). Plan the install for before a session, not mid-broadcast.
 
 ## 4. Run the installer
 
@@ -60,20 +73,19 @@ It's a standard next-next-next wizard:
 
    ![Welcome screen, version 0.2.0](images/installer-2-welcome.png)
 
-3. Destination folder — auto-detected from your OBS Studio install (via the registry key the
-   official OBS installer writes); you can browse to a different folder if needed:
+3. There is no folder to choose since v0.7.1: the plugin always goes to OBS's plugin folder,
+   `C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay` (see "Where the files go on
+   Windows" below). The installer finds OBS through the registry key the official OBS installer
+   writes and checks that it's OBS 31.1.0 or newer; with an older OBS it stops and asks you to
+   update OBS first.
 
-   ![Destination folder](images/installer-3-destination.png)
-
-4. If OBS is still running, the installer offers to close it for you automatically:
-
-   ![OBS Studio must be closed to continue](images/installer-4-close-obs.png)
+4. If OBS is still running, the installer asks you to close it (File → Exit) and click **Retry**.
 
 5. Installing:
 
    ![Installing / restarting applications](images/installer-5-installing.png)
 
-6. Done — optionally launch OBS Studio right away:
+6. Done — optionally launch OBS Studio right away (it starts as your user, not as administrator):
 
    ![Installation complete](images/installer-6-finish.png)
 
@@ -110,7 +122,82 @@ now; macOS and Linux get sign-in with the HTTP client planned next, see `docs/RO
 If the browser doesn't open, **Copy link** and paste it into your browser. More in the "Signing in
 from the dock" section of `docs/TROUBLESHOOTING.md`.
 
+## Linux
+
+One x86_64 build of the plugin works on all of these; pick the package of your distro family (the
+same formats as the Trigglow desktop app). Every package needs OBS Studio 31.1.0 or newer and Qt
+6.4 or newer, and installs them, or refuses to install, through your package manager.
+
+| Distro | Package | OBS Studio |
+|---|---|---|
+| Ubuntu 24.04 LTS | `.deb` | from the OBS PPA (`sudo add-apt-repository ppa:obsproject/obs-studio`): Ubuntu's own is 30.0, too old |
+| Ubuntu 26.04 LTS, 26.10 | `.deb` | Ubuntu's (32.1, 32.2) or the PPA |
+| Debian 13 | `.deb` | Debian's is 30.2, below the minimum: the `.deb` refuses to install until an OBS 31.1 or newer is there |
+| Linux Mint, Pop!_OS, other Ubuntu-based | `.deb` | as their Ubuntu base |
+| Fedora | `.rpm` | Fedora's |
+| openSUSE | `.rpm` | Packman's |
+| Arch, Manjaro, EndeavourOS | `.pkg.tar.zst` | the distro's |
+| Anything else (x86_64, glibc 2.39 or newer) | `.tar.xz` | yours, 31.1.0 or newer |
+
+The Flatpak OBS isn't supported: it runs plugins inside its own runtime and keeps them elsewhere.
+
+Install, with OBS closed:
+
+```bash
+sudo apt install ./obs-trigglow-dynamic-delay-0.7.1-x86_64-linux-gnu.deb   # Debian, Ubuntu
+sudo dnf install ./obs-trigglow-dynamic-delay-0.7.1-x86_64-linux-gnu.rpm   # Fedora, openSUSE (zypper install)
+sudo pacman -U obs-trigglow-dynamic-delay-0.7.1-x86_64-linux-gnu.pkg.tar.zst  # Arch
+```
+
+The packages put the plugin in OBS 33's system location,
+`<libdir>/obs-modules/plugins/obs-trigglow-dynamic-delay.so` with its data in
+`/usr/share/obs/obs-modules/plugins/obs-trigglow-dynamic-delay/`, and symlinks in the legacy
+`<libdir>/obs-plugins/` and `/usr/share/obs/obs-plugins/` that OBS 31 and 32 read (`<libdir>`:
+`/usr/lib/x86_64-linux-gnu`, `/usr/lib64` or `/usr/lib`). Remove it with your package manager
+(`sudo apt remove obs-trigglow-dynamic-delay`, `dnf remove`, `pacman -R`).
+
+**Per-user install (`.tar.xz`, no root):** extract it and run `./install.sh` as your own user. It
+copies the plugin to `~/.local/share/obs-studio/plugins/obs-trigglow-dynamic-delay/` (OBS 33 and
+later) and links it from `~/.config/obs-studio/plugins/obs-trigglow-dynamic-delay/bin/64bit/`
+(OBS 31 and 32); `./install.sh --uninstall` removes both. Use either a package or the `.tar.xz`,
+not both.
+
+Your settings and sign-in (`~/.config/obs-studio/plugin_config/obs-trigglow-dynamic-delay/`) are
+never touched by installing, updating or removing. Sign-in isn't available on Linux yet (see step
+6).
+
+## macOS
+
+Install the `.pkg` from the same release. It goes to `~/Library/Application Support/obs-studio/plugins/`, which OBS 33 keeps using.
+
+## Where the files go on Windows
+
+Since v0.7.1 the installer puts the plugin in OBS's plugin folder for all users,
+`C:\ProgramData\obs-studio\plugins\obs-trigglow-dynamic-delay\`, never in OBS's own folder:
+
+- `obs-trigglow-dynamic-delay.dll` and its FFmpeg DLLs, which OBS 33 and later load;
+- `bin\64bit\`, the same DLLs, for OBS 31 and 32 (OBS 33 skips them as a legacy duplicate);
+- `data\`, shared by both.
+
+Only administrators can change that folder, so no other user of the computer can add files next to
+the plugin. The `.zip` contains the same `obs-trigglow-dynamic-delay` folder: to install by hand,
+extract it into `C:\ProgramData\obs-studio\plugins\`.
+
 ## Updating from an earlier version
+
+**From v0.7.0 or earlier on Windows**, those versions installed into OBS's own folder
+(`C:\Program Files\obs-studio\obs-plugins\64bit\`), which OBS 33 marks as "Legacy" and OBS 34
+won't load. The v0.7.1 installer moves it: it deletes our known files there directly (our DLL, our
+data folder, and the FFmpeg DLLs only if they are byte for byte the ones the installer ships), the
+old uninstaller only after checking it is that install's, and the old uninstall entry. It never
+runs the old uninstaller, and it stops if a folder on the way is a junction or symbolic link. OBS's
+other files and your `plugin_config` (settings, sign-in) are left alone. If you had extracted the `.zip` into
+`C:\ProgramData\obs-studio\plugins\` before, the installer simply updates it there.
+
+**On Linux**, install the new package over the old one. The v0.7.0 `.deb` is replaced in place; if
+you had copied the plugin by hand into `~/.config/obs-studio/plugins/`, delete that copy and use a
+package or the `.tar.xz`'s `install.sh`.
+
 
 Install the new version over the old one, the same way (with OBS closed): your scenes, settings and
 hotkeys are kept. **From v0.5.x or earlier, updating is required**: the sign-in of those versions is

@@ -25,6 +25,17 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 find_package(libobs REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 
+# The oldest OBS Studio the plugin loads in, from buildspec.json's obsCompat
+# (cmake/common/bootstrap.cmake): obs_module_load() refuses older ones.
+target_compile_definitions(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+    TRIGGLOW_OBS_MIN_VERSION_STRING="${PLUGIN_OBS_MIN_VERSION}"
+    TRIGGLOW_OBS_MIN_VERSION_MAJOR=${PLUGIN_OBS_MIN_VERSION_MAJOR}
+    TRIGGLOW_OBS_MIN_VERSION_MINOR=${PLUGIN_OBS_MIN_VERSION_MINOR}
+    TRIGGLOW_OBS_MIN_VERSION_PATCH=${PLUGIN_OBS_MIN_VERSION_PATCH}
+)
+
 # FFmpeg (avcodec/avutil) -- v0.3.0 real-compression groundwork (see
 # docs/ROADMAP.md, docs/SPEC.md). Phase 0 only: link + a version-string smoke
 # test (src/plugin-main.cpp), no codec logic uses it yet. Windows + Linux
@@ -91,17 +102,52 @@ if(OS_WINDOWS)
   # never actually exercised at runtime until Phase 1, so this was missing
   # from day one without ever being caught. swresample-7.dll's own only
   # non-system dependency is avutil-61.dll (already shipped below).
-  install(
-    FILES
-      "${_ffmpeg_root}/bin/avcodec-63.dll"
-      "${_ffmpeg_root}/bin/avutil-61.dll"
-      "${_ffmpeg_root}/bin/swresample-7.dll"
-    DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit"
-  )
+  # v0.7.1: next to both copies of the plugin DLL (cmake/windows/helpers.cmake):
+  # <name>/ for OBS 33 and later, <name>/bin/64bit/ for OBS 31 and 32. libobs
+  # loads a module with LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, so each copy finds
+  # its imports only in its own folder.
+  foreach(_ffmpeg_destination IN ITEMS "${CMAKE_PROJECT_NAME}" "${CMAKE_PROJECT_NAME}/bin/64bit")
+    install(
+      FILES
+        "${_ffmpeg_root}/bin/avcodec-63.dll"
+        "${_ffmpeg_root}/bin/avutil-61.dll"
+        "${_ffmpeg_root}/bin/swresample-7.dll"
+      DESTINATION "${_ffmpeg_destination}"
+    )
+  endforeach()
 elseif(OS_LINUX)
-  find_package(PkgConfig REQUIRED)
-  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE PkgConfig::FFMPEG)
+  # v0.7.1: our own FFmpeg, an LGPL static build of avcodec and avutil with
+  # only the MJPEG encoder and decoder (.github/scripts/linux/build-ffmpeg.sh,
+  # pinned by buildspec.json's ffmpeg-source). Linked into the plugin, so the
+  # package depends on no distro FFmpeg (libavcodec60/61/62 depending on the
+  # release), and compiled with hidden visibility, so none of its symbols is
+  # exported to clash with the avcodec OBS itself loads. The version script
+  # exports only the obs_module_* entry points.
+  set(_ffmpeg_root "${CMAKE_CURRENT_SOURCE_DIR}/.deps/ffmpeg-linux-${CMAKE_SYSTEM_PROCESSOR}")
+  if(NOT EXISTS "${_ffmpeg_root}/lib/libavcodec.a" OR NOT EXISTS "${_ffmpeg_root}/lib/libavutil.a")
+    message(
+      FATAL_ERROR
+      "No static FFmpeg in ${_ffmpeg_root}: run .github/scripts/linux/build-ffmpeg.sh first "
+      "(it builds the version pinned in buildspec.json)."
+    )
+  endif()
+  target_include_directories(${CMAKE_PROJECT_NAME} BEFORE PRIVATE "${_ffmpeg_root}/include")
+  target_link_libraries(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE "${_ffmpeg_root}/lib/libavcodec.a" "${_ffmpeg_root}/lib/libavutil.a" m
+  )
+  target_link_options(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE
+      "LINKER:--exclude-libs,ALL"
+      "LINKER:-Bsymbolic"
+      "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux/plugin-exports.map"
+  )
+  set_property(
+    TARGET ${CMAKE_PROJECT_NAME}
+    APPEND
+    PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/linux/plugin-exports.map"
+  )
   target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_HAVE_FFMPEG)
   target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/mjpeg-codec.cpp src/mjpeg-codec.hpp)
 endif()

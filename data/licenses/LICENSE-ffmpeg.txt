@@ -1,5 +1,5 @@
-FFmpeg libraries shipped with Trigglow Dynamic Delay (Windows)
-==============================================================
+FFmpeg libraries shipped with Trigglow Dynamic Delay (Windows, Linux)
+=====================================================================
 
 The Windows package and installer of Trigglow Dynamic Delay ship three
 libraries of the FFmpeg project next to the plugin, unmodified:
@@ -35,8 +35,43 @@ The corresponding source code:
 FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.
 
 
-Components under permissive licenses
-------------------------------------
+Linux packages
+--------------
+
+The Linux packages (.deb, .rpm, .pkg.tar.zst and the per-user .tar.xz) ship
+no FFmpeg library files: libavcodec and libavutil are linked statically into
+obs-trigglow-dynamic-delay.so. They are built by the plugin's
+.github/scripts/linux/build-ffmpeg.sh from FFmpeg's own git repository, at the
+signed release tag and commit that buildspec.json pins ("ffmpeg-source"):
+
+  Source:   https://github.com/FFmpeg/FFmpeg/commit/946fcce07b6dcd0331c8cc609192aeff5e1924f8
+  Tag:      n9.0.2 (FFmpeg 9.0.2, release/9.0 branch)
+  Enabled:  libavcodec and libavutil only, with the MJPEG encoder and decoder,
+            no external libraries, and without --enable-gpl, --enable-version3
+            or --enable-nonfree
+
+That build is licensed under the GNU Lesser General Public License, version
+2.1 or later: libavcodec reports "LGPL version 2.1 or later", and the build
+stops if it reports anything else. The packages carry the text of that
+license (LICENSE-ffmpeg-LGPL-2.1.txt) and the exact configuration
+(ffmpeg-build-linux.txt) next to this file. The source of that FFmpeg, the
+tree of the pinned commit exactly as built (git archive), is published with
+every release of the plugin next to the Linux packages, as
+
+  obs-trigglow-dynamic-delay-<version>-ffmpeg-n9.0.2-source.tar.xz
+
+on https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases. The tag's
+signature is checked before the build (git verify-tag, key fingerprint
+DD1E C9E8 DE08 5C62 9B3E  1846 B18E 8928 B394 8D64). The plugin itself is free
+software under the GNU General Public License, version 2 or later, and its
+complete source code, including the scripts that build this FFmpeg and link
+it in, is published at
+https://github.com/VirosMs/obs-trigglow-dynamic-delay, so you can rebuild the
+plugin against a modified FFmpeg. No other library is linked into it.
+
+
+Components under permissive licenses (Windows build)
+----------------------------------------------------
 
 The build links into these libraries code under licenses of its own, all
 compatible with the LGPL. Among them, under the MIT License (text below):

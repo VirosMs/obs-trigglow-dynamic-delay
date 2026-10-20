@@ -23,10 +23,26 @@ function(set_target_properties_plugin target)
     PROPERTIES VERSION ${PLUGIN_VERSION} SOVERSION ${PLUGIN_VERSION_MAJOR} PREFIX ""
   )
 
+  # v0.7.1: OBS 33's system location, <libdir>/obs-modules/plugins/<name>.so,
+  # with the data in <datadir>/obs/obs-modules/plugins/<name>
+  # (target_install_resources). OBS 31 and 32 only know the legacy
+  # <libdir>/obs-plugins/<name>.so and <datadir>/obs/obs-plugins/<name>: those
+  # become relative symlinks to the same files, which OBS 33 skips as a legacy
+  # duplicate.
   install(
     TARGETS ${target}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-plugins
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/obs-modules/plugins
+  )
+  install(
+    CODE
+      "
+      set(_root \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}\")
+      file(MAKE_DIRECTORY \"\${_root}/${CMAKE_INSTALL_LIBDIR}/obs-plugins\" \"\${_root}/${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins\")
+      file(CREATE_LINK \"../obs-modules/plugins/${target}.so\" \"\${_root}/${CMAKE_INSTALL_LIBDIR}/obs-plugins/${target}.so\" SYMBOLIC)
+      file(CREATE_LINK \"../obs-modules/plugins/${target}\" \"\${_root}/${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${target}\" SYMBOLIC)
+      message(STATUS \"Legacy links (OBS 31 and 32): \${_root}/${CMAKE_INSTALL_LIBDIR}/obs-plugins/${target}.so, \${_root}/${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${target}\")
+      "
   )
 
   if(TARGET plugin-support)
@@ -70,7 +86,7 @@ function(target_install_resources target)
 
     install(
       DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/"
-      DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${target}
+      DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-modules/plugins/${target}
       USE_SOURCE_PERMISSIONS
     )
 
@@ -91,7 +107,7 @@ endfunction()
 function(target_add_resource target resource)
   message(DEBUG "Add resource '${resource}' to target ${target} at destination '${target_destination}'...")
 
-  install(FILES "${resource}" DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-plugins/${target})
+  install(FILES "${resource}" DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/obs/obs-modules/plugins/${target})
 
   add_custom_command(
     TARGET ${target}

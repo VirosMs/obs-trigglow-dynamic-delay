@@ -60,6 +60,19 @@ function(_setup_obs_studio)
     set(_cmake_generator "Xcode")
     set(_cmake_arch "-DCMAKE_OSX_ARCHITECTURES:STRING='arm64;x86_64'")
     set(_cmake_extra "-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+  elseif(OS_LINUX)
+    # Only libobs, libobs-opengl's checks and obs-frontend-api are configured
+    # (ENABLE_PLUGINS and ENABLE_FRONTEND off); UI, scripting, PulseAudio and
+    # Wayland off keep the build dependencies to what libobs itself needs.
+    set(_cmake_generator "Ninja")
+    set(_cmake_arch "-DCMAKE_BUILD_TYPE:STRING=Release")
+    set(
+      _cmake_extra
+      -DENABLE_UI:BOOL=OFF
+      -DENABLE_SCRIPTING:BOOL=OFF
+      -DENABLE_PULSEAUDIO:BOOL=OFF
+      -DENABLE_WAYLAND:BOOL=OFF
+    )
   endif()
 
   message(STATUS "Configure ${label} (${arch})")
@@ -120,15 +133,15 @@ endfunction()
 function(_check_dependencies)
   file(READ "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json" buildspec)
 
-  string(JSON dependency_data GET ${buildspec} dependencies)
+  string(JSON dependency_data GET "${buildspec}" dependencies)
 
   foreach(dependency IN LISTS dependencies_list)
-    string(JSON data GET ${dependency_data} ${dependency})
-    string(JSON version GET ${data} version)
-    string(JSON hash GET ${data} hashes ${platform})
-    string(JSON url GET ${data} baseUrl)
-    string(JSON label GET ${data} label)
-    string(JSON revision ERROR_VARIABLE error GET ${data} revision ${platform})
+    string(JSON data GET "${dependency_data}" ${dependency})
+    string(JSON version GET "${data}" version)
+    string(JSON hash GET "${data}" hashes ${platform})
+    string(JSON url GET "${data}" baseUrl)
+    string(JSON label GET "${data}" label)
+    string(JSON revision ERROR_VARIABLE error GET "${data}" revision ${platform})
 
     message(STATUS "Setting up ${label} (${arch})")
 
