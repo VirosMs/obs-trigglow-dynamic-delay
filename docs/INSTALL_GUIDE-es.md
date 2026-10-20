@@ -136,7 +136,7 @@ de tu gestor de paquetes.
 
 | Distribución | Paquete | OBS Studio |
 |---|---|---|
-| Ubuntu 24.04 LTS | `.deb` | del [PPA de OBS](https://launchpad.net/~obsproject/+archive/ubuntu/obs-studio): el de Ubuntu es la 30.0, demasiado antiguo |
+| Ubuntu 24.04 LTS | `.deb` | del PPA de OBS (`sudo add-apt-repository ppa:obsproject/obs-studio`): el de Ubuntu es la 30.0, demasiado antiguo |
 | Ubuntu 26.04 LTS, 26.10 | `.deb` | el de Ubuntu (32.1, 32.2) o el del PPA |
 | Debian 13 | `.deb` | el de Debian es la 30.2, por debajo del mínimo: el `.deb` no se instala hasta que haya un OBS 31.1 o posterior |
 | Linux Mint, Pop!_OS y otras basadas en Ubuntu | `.deb` | como su Ubuntu base |

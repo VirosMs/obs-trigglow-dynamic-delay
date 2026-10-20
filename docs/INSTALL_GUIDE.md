@@ -130,7 +130,7 @@ same formats as the Trigglow desktop app). Every package needs OBS Studio 31.1.0
 
 | Distro | Package | OBS Studio |
 |---|---|---|
-| Ubuntu 24.04 LTS | `.deb` | from the [OBS PPA](https://launchpad.net/~obsproject/+archive/ubuntu/obs-studio): Ubuntu's own is 30.0, too old |
+| Ubuntu 24.04 LTS | `.deb` | from the OBS PPA (`sudo add-apt-repository ppa:obsproject/obs-studio`): Ubuntu's own is 30.0, too old |
 | Ubuntu 26.04 LTS, 26.10 | `.deb` | Ubuntu's (32.1, 32.2) or the PPA |
 | Debian 13 | `.deb` | Debian's is 30.2, below the minimum: the `.deb` refuses to install until an OBS 31.1 or newer is there |
 | Linux Mint, Pop!_OS, other Ubuntu-based | `.deb` | as their Ubuntu base |
