@@ -289,17 +289,29 @@ jobs:
           path: ${{ github.workspace }}/.ccache
           key: ${{ runner.os }}-ccache-${{ needs.check-event.outputs.config }}
 
-  ubuntu-build:
-    name: Build for Ubuntu 🐧
-    strategy:
-      matrix:
-        os: [ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+  linux-build:
+    name: Build for Linux 🐧
+    runs-on: ubuntu-24.04
     needs: check-event
+    # Built in a clean ubuntu:24.04, the oldest distro supported (glibc 2.39,
+    # Qt 6.4), so the one .so runs on Ubuntu 24.04, 26.04 and 26.10, Debian 13,
+    # Fedora and Arch. Not the runner image itself: its extra toolchains and
+    # libraries could leak newer symbol versions into the plugin. Paths are
+    # relative: in a container job github.workspace is the host's path.
+    container: ubuntu:24.04
     defaults:
       run:
         shell: bash
+    outputs:
+      pluginName: ${{ steps.setup.outputs.pluginName }}
+      pluginVersion: ${{ steps.setup.outputs.pluginVersion }}
     steps:
+      - name: Install Git 🛍️
+        run: |
+          : Install Git 🛍️
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ca-certificates git
+
       - uses: actions/checkout@v4
         with:
           submodules: recursive
@@ -311,57 +323,130 @@ jobs:
           : Set Up Environment 🔧
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          .github/scripts/linux/install-build-deps.sh
+
           read -r product_name product_version <<< \
             "$(jq -r '. | {name, version} | join(" ")' buildspec.json)"
 
           echo "pluginName=${product_name}" >> $GITHUB_OUTPUT
           echo "pluginVersion=${product_version}" >> $GITHUB_OUTPUT
 
+      - uses: actions/cache@v4
+        id: ffmpeg-cache
+        with:
+          path: .deps/ffmpeg-linux-x86_64
+          key: linux-ffmpeg-x86_64-${{ hashFiles('buildspec.json', '.github/scripts/linux/build-ffmpeg.sh') }}
+
+      - name: Build FFmpeg (static, LGPL, MJPEG only) 🎞️
+        run: |
+          : Build FFmpeg 🎞️
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          # Builds the pinned, hash-checked source and fails on a GPL,
+          # version 3 or nonfree configuration (the licence guard). A cache
+          # hit is only reused when its stamp matches the pin and the script.
+          .github/scripts/linux/build-ffmpeg.sh
+
       - uses: actions/cache/restore@v4
         id: ccache-cache
         with:
-          path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}
+          path: .ccache
+          key: linux-ubuntu-24.04-ccache-x86_64-${{ needs.check-event.outputs.config }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-
+            linux-ubuntu-24.04-ccache-x86_64-
 
       - name: Build Plugin 🧱
-        uses: ./.github/actions/build-plugin
-        with:
-          target: x86_64
-          config: ${{ needs.check-event.outputs.config }}
+        run: |
+          : Build Plugin 🧱
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          export CCACHE_DIR="${GITHUB_WORKSPACE}/.ccache"
+          .github/scripts/linux/build.sh ${{ needs.check-event.outputs.config }}
 
       - name: Package Plugin 📀
-        uses: ./.github/actions/package-plugin
-        with:
-          target: x86_64
-          config: ${{ needs.check-event.outputs.config }}
-          package: ${{ fromJSON(needs.check-event.outputs.package) }}
+        run: |
+          : Package Plugin 📀
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+
+          # .deb, .rpm, .pkg.tar.zst and the per-user .tar.xz. Also stops on
+          # a shared FFmpeg, an exported FFmpeg symbol, an RPATH, or a glibc
+          # newer than Ubuntu 24.04's.
+          .github/scripts/linux/package.sh
 
       - name: Upload Source Tarball 🗜️
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-${{ matrix.os }}-sources-${{ needs.check-event.outputs.commitHash }}
-          path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-source.*
+          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-sources-${{ needs.check-event.outputs.commitHash }}
+          path: release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-source.*
 
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-${{ matrix.os }}-x86_64-${{ needs.check-event.outputs.commitHash }}
-          path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64*.*
+          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}
+          if-no-files-found: error
+          path: |
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu.deb
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu.rpm
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu.pkg.tar.zst
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu.tar.xz
 
-      - name: Upload debug symbol artifacts 🪲
+      - name: Upload Debug Symbol Artifacts 🪲
         uses: actions/upload-artifact@v4
-        if: ${{ fromJSON(needs.check-event.outputs.package) }}
         with:
-          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-${{ matrix.os }}-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
-          path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64*-dbgsym.ddeb
+          name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
+          path: release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu-dbgsym.tar.xz
 
       - uses: actions/cache/save@v4
         if: github.event_name != 'pull_request' && steps.ccache-cache.outputs.cache-hit != 'true'
         with:
-          path: ${{ github.workspace }}/.ccache
-          key: ${{ runner.os }}-${{ matrix.os }}-ccache-x86_64-${{ needs.check-event.outputs.config }}
+          path: .ccache
+          key: linux-ubuntu-24.04-ccache-x86_64-${{ needs.check-event.outputs.config }}
+
+  linux-verify:
+    name: Verify Linux Package 🐧 (${{ matrix.image }}, ${{ matrix.family }})
+    runs-on: ubuntu-24.04
+    needs: [check-event, linux-build]
+    # Installs each package in a clean container the way a user would (apt,
+    # dnf, pacman resolving the dependencies; the .tar.xz's install.sh as an
+    # ordinary user), then checks the installed .so: every library found
+    # (ldd), every symbol resolved (ldd -r), no FFmpeg symbol exported (nm -D)
+    # and the OBS 31/32 legacy paths linking to the OBS 33 ones. Debian 13's
+    # own OBS (30.2) is below the minimum: there the .deb must refuse to
+    # install, which is what that run checks (.github/scripts/linux/verify-package.sh).
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            family: deb
+          - image: ubuntu:26.04
+            family: deb
+          - image: ubuntu:26.04
+            family: user
+          - image: debian:13
+            family: deb
+          - image: fedora:latest
+            family: rpm
+          - image: archlinux:latest
+            family: pacman
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.linux-build.outputs.pluginName }}-${{ needs.linux-build.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}
+          path: packages
+
+      - name: Install and Check 🔍
+        run: |
+          : Install and Check 🔍
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          bash .github/scripts/linux/verify-package.sh ${{ matrix.family }} packages
 
   windows-build:
     name: Build for Windows 🪟

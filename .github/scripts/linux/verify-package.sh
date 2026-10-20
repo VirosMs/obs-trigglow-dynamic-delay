@@ -103,8 +103,13 @@ check_plugin() {
   [[ -f ${so} ]] || fail "plugin not installed at ${so}"
   echo "== ${so}"
   ldd "${so}"
-  if ldd "${so}" | grep -q 'not found'; then
-    fail "${so}: libraries not found on ${PRETTY_NAME}"
+  output=$(ldd "${so}" | grep 'not found' || true)
+  if [[ -n ${output} ]]; then
+    # Below the minimum OBS, only libobs itself may be missing or different.
+    if ((strict)) || grep -vq 'libobs' <<< "${output}"; then
+      fail "${so}: libraries not found on ${PRETTY_NAME}: ${output}"
+    fi
+    warn "not found with this distro's older OBS (expected below ${obs_min}): ${output}"
   fi
   if ldd "${so}" | grep -qE 'lib(avcodec|avutil|swresample|swscale)\.so'; then
     fail "${so} loads a shared FFmpeg: it must be linked statically"
