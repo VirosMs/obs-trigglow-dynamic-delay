@@ -74,6 +74,10 @@ echo "Exported: $(tr '\n' ' ' <<< "${exported}")"
 if grep -E '^(av|ff_|avpriv_|avcodec|swr_|sws_)' <<< "${exported}"; then
   fail 'the plugin exports FFmpeg symbols: they would clash with the avcodec OBS loads'
 fi
+imported=$(nm -D --undefined-only "${so}" | awk '{ print $NF }' | sort -u)
+if grep -E '^(av|ff_|avpriv_|avcodec|swr_|sws_)' <<< "${imported}"; then
+  fail 'the plugin imports FFmpeg symbols: they would bind to the shared avcodec OBS loads'
+fi
 others=$(grep -vE '^(obs_module_.*|obs_current_module|_init|_fini)$' <<< "${exported}" || true)
 [[ -z ${others} ]] || fail "unexpected exported symbols (cmake/linux/plugin-exports.map): ${others}"
 

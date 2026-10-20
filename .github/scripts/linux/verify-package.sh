@@ -11,9 +11,11 @@
 #   user    the .tar.xz's install.sh as an ordinary user, then --uninstall
 #
 # Then, for the installed .so: every library found (ldd), every symbol
-# resolved (ldd -r), no FFmpeg symbol exported (nm -D), no shared FFmpeg
-# linked, the legacy OBS 31/32 paths linking to the OBS 33 ones, and no
-# installed file writable by group or others (find -perm /022).
+# resolved (ldd -r), no shared FFmpeg among its direct dependencies (readelf
+# -d NEEDED; not ldd, whose transitive list holds libobs's own FFmpeg), no
+# FFmpeg symbol exported or imported (nm -D), the legacy OBS 31/32 paths
+# linking to the OBS 33 ones, and no installed file writable by group or
+# others (find -perm /022).
 #
 # A distro whose own OBS is below the minimum and has no PPA (Debian 13 ships
 # OBS 30.2) must refuse the .deb: that refusal is checked, then the package is
@@ -100,7 +102,7 @@ case ${family} in
 esac
 
 check_plugin() {
-  local so=$1 output
+  local so=$1 output needed
   [[ -f ${so} ]] || fail "plugin not installed at ${so}"
   echo "== ${so}"
   ldd "${so}"
@@ -112,9 +114,15 @@ check_plugin() {
     fi
     warn "not found with this distro's older OBS (expected below ${obs_min}): ${output}"
   fi
-  if ldd "${so}" | grep -qE 'lib(avcodec|avutil|swresample|swscale)\.so'; then
-    fail "${so} loads a shared FFmpeg: it must be linked statically"
-  fi
+  # Only the plugin's own (direct) dependencies: ldd lists the transitive
+  # ones too, and libobs itself links the distro's shared FFmpeg.
+  needed=$(readelf -d "${so}" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+  echo "NEEDED: $(tr '\n' ' ' <<< "${needed}")"
+  output=$(grep -E '^lib(av|sw|postproc)' <<< "${needed}" || true)
+  [[ -z ${output} ]] || fail "${so} links a shared FFmpeg (NEEDED ${output}): it must be linked statically"
+  # Nor may it import an FFmpeg symbol: it would bind to libobs's avcodec.
+  output=$(nm -D --undefined-only "${so}" | awk '{ print $NF }' | grep -E '^(av|ff_|avpriv_|swr_|sws_)' || true)
+  [[ -z ${output} ]] || fail "${so} imports FFmpeg symbols from a shared FFmpeg: ${output}"
   output=$(ldd -r "${so}" 2>&1 | grep 'undefined symbol' || true)
   if [[ -n ${output} ]]; then
     if ((strict)); then
