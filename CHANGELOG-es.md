@@ -58,7 +58,18 @@ en sí no cambia.
   - su casilla "Ejecutar OBS Studio" abre OBS desde la carpeta del propio OBS, ahora que el plugin
     ya no se instala ahí, y con tu usuario, no como administrador;
   - solo los administradores pueden escribir en la carpeta del plugin, así que ningún otro usuario
-    del equipo puede dejar una DLL junto al plugin;
+    del equipo puede dejar una DLL junto al plugin, y se vacía antes de copiar los archivos nuevos:
+    lo que alguien hubiera dejado ahí desaparece;
+  - si los usuarios sin permisos de administrador pueden escribir en la carpeta de plugins de OBS
+    (`C:\ProgramData\obs-studio\plugins`), se corrigen los permisos de esa carpeta solamente
+    (administradores y SYSTEM escriben, los usuarios leen), y el registro de la instalación lo
+    anota;
+  - se detiene con un mensaje claro si `C:\ProgramData\obs-studio`, su carpeta `plugins` o la del
+    plugin es una junction o un enlace simbólico, y comprueba lo mismo antes de borrar nada en la
+    carpeta del propio OBS;
+  - quita la copia de la v0.7.0 borrando nuestros archivos conocidos, nunca ejecutando el
+    desinstalador antiguo (en una carpeta de OBS en la que los usuarios pueden escribir, podría
+    haberse sustituido);
   - no toca nunca tus ajustes (`plugin_config`).
 
 **Detalle técnico:**

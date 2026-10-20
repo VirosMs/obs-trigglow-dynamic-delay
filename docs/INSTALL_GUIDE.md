@@ -187,11 +187,11 @@ extract it into `C:\ProgramData\obs-studio\plugins\`.
 
 **From v0.7.0 or earlier on Windows**, those versions installed into OBS's own folder
 (`C:\Program Files\obs-studio\obs-plugins\64bit\`), which OBS 33 marks as "Legacy" and OBS 34
-won't load. The v0.7.1 installer moves it: it runs the old version's own uninstaller silently (only
-after checking that its folder is an OBS folder with our files and that the uninstaller is that
-install's), then removes anything of ours still left there (our DLL, our data folder, and the
-FFmpeg DLLs only if they are the very ones the installer ships). OBS's other files and your
-`plugin_config` (settings, sign-in) are left alone. If you had extracted the `.zip` into
+won't load. The v0.7.1 installer moves it: it deletes our known files there directly (our DLL, our
+data folder, and the FFmpeg DLLs only if they are byte for byte the ones the installer ships), the
+old uninstaller only after checking it is that install's, and the old uninstall entry. It never
+runs the old uninstaller, and it stops if a folder on the way is a junction or symbolic link. OBS's
+other files and your `plugin_config` (settings, sign-in) are left alone. If you had extracted the `.zip` into
 `C:\ProgramData\obs-studio\plugins\` before, the installer simply updates it there.
 
 **On Linux**, install the new package over the old one. The v0.7.0 `.deb` is replaced in place; if

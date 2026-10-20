@@ -55,7 +55,16 @@ Linux, and a check of the minimum OBS version. The delay itself doesn't change.
   - its "Launch OBS Studio" box starts OBS from OBS's own folder, now that the plugin isn't
     installed there, and as your user, not as administrator;
   - the plugin folder is writable only by administrators, so no other user of the computer can
-    place a DLL next to the plugin;
+    place a DLL next to the plugin, and it is emptied before the new files are copied: whatever
+    someone put there before goes;
+  - if OBS's plugins folder (`C:\ProgramData\obs-studio\plugins`) can be written to by users
+    without admin rights, only that folder's permissions are corrected (administrators and SYSTEM
+    write, users read), and the setup log says so;
+  - it stops with a clear message if `C:\ProgramData\obs-studio`, its `plugins` folder or the
+    plugin's folder is a junction or symbolic link, and checks the same before deleting anything
+    in OBS's own folder;
+  - it removes the v0.7.0 copy by deleting our known files, never by running the old uninstaller
+    (in an OBS folder users can write to, it could have been replaced);
   - it never touches your settings (`plugin_config`).
 
 **Technical detail:**

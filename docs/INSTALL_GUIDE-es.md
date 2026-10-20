@@ -195,12 +195,12 @@ instalarlo a mano, descomprímelo en `C:\ProgramData\obs-studio\plugins\`.
 
 **Desde la v0.7.0 o anterior en Windows**, esas versiones se instalaban dentro de la carpeta del
 propio OBS (`C:\Program Files\obs-studio\obs-plugins\64bit\`), que OBS 33 marca como "Legacy" y
-OBS 34 no cargará. El instalador de la v0.7.1 la traslada: ejecuta en silencio el desinstalador de
-la versión anterior (solo después de comprobar que su carpeta es una carpeta de OBS con nuestros
-archivos y que el desinstalador es el de esa instalación) y luego borra lo nuestro que quede allí
-(nuestra DLL, nuestra carpeta de datos, y las DLL de FFmpeg solo si son exactamente las que trae el
-instalador). El resto de archivos de OBS y tu `plugin_config` (ajustes, inicio de sesión) no se
-tocan. Si antes habías descomprimido el `.zip` en `C:\ProgramData\obs-studio\plugins\`, el
+OBS 34 no cargará. El instalador de la v0.7.1 la traslada: borra directamente nuestros archivos
+conocidos de allí (nuestra DLL, nuestra carpeta de datos, y las DLL de FFmpeg solo si son idénticas
+byte a byte a las que trae el instalador), el desinstalador antiguo solo tras comprobar que es el de
+esa instalación, y la entrada de desinstalación antigua. Nunca ejecuta el desinstalador antiguo, y
+se detiene si alguna carpeta del camino es una junction o un enlace simbólico. El resto de archivos
+de OBS y tu `plugin_config` (ajustes, inicio de sesión) no se tocan. Si antes habías descomprimido el `.zip` en `C:\ProgramData\obs-studio\plugins\`, el
 instalador simplemente lo actualiza ahí.
 
 **En Linux**, instala el paquete nuevo encima del anterior. El `.deb` de la v0.7.0 se sustituye sin

@@ -19,19 +19,32 @@
 ; LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, so its imports are only looked for in the
 ; module's own folder.
 ;
-; Before installing (PrepareToInstall):
-; - an install of 0.7.0 or earlier inside OBS's folder (this installer's own
-;   uninstall entry, same AppId) is removed with its own uninstaller, once the
-;   entry's folder and uninstaller are checked to be ours;
-; - the plugin folder's permissions are reset: Administrators and SYSTEM
-;   write, Users only read and run. ProgramData lets any user create files
-;   in its subfolders, and a DLL another user drops next to ours would be
-;   loaded into OBS (DLL planting).
-; After installing, anything of ours still left in OBS's folder (a .zip
-; extracted there, an uninstall entry that was missing) is deleted: our DLL,
-; our data folder, and the FFmpeg DLLs only when our DLL was there too and
-; they are byte for byte the ones this installer ships. OBS's plugin_config
-; folder (your settings and sign-in) is never touched.
+; Before installing (PrepareToInstall), in this order:
+; - Setup stops if C:\ProgramData\obs-studio, its plugins folder or the
+;   plugin's own folder is a junction or a symbolic link (reparse point):
+;   files written or deleted there would land wherever it points.
+; - OBS's plugins folder (C:\ProgramData\obs-studio\plugins): if a user
+;   without admin rights owns it or may write in it (ProgramData's inherited
+;   "Users: create files" entry, or one for Everyone or Authenticated Users),
+;   its permissions are set (that folder only, no /T) so that only
+;   Administrators and SYSTEM write and Users read and run, and the setup log
+;   says so. OBS only reads that folder; its shader cache and updater files
+;   are in C:\ProgramData\obs-studio itself, which is left as it is.
+; - An install of 0.7.0 or earlier inside OBS's folder (this installer's own
+;   uninstall entry, same AppId), or a .zip extracted there: our known files
+;   are deleted directly, never by running the old uninstaller (in an OBS
+;   folder users may write to, it could have been replaced). Our DLL and data
+;   folder; the FFmpeg DLLs only next to our DLL and only when they are byte
+;   for byte the ones this installer ships; the old unins*.exe/.dat only once
+;   checked to be that entry's; then the old uninstall entry. Every folder on
+;   the way is checked for junctions and symbolic links first.
+; - The plugin folder is owned by Administrators, its permissions reset
+;   (Administrators and SYSTEM write, Users only read and run, nothing
+;   inherited) and then emptied completely: it is ours alone, and a DLL
+;   another user dropped there before (ProgramData lets any user create
+;   files in its subfolders) would be loaded into OBS (DLL planting).
+;   Junctions and links inside it are removed, never followed.
+; OBS's plugin_config folder (your settings and sign-in) is never touched.
 ;
 ; Build locally: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" trigglow-dynamic-delay-setup.iss
 ; (expects the cmake --install output under release\RelWithDebInfo\obs-trigglow-dynamic-delay\,
@@ -151,16 +164,22 @@ spanish.ObsStillRunning=OBS Studio sigue abierto. Ciérralo (Archivo > Salir) y 
 english.ObsStillRunning=OBS Studio is still open. Close it (File > Exit), then run this installer again.
 spanish.AclFailed=No se han podido fijar los permisos de "%1" (icacls, código %2). La instalación se ha detenido para que ningún otro usuario pueda dejar archivos junto al plugin.
 english.AclFailed=Could not set the permissions of "%1" (icacls, exit code %2). Setup stopped so that no other user can place files next to the plugin.
+spanish.ReparsePoint="%1" es un enlace (junction o enlace simbólico) y no una carpeta normal. La instalación se ha detenido: los archivos que escribiera o borrara ahí irían a otro sitio.%n%nSi no lo has creado tú, puede que otro usuario de este equipo intente redirigir la instalación. Borra el enlace (no lo que contiene) y vuelve a ejecutar este instalador.
+english.ReparsePoint="%1" is a link (a junction or symbolic link), not a normal folder. Setup stopped: files written or deleted there would end up somewhere else.%n%nIf you didn't create it, another user of this computer may be trying to redirect the installation. Delete the link (not what it points to), then run this installer again.
+spanish.PluginsAclFailed=No se han podido comprobar o corregir los permisos de la carpeta de plugins de OBS, "%1" (%2). La instalación se ha detenido para que ningún otro usuario pueda dejar plugins ahí.%n%nRevisa sus permisos (solo Administradores y SYSTEM deberían poder escribir en ella) y vuelve a ejecutar este instalador.
+english.PluginsAclFailed=Could not check or correct the permissions of OBS's plugins folder, "%1" (%2). Setup stopped so that no other user can place plugins there.%n%nCheck its permissions (only Administrators and SYSTEM should be able to write to it), then run this installer again.
+spanish.EmptyFailed=No se ha podido vaciar la carpeta del plugin, "%1". La instalación se ha detenido para que no quede junto al plugin ningún archivo que no sea suyo. Detalles en el registro de la instalación.
+english.EmptyFailed=Could not empty the plugin's folder, "%1". Setup stopped so that no file that isn't the plugin's stays next to it. Details are in the setup log.
 
 [Messages]
 spanish.FinishedLabel=Instalación completada. Abre OBS Studio: el panel "Trigglow Dynamic Delay" aparece en Ver > Paneles (Docks).
 english.FinishedLabel=Setup is complete. Open OBS Studio: the "Trigglow Dynamic Delay" dock is under View > Docks.
 
 [Dirs]
-; The folder's permissions are reset by LockDownPluginFolder() below, before
-; any file is copied: Inno's Permissions only add entries, and ProgramData's
-; inherited "Users: create files" entry has to go. This line states the same
-; rights for the record.
+; The folder's permissions are reset, and the folder emptied, by
+; LockDownPluginFolder() below, before any file is copied: Inno's Permissions
+; only add entries, and ProgramData's inherited "Users: create files" entry
+; has to go. This line states the same rights for the record.
 Name: "{app}"; Permissions: admins-full system-full users-readexec
 
 [Files]
@@ -195,6 +214,9 @@ Source: "{#PluginStageDir}\data\fonts\OFL-*.txt"; DestDir: "{app}\data\fonts"; F
 ; source).
 Source: "{#PluginStageDir}\data\licenses\LICENSE-lucide.txt"; DestDir: "{app}\data\licenses"; Flags: ignoreversion
 Source: "{#PluginStageDir}\data\licenses\LICENSE-ffmpeg.txt"; DestDir: "{app}\data\licenses"; Flags: ignoreversion
+; Only used while installing (SecurePluginsRoot), from Setup's own temporary
+; folder: never installed.
+Source: "check-folder-acl.ps1"; Flags: dontcopy
 
 [UninstallDelete]
 Type: dirifempty; Name: "{app}\data\locale"
@@ -220,6 +242,10 @@ const
   // OBS's single-instance mutex (frontend/utility/platform-windows.cpp); a
   // portable OBS uses a per-folder name and isn't detected.
   ObsMutex = 'OBSStudioCore';
+  // Administrators (S-1-5-32-544) and SYSTEM (S-1-5-18) full control, Users
+  // (S-1-5-32-545) read and run, for the folder, its subfolders and files.
+  // SIDs, not names: the names are translated on a Spanish Windows.
+  LockedDownGrants = '/grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX';
 
 var
   // OBS Studio's install folder, '' when not found.
@@ -346,63 +372,8 @@ begin
       Result := False;
 end;
 
-// The uninstall entry of an earlier version installed inside OBS's folder:
-// its folder (OBS's), its uninstaller and our files there are all checked
-// before anything runs.
-function FindOldInstallInObsFolder(var OldDir, Uninstaller: string): Boolean;
-var
-  DisplayName, Name: string;
-begin
-  Result := False;
-  if not RegQueryStringValue(HKLM, UninstallKey, 'Inno Setup: App Path', OldDir) or (OldDir = '') then
-    Exit;
-  OldDir := RemoveBackslashUnlessRoot(OldDir);
-  if SameDir(OldDir, ExpandConstant('{app}')) then
-    Exit; // Already the new location: a normal update.
-  if not RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', Uninstaller) then
-    Exit;
-  Uninstaller := RemoveQuotes(Uninstaller);
-  Name := LowerCase(ExtractFileName(Uninstaller));
-  if not (RegQueryStringValue(HKLM, UninstallKey, 'DisplayName', DisplayName) and
-    (DisplayName = '{#MyAppName}')) then
-    Log('Old uninstall entry has an unexpected display name: ' + DisplayName)
-  else if not FileExists(AddBackslash(OldDir) + 'bin\64bit\obs64.exe') then
-    Log('Old install folder is not an OBS Studio folder: ' + OldDir)
-  else if not (FileExists(AddBackslash(OldDir) + 'obs-plugins\64bit\' + PluginName + '.dll') or
-    DirExists(AddBackslash(OldDir) + 'data\obs-plugins\' + PluginName)) then
-    Log('No files of the plugin in the old install folder: ' + OldDir)
-  else if not SameDir(ExtractFileDir(Uninstaller), OldDir) or (Copy(Name, 1, 5) <> 'unins') or
-    (ExtractFileExt(Name) <> '.exe') or not FileExists(Uninstaller) or
-    not FileExists(ChangeFileExt(Uninstaller, '.dat')) then
-    Log('Old uninstaller is not the one of that install: ' + Uninstaller)
-  else
-    Result := True;
-end;
-
-procedure UninstallOldInstallInObsFolder();
-var
-  OldDir, Uninstaller: string;
-  Code, I: Integer;
-begin
-  if not FindOldInstallInObsFolder(OldDir, Uninstaller) then
-    Exit;
-  Log('Removing the earlier install in ' + OldDir + ' with ' + Uninstaller);
-  if not Exec(Uninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE,
-    ewWaitUntilTerminated, Code) then
-  begin
-    Log('Could not start the old uninstaller: ' + SysErrorMessage(Code));
-    Exit;
-  end;
-  // The uninstaller hands over to a copy of itself in %TEMP% and deletes the
-  // original last: wait for that (at most 30 s).
-  for I := 1 to 120 do
-  begin
-    if not FileExists(Uninstaller) then
-      Break;
-    Sleep(250);
-  end;
-  Log('Old uninstaller finished with code ' + IntToStr(Code));
-end;
+function SetFileAttributes(lpFileName: string; dwFileAttributes: Cardinal): Integer;
+  external 'SetFileAttributesW@kernel32.dll stdcall';
 
 function RunIcacls(const Params: string; var Code: Integer): Boolean;
 begin
@@ -411,36 +382,275 @@ begin
   Log('icacls ' + Params + ' -> ' + IntToStr(Code));
 end;
 
-// Administrators (S-1-5-32-544) and SYSTEM (S-1-5-18) full control, Users
-// (S-1-5-32-545) read and run, nothing inherited from ProgramData, owned by
-// Administrators. SIDs, not names: the names are translated on a Spanish
-// Windows.
-function LockDownPluginFolder(var Code: Integer): Boolean;
+// True when Path is a junction, a symbolic link or any other reparse point.
+// FindFirst on the path itself (no wildcard) reports that entry as it is,
+// without following it. False when Path doesn't exist.
+function IsReparsePoint(const Path: string): Boolean;
 var
-  Dir: string;
+  FindRec: TFindRec;
 begin
-  Dir := ExpandConstant('{app}');
-  Code := 0;
-  Result := ForceDirectories(Dir) and
-    RunIcacls('"' + Dir + '" /setowner *S-1-5-32-544 /T /C /Q', Code) and
-    RunIcacls('"' + Dir + '" /reset /T /C /Q', Code) and
-    RunIcacls('"' + Dir + '" /inheritance:r /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F ' +
-      '*S-1-5-32-545:(OI)(CI)RX /C /Q', Code);
+  Result := False;
+  if FindFirst(RemoveBackslashUnlessRoot(Path), FindRec) then
+  try
+    Result := (FindRec.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0;
+  finally
+    FindClose(FindRec);
+  end;
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+// The first of Base and each folder below it on the way to Base\Rel that is
+// a reparse point; '' when none is (or when the rest doesn't exist yet).
+function FirstReparsePoint(const Base, Rel: string): string;
+var
+  Path, Rest: string;
+  P: Integer;
+begin
+  Result := '';
+  Path := RemoveBackslashUnlessRoot(Base);
+  Rest := Rel;
+  while True do
+  begin
+    if IsReparsePoint(Path) then
+    begin
+      Result := Path;
+      Exit;
+    end;
+    if Rest = '' then
+      Exit;
+    P := Pos('\', Rest);
+    if P = 0 then
+    begin
+      Path := Path + '\' + Rest;
+      Rest := '';
+    end
+    else
+    begin
+      Path := Path + '\' + Copy(Rest, 1, P - 1);
+      Rest := Copy(Rest, P + 1, Length(Rest));
+    end;
+  end;
+end;
+
+// OBS's folder for all users (C:\ProgramData\obs-studio).
+function ObsDataDir(): string;
+begin
+  Result := ExpandConstant('{commonappdata}\obs-studio');
+end;
+
+// C:\ProgramData\obs-studio, its plugins folder or the plugin's folder when
+// one of them is a junction or link, else ''.
+function ReparsePointInPluginPath(): string;
+begin
+  Result := FirstReparsePoint(ObsDataDir(), 'plugins\' + PluginName);
+end;
+
+// Another user's file or folder may shut Administrators out with its own
+// permissions: make Administrators its owner and give them full control
+// (/L: a link itself, never its target), so that it can be deleted.
+procedure TakeOver(const Path: string);
 var
   Code: Integer;
 begin
-  Result := '';
-  if CheckForMutexes(ObsMutex) then
+  RunIcacls('"' + Path + '" /setowner *S-1-5-32-544 /L /C /Q', Code);
+  RunIcacls('"' + Path + '" /grant *S-1-5-32-544:F /L /C /Q', Code);
+end;
+
+function DeleteEntry(const Path: string; IsDir: Boolean): Boolean; forward;
+
+// Deletes everything inside Dir. Junctions and symbolic links are removed
+// themselves, never followed, so nothing outside Dir is touched.
+function DeleteTreeContents(const Dir: string): Boolean;
+var
+  FindRec: TFindRec;
+  Path: string;
+  IsDir, Done: Boolean;
+begin
+  Result := True;
+  if FindFirst(AddBackslash(Dir) + '*', FindRec) then
+  try
+    repeat
+      if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+      begin
+        Path := AddBackslash(Dir) + FindRec.Name;
+        IsDir := (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0;
+        if (FindRec.Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0 then
+        begin
+          Log('Removing the link ' + Path + ' itself, not what it points to');
+          if IsDir then
+            Done := RemoveDir(Path)
+          else
+            Done := DeleteFile(Path);
+        end
+        else
+        begin
+          if (FindRec.Attributes and FILE_ATTRIBUTE_READONLY) <> 0 then
+            SetFileAttributes(Path, FILE_ATTRIBUTE_NORMAL);
+          Done := DeleteEntry(Path, IsDir);
+          if not Done then
+          begin
+            TakeOver(Path);
+            SetFileAttributes(Path, FILE_ATTRIBUTE_NORMAL);
+            Done := DeleteEntry(Path, IsDir);
+          end;
+        end;
+        if Done then
+          Log('Deleted ' + Path)
+        else
+        begin
+          Log('Could not delete ' + Path);
+          Result := False;
+        end;
+      end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+function DeleteEntry(const Path: string; IsDir: Boolean): Boolean;
+begin
+  if IsDir then
+    Result := DeleteTreeContents(Path) and RemoveDir(Path)
+  else
+    Result := DeleteFile(Path);
+end;
+
+function IsDirEmpty(const Dir: string): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := True;
+  if FindFirst(AddBackslash(Dir) + '*', FindRec) then
+  try
+    repeat
+      if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        Result := False;
+    until not Result or not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+// check-folder-acl.ps1 on Dir: 'ok', 'fix: <why>' or 'error: <why>'.
+function CheckFolderAcl(const Dir: string): string;
+var
+  Script, OutFile: string;
+  Verdict: AnsiString;
+  Code: Integer;
+begin
+  Script := ExpandConstant('{tmp}\check-folder-acl.ps1');
+  OutFile := ExpandConstant('{tmp}\check-folder-acl.txt');
+  if not FileExists(Script) then
+    ExtractTemporaryFile('check-folder-acl.ps1');
+  DeleteFile(OutFile);
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + Script + '" -Path "' + Dir +
+    '" -Out "' + OutFile + '"', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Result := 'error: could not start PowerShell: ' + SysErrorMessage(Code)
+  else if not LoadStringFromFile(OutFile, Verdict) then
+    Result := 'error: PowerShell exited with code ' + IntToStr(Code) + ' without a result'
+  else
+    Result := Trim(String(Verdict));
+  Log('Permissions of ' + Dir + ': ' + Result);
+end;
+
+// OBS's plugins folder (C:\ProgramData\obs-studio\plugins). ProgramData lets
+// every user create files and folders in it, so whoever created it may not
+// be an administrator, and Users, Everyone or Authenticated Users may be
+// able to write to it: any of them could then put a DLL there that OBS loads
+// for every user. When that's the case, Administrators become its owner and
+// only they and SYSTEM may write to it, Users read and run (that folder's
+// own entries only, no /T; folders inside it that inherit get the same).
+// OBS only reads this folder: its shader cache and the updater's files are
+// in C:\ProgramData\obs-studio, which is left as it is. If anything else
+// still may write afterwards (an entry granted to one user on purpose),
+// Setup stops instead of guessing.
+function SecurePluginsRoot(var Error: string): Boolean;
+var
+  Root, Verdict: string;
+  Code: Integer;
+begin
+  Result := False;
+  Root := ObsDataDir() + '\plugins';
+  if not ForceDirectories(Root) then
   begin
-    Result := CustomMessage('ObsStillRunning');
+    Error := FmtMessage(CustomMessage('PluginsAclFailed'), [Root, 'could not create it']);
     Exit;
   end;
-  UninstallOldInstallInObsFolder();
-  if not LockDownPluginFolder(Code) then
-    Result := FmtMessage(CustomMessage('AclFailed'), [ExpandConstant('{app}'), IntToStr(Code)]);
+  if ReparsePointInPluginPath() <> '' then
+  begin
+    Error := FmtMessage(CustomMessage('ReparsePoint'), [ReparsePointInPluginPath()]);
+    Exit;
+  end;
+  Verdict := CheckFolderAcl(Root);
+  if Verdict = 'ok' then
+  begin
+    Result := True;
+    Exit;
+  end;
+  if Copy(Verdict, 1, 5) <> 'fix: ' then
+  begin
+    Error := FmtMessage(CustomMessage('PluginsAclFailed'), [Root, Verdict]);
+    Exit;
+  end;
+  Log('NOTE: users without admin rights could write to ' + Root + ' (' + Copy(Verdict, 6, Length(Verdict)) +
+    '). Setting its permissions, this folder only: owner Administrators, Administrators and SYSTEM ' +
+    'full control, Users read and run, nothing inherited from ProgramData.');
+  if not (RunIcacls('"' + Root + '" /setowner *S-1-5-32-544 /L /C /Q', Code) and
+    RunIcacls('"' + Root + '" /remove:g *S-1-1-0 *S-1-5-11 /L /C /Q', Code) and
+    RunIcacls('"' + Root + '" /inheritance:r ' + LockedDownGrants + ' /L /C /Q', Code)) then
+  begin
+    Error := FmtMessage(CustomMessage('PluginsAclFailed'), [Root, 'icacls exit code ' + IntToStr(Code)]);
+    Exit;
+  end;
+  Verdict := CheckFolderAcl(Root);
+  if Verdict <> 'ok' then
+  begin
+    Error := FmtMessage(CustomMessage('PluginsAclFailed'), [Root, Verdict]);
+    Exit;
+  end;
+  Log('NOTE: ' + Root + ' now only lets Administrators and SYSTEM write to it.');
+  Result := True;
+end;
+
+// The uninstall entry of 0.7.0 or earlier (same AppId) when it points into
+// an OBS Studio folder, not into the plugin folder used now.
+function FindOldUninstallEntry(var OldDir, Uninstaller: string): Boolean;
+var
+  DisplayName: string;
+begin
+  Result := False;
+  if not RegQueryStringValue(HKLM, UninstallKey, 'Inno Setup: App Path', OldDir) or (OldDir = '') then
+    Exit;
+  OldDir := RemoveBackslashUnlessRoot(OldDir);
+  if SameDir(OldDir, ExpandConstant('{app}')) then
+    Exit; // Already the new location: a normal update.
+  if not (RegQueryStringValue(HKLM, UninstallKey, 'DisplayName', DisplayName) and
+    (DisplayName = '{#MyAppName}')) then
+    Log('Old uninstall entry has an unexpected display name: ' + DisplayName)
+  else if not FileExists(AddBackslash(OldDir) + 'bin\64bit\obs64.exe') then
+    Log('Old install folder is not an OBS Studio folder: ' + OldDir)
+  else
+  begin
+    if not RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', Uninstaller) then
+      Uninstaller := '';
+    Uninstaller := RemoveQuotes(Uninstaller);
+    Result := True;
+  end;
+end;
+
+// unins000.exe .. unins999.exe directly in OldDir, with its .dat next to it:
+// the uninstaller Inno Setup made for that entry. It is deleted, never run.
+function IsOldUninstaller(const OldDir, Uninstaller: string): Boolean;
+var
+  Name: string;
+begin
+  Name := LowerCase(ExtractFileName(Uninstaller));
+  Result := (Uninstaller <> '') and SameDir(ExtractFileDir(Uninstaller), OldDir) and
+    (Length(Name) = 12) and (Copy(Name, 1, 5) = 'unins') and (Copy(Name, 9, 4) = '.exe') and
+    (StrToIntDef(Copy(Name, 6, 3), -1) >= 0) and FileExists(Uninstaller) and
+    FileExists(ChangeFileExt(Uninstaller, '.dat')) and not IsReparsePoint(Uninstaller) and
+    not IsReparsePoint(ChangeFileExt(Uninstaller, '.dat'));
 end;
 
 function SameFileContents(const A, B: string): Boolean;
@@ -453,50 +663,170 @@ begin
   end;
 end;
 
-// What a .zip extracted into OBS's folder, or an install whose uninstall entry
-// is gone, leaves there: our DLL and data folder, and the FFmpeg DLLs only
-// when our DLL was there too and they are the very files installed now.
-procedure RemoveLeftoversInObsFolder(const Dir: string);
+// Our files in an OBS Studio folder, as 0.7.0 and earlier installed them or
+// a .zip extracted there leaves them: obs-plugins\64bit\<name>.dll (and its
+// .pdb), data\obs-plugins\<name>\, and the FFmpeg DLLs next to our DLL only
+// when they are byte for byte the ones this installer ships (the same build
+// 0.7.0 shipped). Deleted directly, never by the old uninstaller; every
+// folder on the way below OBS's folder is checked for junctions and links
+// first (OBS's folder itself may be one: it is where the registry says OBS
+// is, and only an administrator can change that).
+function RemoveOursInObsFolder(const Dir: string; var Error: string): Boolean;
 var
-  PluginDir, Name: string;
+  PluginDir, DataDir, Name, Reparse: string;
   HadOurDll: Boolean;
   I: Integer;
 begin
+  Result := True;
   if (Dir = '') or not FileExists(AddBackslash(Dir) + 'bin\64bit\obs64.exe') then
     Exit;
+  Reparse := FirstReparsePoint(AddBackslash(Dir) + 'obs-plugins', '64bit');
+  if Reparse = '' then
+    Reparse := FirstReparsePoint(AddBackslash(Dir) + 'data', 'obs-plugins\' + PluginName);
+  if Reparse <> '' then
+  begin
+    Error := FmtMessage(CustomMessage('ReparsePoint'), [Reparse]);
+    Result := False;
+    Exit;
+  end;
+
   PluginDir := AddBackslash(Dir) + 'obs-plugins\64bit\';
   HadOurDll := FileExists(PluginDir + PluginName + '.dll');
   if HadOurDll then
   begin
     Log('Deleting ' + PluginDir + PluginName + '.dll');
-    DeleteFile(PluginDir + PluginName + '.dll');
-    DeleteFile(PluginDir + PluginName + '.pdb');
-  end;
-  if DirExists(AddBackslash(Dir) + 'data\obs-plugins\' + PluginName) then
-  begin
-    Log('Deleting ' + AddBackslash(Dir) + 'data\obs-plugins\' + PluginName);
-    DelTree(AddBackslash(Dir) + 'data\obs-plugins\' + PluginName, True, True, True);
-  end;
-  if not HadOurDll then
-    Exit;
-  for I := 0 to 2 do
-  begin
-    Name := FFmpegDll(I);
-    if FileExists(PluginDir + Name) then
+    if not DeleteFile(PluginDir + PluginName + '.dll') then
+      Log('Could not delete ' + PluginDir + PluginName + '.dll');
+    if FileExists(PluginDir + PluginName + '.pdb') then
+      DeleteFile(PluginDir + PluginName + '.pdb');
+    for I := 0 to 2 do
     begin
-      if SameFileContents(PluginDir + Name, ExpandConstant('{app}\') + Name) then
+      Name := FFmpegDll(I);
+      if FileExists(PluginDir + Name) then
       begin
-        Log('Deleting ' + PluginDir + Name);
-        DeleteFile(PluginDir + Name);
-      end
-      else
-        Log('Keeping ' + PluginDir + Name + ': not the file this installer ships');
+        if SameFileContents(PluginDir + Name, ExpandConstant('{tmp}\') + Name) then
+        begin
+          Log('Deleting ' + PluginDir + Name);
+          DeleteFile(PluginDir + Name);
+        end
+        else
+          Log('Keeping ' + PluginDir + Name + ': not the file this installer ships');
+      end;
     end;
+  end;
+
+  DataDir := AddBackslash(Dir) + 'data\obs-plugins\' + PluginName;
+  if DirExists(DataDir) then
+  begin
+    Log('Deleting ' + DataDir);
+    if not (DeleteTreeContents(DataDir) and RemoveDir(DataDir)) then
+      Log('Could not delete all of ' + DataDir);
   end;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+// 0.7.0 and earlier, in OBS's own folder: our files, the old uninstaller
+// (only once checked to be that entry's) and the old uninstall entry. The
+// old uninstaller is never run: in an OBS folder users may write to, it
+// could have been replaced.
+function RemoveOldInstall(var Error: string): Boolean;
+var
+  OldDir, Uninstaller: string;
+  I: Integer;
 begin
-  if CurStep = ssPostInstall then
-    RemoveLeftoversInObsFolder(ObsDir);
+  for I := 0 to 2 do
+    ExtractTemporaryFile(FFmpegDll(I));
+
+  Result := RemoveOursInObsFolder(ObsDir, Error);
+  if not Result then
+    Exit;
+  if not FindOldUninstallEntry(OldDir, Uninstaller) then
+    Exit;
+  Log('Earlier install found in ' + OldDir);
+  if not SameDir(OldDir, ObsDir) then
+  begin
+    Result := RemoveOursInObsFolder(OldDir, Error);
+    if not Result then
+      Exit;
+  end;
+  if IsOldUninstaller(OldDir, Uninstaller) then
+  begin
+    Log('Deleting the old uninstaller ' + Uninstaller + ' and its .dat (not running it)');
+    DeleteFile(Uninstaller);
+    DeleteFile(ChangeFileExt(Uninstaller, '.dat'));
+  end
+  else
+    Log('Keeping "' + Uninstaller + '": not the uninstaller of that install');
+  if RegDeleteKeyIncludingSubkeys(HKLM, UninstallKey) then
+    Log('Deleted the old uninstall entry HKLM\' + UninstallKey)
+  else
+    Log('Could not delete the old uninstall entry HKLM\' + UninstallKey);
+end;
+
+// The plugin's folder: owned by Administrators, its permissions reset to
+// Administrators and SYSTEM full control and Users read and run, nothing
+// inherited from ProgramData (/reset first drops any entry someone added),
+// and then emptied: it is ours alone, and whatever is in it now (an earlier
+// version's files, or a DLL another user dropped there) goes. Only that
+// folder's own permissions are set (no /T): everything in it is deleted,
+// links themselves rather than what they point to, and the files installed
+// next inherit the new permissions.
+function LockDownPluginFolder(var Error: string): Boolean;
+var
+  Dir, Reparse: string;
+  Code: Integer;
+begin
+  Result := False;
+  Dir := ExpandConstant('{app}');
+  Code := 0;
+  if not ForceDirectories(Dir) then
+  begin
+    Error := FmtMessage(CustomMessage('AclFailed'), [Dir, '-1']);
+    Exit;
+  end;
+  Reparse := ReparsePointInPluginPath();
+  if Reparse <> '' then
+  begin
+    Error := FmtMessage(CustomMessage('ReparsePoint'), [Reparse]);
+    Exit;
+  end;
+  if not (RunIcacls('"' + Dir + '" /setowner *S-1-5-32-544 /L /C /Q', Code) and
+    RunIcacls('"' + Dir + '" /reset /L /C /Q', Code) and
+    RunIcacls('"' + Dir + '" /inheritance:r ' + LockedDownGrants + ' /L /C /Q', Code)) then
+  begin
+    Error := FmtMessage(CustomMessage('AclFailed'), [Dir, IntToStr(Code)]);
+    Exit;
+  end;
+  Log('Emptying ' + Dir);
+  if not DeleteTreeContents(Dir) or not IsDirEmpty(Dir) then
+  begin
+    Error := FmtMessage(CustomMessage('EmptyFailed'), [Dir]);
+    Exit;
+  end;
+  Result := True;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Error, Reparse: string;
+begin
+  Result := '';
+  Error := '';
+  if CheckForMutexes(ObsMutex) then
+  begin
+    Result := CustomMessage('ObsStillRunning');
+    Exit;
+  end;
+  Reparse := ReparsePointInPluginPath();
+  if Reparse <> '' then
+  begin
+    Result := FmtMessage(CustomMessage('ReparsePoint'), [Reparse]);
+    Exit;
+  end;
+  // One after the other: each step only runs when the one before succeeded.
+  if not SecurePluginsRoot(Error) then
+    Result := Error
+  else if not RemoveOldInstall(Error) then
+    Result := Error
+  else if not LockDownPluginFolder(Error) then
+    Result := Error;
 end;
