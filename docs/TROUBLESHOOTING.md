@@ -149,7 +149,7 @@ The log line above (`loading ... from <path>`) tells you which copy OBS actually
   sign-ins they already have stop working after a transition period, so those versions can't use
   the delay any more.
 - Download the latest version (**Get the update** in the dialog, the dock's update notice or the
-  [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) and
+  [latest release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest)) and
   install it with OBS closed. Your settings are kept, and a v0.5.x sign-in moves over by itself; if
   the dock asks you to sign in, do it once.
 

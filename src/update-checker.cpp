@@ -33,7 +33,7 @@ namespace trigglow {
 namespace {
 constexpr const char *kComponent = "update-checker";
 constexpr const char *kGithubApiHost = "api.github.com";
-constexpr const char *kGithubReleasesPath = "/repos/VirosMs/obs-trigglow-dynamic-delay/releases/latest";
+constexpr const char *kGithubReleasesPath = "/repos/TrigglowStudios/trigglow-dynamic-delay/releases/latest";
 
 // Parses "X.Y.Z" (leading 'v' already stripped by the caller) into up to 3
 // numeric components; a missing or non-numeric component reads as 0 --

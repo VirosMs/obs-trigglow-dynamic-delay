@@ -161,7 +161,7 @@ La línea del log de arriba (`loading ... from <ruta>`) te dice qué copia ha ca
   funcionar tras un periodo de transición, así que esas versiones ya no pueden usar el delay.
 - Descarga la última versión (**Descargar la actualización** en el diálogo, el aviso de
   actualización del dock o la
-  [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) e
+  [última release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest)) e
   instálala con OBS cerrado. Tus ajustes se conservan, y el inicio de sesión de la v0.5.x pasa solo;
   si el dock te pide iniciar sesión, hazlo una vez.
 

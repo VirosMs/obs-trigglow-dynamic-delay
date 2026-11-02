@@ -207,7 +207,7 @@ sudo .github/scripts/linux/install-build-deps.sh   # Ubuntu 24.04 packages
 ## Installing the plugin
 
 **Windows: use the installer.** Download `obs-trigglow-dynamic-delay-0.7.2-windows-x64-setup.exe`
-from the [latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)
+from the [latest release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest)
 and run it — it installs into OBS's plugin folder for all users and moves an install of v0.7.0 or
 earlier out of OBS's own folder. It isn't code-
 signed yet (Early Access), so Windows SmartScreen will warn you before letting it run. **Full guide

@@ -27,7 +27,7 @@ qué en el log de OBS. Linux y macOS están más abajo.
 ## 1. Descarga
 
 Consigue `obs-trigglow-dynamic-delay-0.7.1-windows-x64-setup.exe` desde la
-[última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). ¿Prefieres
+[última release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest). ¿Prefieres
 instalarlo a mano? El `.zip` de esa misma release solo trae los archivos del plugin — ver
 "Instalar el plugin" en `README-es.md`.
 

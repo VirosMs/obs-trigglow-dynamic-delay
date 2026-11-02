@@ -47,9 +47,9 @@ struct UpdateCheckResult {
 };
 
 // This repo's release pages, the only URLs the update notice ever opens.
-inline constexpr const char *kOwnReleasePagePrefix = "https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/";
+inline constexpr const char *kOwnReleasePagePrefix = "https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/";
 inline constexpr const char *kOwnLatestReleasePage =
-	"https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest";
+	"https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest";
 
 // True only for kOwnReleasePagePrefix followed by a plain path ([A-Za-z0-9._-]
 // segments separated by single '/', no ".."): html_url comes from the

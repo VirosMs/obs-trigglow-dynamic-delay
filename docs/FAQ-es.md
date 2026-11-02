@@ -238,7 +238,7 @@ plugin para usar Trigi" en "Reportar un problema" o "Actualización necesaria" e
 de sesión de trigglow.com significan lo mismo: tu versión es demasiado antigua para lo que intentas
 hacer. Descarga la última versión (**Descargar la actualización** en el diálogo, el aviso de
 actualización del dock o la
-[última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) e
+[última release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest)) e
 instálala con OBS cerrado; tus ajustes y tu inicio de sesión se conservan. Mientras tanto puedes
 seguir enviando un reporte desde el formulario del diálogo o desde
 [trigglow.com/support](https://www.trigglow.com/support).

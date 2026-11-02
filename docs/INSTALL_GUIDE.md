@@ -25,7 +25,7 @@ are covered below.
 ## 1. Download
 
 Get `obs-trigglow-dynamic-delay-0.7.1-windows-x64-setup.exe` from the
-[latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest). Prefer to
+[latest release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest). Prefer to
 install by hand instead? The `.zip` in the same release contains just the plugin files — see
 "Installing the plugin" in `README.md`.
 
