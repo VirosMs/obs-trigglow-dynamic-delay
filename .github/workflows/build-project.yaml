@@ -301,7 +301,7 @@ jobs:
           codesignPass: ${{ secrets.MACOS_NOTARIZATION_PASSWORD }}
 
       - name: Upload Artifacts 📡
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal.*
@@ -316,7 +316,7 @@ jobs:
             release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal.(pkg|tar.xz)
 
       - name: Upload Debug Symbol Artifacts 🪲
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ needs.check-event.outputs.config == 'Release' }}
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal-${{ needs.check-event.outputs.commitHash }}-dSYMs
@@ -417,7 +417,7 @@ jobs:
           .github/scripts/linux/package.sh
 
       - name: Upload Source Tarball 🗜️
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-sources-${{ needs.check-event.outputs.commitHash }}
           # The plugin's source and, for the LGPL, the exact source of the
@@ -429,7 +429,7 @@ jobs:
             release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-ffmpeg-*-source.tar.xz
 
       - name: Upload Artifacts 📡
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}
           if-no-files-found: error
@@ -440,7 +440,7 @@ jobs:
             release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu.tar.xz
 
       - name: Upload Debug Symbol Artifacts 🪲
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-linux-x86_64-${{ needs.check-event.outputs.commitHash }}-dbgsym
           path: release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-x86_64-linux-gnu-dbgsym.tar.xz
@@ -719,7 +719,7 @@ jobs:
           Compress-Archive -Path "${stage}/*" -DestinationPath "release/${plugin}-${{ steps.setup.outputs.pluginVersion }}-windows-x64-studio-core.zip"
 
       - name: Upload Artifacts 📡
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*.*
