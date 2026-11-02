@@ -5,6 +5,9 @@ on:
       pluginName:
         description: Project name detected by parsing build spec file
         value: ${{ jobs.check-event.outputs.pluginName }}
+      releaseTag:
+        description: Release the build jobs attach their files to (empty when not a release tag)
+        value: ${{ jobs.check-event.outputs.releaseTag }}
 jobs:
   check-event:
     name: Check GitHub Event Data 🔎
@@ -19,6 +22,7 @@ jobs:
       config: ${{ steps.setup.outputs.config }}
       commitHash: ${{ steps.setup.outputs.commitHash }}
       pluginName: ${{ steps.setup.outputs.pluginName }}
+      releaseTag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -70,6 +74,32 @@ jobs:
           else
             echo "pluginName=${plugin_name}" >> $GITHUB_OUTPUT
           fi
+
+      - name: Create Release 🛫
+        id: release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLUGIN_NAME: ${{ steps.setup.outputs.pluginName }}
+        run: |
+          : Create Release 🛫
+          # Published before any build starts: each platform job attaches its
+          # own files the moment it finishes, so a finished platform never
+          # waits for the slowest one. push.yaml adds the checksums at the end.
+          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+          shopt -s extglob
+
+          case "${GITHUB_REF_NAME}" in
+            +([0-9]).+([0-9]).+([0-9]) ) prerelease=() ;;
+            +([0-9]).+([0-9]).+([0-9])-@(beta|rc)*([0-9]) ) prerelease=(--prerelease) ;;
+            *) exit 0 ;;
+          esac
+
+          gh release view "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" > /dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" -R "${GITHUB_REPOSITORY}" --verify-tag "${prerelease[@]}" \
+              --title "${PLUGIN_NAME} ${GITHUB_REF_NAME}" \
+              --notes 'Builds are attached as each platform finishes.'
+          echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
 
   unit-tests:
     name: Unit Tests 🧪 (${{ matrix.os }})
@@ -276,6 +306,15 @@ jobs:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal.*
 
+      - name: Attach to Release 🛫
+        if: needs.check-event.outputs.releaseTag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : Attach to Release 🛫
+          gh release upload '${{ needs.check-event.outputs.releaseTag }}' -R '${{ github.repository }}' --clobber \
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-macos-universal.(pkg|tar.xz)
+
       - name: Upload Debug Symbol Artifacts 🪲
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ needs.check-event.outputs.config == 'Release' }}
@@ -465,6 +504,31 @@ jobs:
           : Install and Check 🔍
           if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
           bash .github/scripts/linux/verify-package.sh ${{ matrix.family }} packages
+
+  linux-release:
+    name: Attach Linux Packages to Release 🛫
+    # After the package checks, so a release never carries a Linux package
+    # that failed to install. The build container has no gh, hence its own job.
+    if: needs.check-event.outputs.releaseTag != ''
+    runs-on: ubuntu-24.04
+    needs: [check-event, linux-build, linux-verify]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          # The packages and the sources, not the -dbgsym artifact.
+          pattern: ${{ needs.linux-build.outputs.pluginName }}-${{ needs.linux-build.outputs.pluginVersion }}-linux-*-${{ needs.check-event.outputs.commitHash }}
+          merge-multiple: true
+          path: assets
+
+      - name: Attach to Release 🛫
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : Attach to Release 🛫
+          gh release upload '${{ needs.check-event.outputs.releaseTag }}' -R '${{ github.repository }}' --clobber assets/*
 
   windows-build:
     name: Build for Windows 🪟
@@ -659,3 +723,16 @@ jobs:
         with:
           name: ${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64-${{ needs.check-event.outputs.commitHash }}
           path: ${{ github.workspace }}/release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*.*
+
+      - name: Attach to Release 🛫
+        if: needs.check-event.outputs.releaseTag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Attach to Release 🛫
+          $files = @(Get-ChildItem -Path release -File |
+            Where-Object Name -match '-windows-x64.*\.(zip|exe)$' |
+            ForEach-Object FullName)
+          if ( $files.Count -eq 0 ) { throw 'No Windows zip/exe under release\ to attach.' }
+          gh release upload '${{ needs.check-event.outputs.releaseTag }}' -R '${{ github.repository }}' --clobber @files
+          if ( $LASTEXITCODE -ne 0 ) { throw "gh release upload failed with exit code $LASTEXITCODE" }
