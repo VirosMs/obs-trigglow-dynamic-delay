@@ -68,7 +68,8 @@ inline constexpr const char *kPublicSupport = "https://www.trigglow.com/support"
 inline constexpr const char *kPrivacy = "https://www.trigglow.com/legal/privacy";
 inline constexpr const char *kProduct = "https://www.trigglow.com/dynamic-delay";
 inline constexpr const char *kRepo = "https://github.com/TrigglowStudios/trigglow-dynamic-delay/";
-inline constexpr const char *kLatestRelease = "https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest";
+inline constexpr const char *kLatestRelease =
+	"https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest";
 } // namespace web
 
 // The sign-in confirmation page prefix that /auth/plugin/start's

@@ -47,7 +47,8 @@ struct UpdateCheckResult {
 };
 
 // This repo's release pages, the only URLs the update notice ever opens.
-inline constexpr const char *kOwnReleasePagePrefix = "https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/";
+inline constexpr const char *kOwnReleasePagePrefix =
+	"https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/";
 inline constexpr const char *kOwnLatestReleasePage =
 	"https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest";
 
