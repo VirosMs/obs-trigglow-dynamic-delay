@@ -638,10 +638,44 @@ VideoDelayFilter::~VideoDelayFilter()
 	obs_leave_graphics();
 }
 
+#ifdef TRIGGLOW_CORE_ONLY
+namespace {
+// The core build's video info, from the host (the delay controller source's
+// host_* settings, core-host.cpp: SetHostVideoInfo()). Hosts on
+// another libobs build can't use obs_get_video_info(): Streamlabs' libobs (Trigglow
+// Studio's engine) has a different struct obs_video_info (an `initialized` flag,
+// `fps_type`), so filling ours from it corrupts the stack -- the graphics thread
+// crashed in video_tick (seen 2026-11-02). The OBS build keeps asking libobs.
+std::mutex hostVideoMutex;
+obs_video_info hostVideo = {};
+} // namespace
+#endif
+
+bool VideoDelayFilter::GetVideoInfo(obs_video_info *ovi)
+{
+#ifdef TRIGGLOW_CORE_ONLY
+	std::lock_guard<std::mutex> lock(hostVideoMutex);
+	if (hostVideo.fps_num == 0 || hostVideo.fps_den == 0)
+		return false;
+	*ovi = hostVideo;
+	return true;
+#else
+	return obs_get_video_info(ovi);
+#endif
+}
+
+#ifdef TRIGGLOW_CORE_ONLY
+void VideoDelayFilter::SetHostVideoInfo(const obs_video_info &ovi)
+{
+	std::lock_guard<std::mutex> lock(hostVideoMutex);
+	hostVideo = ovi;
+}
+#endif
+
 bool VideoDelayFilter::RefreshVideoInfo()
 {
 	obs_video_info ovi = {};
-	if (!obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+	if (!GetVideoInfo(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
 		return false;
 	fpsNum_ = ovi.fps_num;
 	fpsDen_ = ovi.fps_den;
@@ -1154,6 +1188,13 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	lastFitInput_ = in;
 	lastFit_ = fit;
 	effectiveDelaySeconds_ = fit.effectiveDelaySeconds;
+	// Also in the filter's own settings, for hosts that read settings but can't
+	// call proc handlers (Trigglow Studio through obs-studio-node): the same value
+	// get_effective_delay_seconds returns.
+	if (obs_data_t *published = obs_source_get_settings(filterSource_)) {
+		obs_data_set_int(published, "effective_delay_seconds", fit.effectiveDelaySeconds);
+		obs_data_release(published);
+	}
 	ringFrameIntervalNs_ = frameIntervalNs_;
 
 	const FrameArena::Config arena = ArenaConfigFor(fit.actualFrames, fit.bufferWidth, fit.bufferHeight,
@@ -2387,10 +2428,19 @@ uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
 	obs_source_t *target = obs_filter_get_target(filterSource_);
 	if (!target)
 		return 0;
-	const uint32_t sourceWidth = obs_source_get_base_width(target);
-	const uint32_t sourceHeight = obs_source_get_base_height(target);
+	uint32_t sourceWidth = obs_source_get_base_width(target);
+	uint32_t sourceHeight = obs_source_get_base_height(target);
 	obs_video_info ovi = {};
-	if (sourceWidth == 0 || sourceHeight == 0 || !obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+	if (!GetVideoInfo(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+		return 0;
+#ifdef TRIGGLOW_CORE_ONLY
+	// Streamlabs' libobs gives a scene no size until it's first drawn; the host's scene is the canvas.
+	if (sourceWidth == 0 || sourceHeight == 0) {
+		sourceWidth = ovi.base_width;
+		sourceHeight = ovi.base_height;
+	}
+#endif
+	if (sourceWidth == 0 || sourceHeight == 0)
 		return 0;
 	obs_data_t *settings = obs_source_get_settings(filterSource_);
 	if (!settings)
@@ -2465,7 +2515,7 @@ void VideoDelayFilter::SetEncoderCeilingProc(void *data, calldata_t *params)
 	long long height = calldata_int(params, "height");
 	obs_video_info ovi = {};
 	// Never above the canvas, never odd: anything else is no ceiling.
-	if (!obs_get_video_info(&ovi) || width <= 0 || height <= 0 || width > static_cast<long long>(ovi.base_width) ||
+	if (!GetVideoInfo(&ovi) || width <= 0 || height <= 0 || width > static_cast<long long>(ovi.base_width) ||
 	    height > static_cast<long long>(ovi.base_height) || width % 8 != 0 || height % 2 != 0) {
 		width = 0;
 		height = 0;

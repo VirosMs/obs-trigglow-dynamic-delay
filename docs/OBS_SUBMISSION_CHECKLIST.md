@@ -55,7 +55,7 @@ relevant additions from these releases.
   **Who:** whoever is doing the submission, right before submitting.
 
 - **CA-issued signing is still deferred** (see `docs/ROADMAP.md` and
-  [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10)) — a SignPath Foundation
+  [#10](https://github.com/TrigglowStudios/trigglow-dynamic-delay/issues/10)) — a SignPath Foundation
   application is in progress. As of v0.3.3 the installer is signed with a *self-signed* certificate
   as a stopgap (proves the file wasn't tampered with post-build), but this does **not** remove the
   SmartScreen "Unknown publisher" warning documented in `docs/INSTALL_GUIDE.md`, and does **not**

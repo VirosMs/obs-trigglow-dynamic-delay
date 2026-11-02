@@ -2,6 +2,32 @@
 
 # Changelog — Trigglow Dynamic Delay for OBS
 
+## v0.7.2 — 2026-11-02 (Early Access)
+
+A build release: the delay doesn't change in OBS, and the update notice works again now that the
+repository has moved. The release also ships the plugin's core for Trigglow Studio, the Trigglow
+desktop app's own broadcasting editor, so Studio runs the same delay as OBS (the same controller
+and filters, with Studio's own panel).
+
+**Before you update:** nothing to do. Install it like v0.7.1; your scenes, settings, hotkeys and
+sign-in are kept.
+
+**What's new:**
+- **`…-windows-x64-studio-core.zip`**: the delay filters and the controller built without Qt or
+  obs-frontend-api (`-DTRIGGLOW_CORE_ONLY=ON`), laid out like Trigglow Studio's engine. Trigglow
+  Studio downloads it by itself; it isn't for OBS.
+- **The Windows installer shows the new Dynamic Delay logo**, with its name, on the Welcome and
+  Finished pages, in place of the old stopwatch with a play button.
+
+**What it fixes:**
+- **The update notice works again.** The plugin's repository moved to
+  [TrigglowStudios/trigglow-dynamic-delay](https://github.com/TrigglowStudios/trigglow-dynamic-delay):
+  the update check and the GitHub pages the plugin opens now use the new address. v0.7.1 and older
+  check the old address, which GitHub only answers with a redirect that the plugin never follows,
+  so they won't tell you a new version is out: update them by hand from the
+  [latest release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest) or
+  trigglow.com/dynamic-delay.
+
 ## v0.7.1 — 2026-10-20 (Early Access)
 
 A fix release for installing and loading the plugin: Linux packages that install and load on the

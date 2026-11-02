@@ -226,7 +226,7 @@ planned next.
 use Trigi" in "Report a problem" or "Update required" on the trigglow.com sign-in page all mean the
 same: your version is too old for what you're trying to do. Download the latest version (**Get the
 update** in the dialog, the update notice in the dock, or the
-[latest release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest)) and install
+[latest release](https://github.com/TrigglowStudios/trigglow-dynamic-delay/releases/latest)) and install
 it with OBS closed; your settings and your sign-in are kept. Meanwhile you can still send a report
 from the form in the dialog or from [trigglow.com/support](https://www.trigglow.com/support).
 

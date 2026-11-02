@@ -6,6 +6,15 @@ project(${_name} VERSION ${_version})
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
+# Core build: the delay filters and the same controller on a libobs-only backend,
+# no Qt and no obs-frontend-api, for hosts with their own UI (Trigglow Studio),
+# which drive it through a controller source (src/core-host.hpp).
+option(TRIGGLOW_CORE_ONLY "Build only the libobs core (the delay filters) for other hosts" OFF)
+if(TRIGGLOW_CORE_ONLY)
+  set(ENABLE_FRONTEND_API OFF CACHE BOOL "" FORCE)
+  set(ENABLE_QT OFF CACHE BOOL "" FORCE)
+  set(_name "${_name}-core")
+endif()
 option(TRIGGLOW_BUILD_TESTS "Build the standalone unit tests (no libobs needed, run with ctest)" OFF)
 
 # Local test builds only: the plugin reads its API host from the TRIGGLOW_API_HOST
@@ -196,107 +205,159 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(
-  ${CMAKE_PROJECT_NAME}
-  PRIVATE
-    src/plugin-main.cpp
-    src/delay-controller.cpp
-    src/delay-controller.hpp
-    src/obs-frontend-bridge.cpp
-    src/obs-frontend-bridge.hpp
-    src/settings-ui.cpp
-    src/settings-ui.hpp
-    src/hotkeys.cpp
-    src/hotkeys.hpp
-    src/logging.cpp
-    src/logging.hpp
-    src/video-delay-filter.cpp
-    src/video-delay-filter.hpp
-    src/buffer-fit.cpp
-    src/buffer-fit.hpp
-    src/codec-pipeline.cpp
-    src/codec-pipeline.hpp
-    src/degradation-policy.cpp
-    src/degradation-policy.hpp
-    src/frame-arena.cpp
-    src/frame-arena.hpp
-    src/frame-ring.cpp
-    src/frame-ring.hpp
-    src/storage-codec.hpp
-    src/storage-codec-select.cpp
-    src/storage-codec-select.hpp
-    src/annexb.cpp
-    src/annexb.hpp
-    src/storage-codec-policy.cpp
-    src/storage-codec-policy.hpp
-    src/perf-stats.cpp
-    src/perf-stats.hpp
-    src/pipeline-health.hpp
-    src/encoder-check.cpp
-    src/encoder-check.hpp
-    src/audio-delay-filter.cpp
-    src/audio-delay-filter.hpp
-    src/hardware-info.cpp
-    src/hardware-info.hpp
-    src/scene-combo-box.cpp
-    src/scene-combo-box.hpp
-    src/buffer-mode-controller.cpp
-    src/buffer-mode-controller.hpp
-    src/auth-manager.cpp
-    src/auth-manager.hpp
-    src/cancel-token.cpp
-    src/cancel-token.hpp
-    src/background-tasks.cpp
-    src/background-tasks.hpp
-    src/ui-tasks.cpp
-    src/ui-tasks.hpp
-    src/win-http.cpp
-    src/win-http.hpp
-    src/json.cpp
-    src/json.hpp
-    src/log-redact.cpp
-    src/log-redact.hpp
-    src/chat-text.cpp
-    src/chat-text.hpp
-    src/support-diagnostics.cpp
-    src/support-diagnostics.hpp
-    src/diagnostics-collector.cpp
-    src/diagnostics-collector.hpp
-    src/support-client.cpp
-    src/support-client.hpp
-    src/support-service.cpp
-    src/support-service.hpp
-    src/api-client.cpp
-    src/api-client.hpp
-    src/token-store.cpp
-    src/token-store.hpp
-    src/auth-client.cpp
-    src/auth-client.hpp
-    src/bug-report.cpp
-    src/bug-report.hpp
-    src/report-bug-dialog.cpp
-    src/report-bug-dialog.hpp
-    src/trigi-page.cpp
-    src/trigi-page.hpp
-    src/trigi-states.cpp
-    src/trigi-states.hpp
-    src/trigi-widgets.cpp
-    src/trigi-widgets.hpp
-    src/update-checker.cpp
-    src/update-checker.hpp
-    src/i18n.hpp
-    src/auto-names.cpp
-    src/auto-names.hpp
-    src/overlay-layout.cpp
-    src/overlay-layout.hpp
-    src/overlay-badge.cpp
-    src/overlay-badge.hpp
-    src/ui-tokens.cpp
-    src/ui-tokens.hpp
-    src/ui-theme.cpp
-    src/ui-theme.hpp
-    src/resources/trigglow-ui.qrc
-)
+if(TRIGGLOW_CORE_ONLY)
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE TRIGGLOW_CORE_ONLY)
+  target_sources(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE
+      src/core-main.cpp
+      src/core-host.cpp
+      src/core-host.hpp
+      src/buffer-mode-controller.cpp
+      src/buffer-mode-controller.hpp
+      src/obs-frontend-bridge.cpp
+      src/obs-frontend-bridge.hpp
+      src/auto-names.cpp
+      src/auto-names.hpp
+      src/overlay-layout.cpp
+      src/overlay-layout.hpp
+      src/logging.cpp
+      src/logging.hpp
+      src/video-delay-filter.cpp
+      src/video-delay-filter.hpp
+      src/buffer-fit.cpp
+      src/buffer-fit.hpp
+      src/codec-pipeline.cpp
+      src/codec-pipeline.hpp
+      src/degradation-policy.cpp
+      src/degradation-policy.hpp
+      src/frame-arena.cpp
+      src/frame-arena.hpp
+      src/frame-ring.cpp
+      src/frame-ring.hpp
+      src/storage-codec.hpp
+      src/storage-codec-select.cpp
+      src/storage-codec-select.hpp
+      src/annexb.cpp
+      src/annexb.hpp
+      src/storage-codec-policy.cpp
+      src/storage-codec-policy.hpp
+      src/perf-stats.cpp
+      src/perf-stats.hpp
+      src/pipeline-health.hpp
+      src/encoder-check.cpp
+      src/encoder-check.hpp
+      src/audio-delay-filter.cpp
+      src/audio-delay-filter.hpp
+      src/hardware-info.cpp
+      src/hardware-info.hpp
+      src/log-redact.cpp
+      src/log-redact.hpp
+      src/i18n.hpp
+  )
+else()
+  target_sources(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE
+      src/plugin-main.cpp
+      src/delay-controller.cpp
+      src/delay-controller.hpp
+      src/obs-frontend-bridge.cpp
+      src/obs-frontend-bridge.hpp
+      src/settings-ui.cpp
+      src/settings-ui.hpp
+      src/hotkeys.cpp
+      src/hotkeys.hpp
+      src/logging.cpp
+      src/logging.hpp
+      src/video-delay-filter.cpp
+      src/video-delay-filter.hpp
+      src/buffer-fit.cpp
+      src/buffer-fit.hpp
+      src/codec-pipeline.cpp
+      src/codec-pipeline.hpp
+      src/degradation-policy.cpp
+      src/degradation-policy.hpp
+      src/frame-arena.cpp
+      src/frame-arena.hpp
+      src/frame-ring.cpp
+      src/frame-ring.hpp
+      src/storage-codec.hpp
+      src/storage-codec-select.cpp
+      src/storage-codec-select.hpp
+      src/annexb.cpp
+      src/annexb.hpp
+      src/storage-codec-policy.cpp
+      src/storage-codec-policy.hpp
+      src/perf-stats.cpp
+      src/perf-stats.hpp
+      src/pipeline-health.hpp
+      src/encoder-check.cpp
+      src/encoder-check.hpp
+      src/audio-delay-filter.cpp
+      src/audio-delay-filter.hpp
+      src/hardware-info.cpp
+      src/hardware-info.hpp
+      src/scene-combo-box.cpp
+      src/scene-combo-box.hpp
+      src/buffer-mode-controller.cpp
+      src/buffer-mode-controller.hpp
+      src/auth-manager.cpp
+      src/auth-manager.hpp
+      src/cancel-token.cpp
+      src/cancel-token.hpp
+      src/background-tasks.cpp
+      src/background-tasks.hpp
+      src/ui-tasks.cpp
+      src/ui-tasks.hpp
+      src/win-http.cpp
+      src/win-http.hpp
+      src/json.cpp
+      src/json.hpp
+      src/log-redact.cpp
+      src/log-redact.hpp
+      src/chat-text.cpp
+      src/chat-text.hpp
+      src/support-diagnostics.cpp
+      src/support-diagnostics.hpp
+      src/diagnostics-collector.cpp
+      src/diagnostics-collector.hpp
+      src/support-client.cpp
+      src/support-client.hpp
+      src/support-service.cpp
+      src/support-service.hpp
+      src/api-client.cpp
+      src/api-client.hpp
+      src/token-store.cpp
+      src/token-store.hpp
+      src/auth-client.cpp
+      src/auth-client.hpp
+      src/bug-report.cpp
+      src/bug-report.hpp
+      src/report-bug-dialog.cpp
+      src/report-bug-dialog.hpp
+      src/trigi-page.cpp
+      src/trigi-page.hpp
+      src/trigi-states.cpp
+      src/trigi-states.hpp
+      src/trigi-widgets.cpp
+      src/trigi-widgets.hpp
+      src/update-checker.cpp
+      src/update-checker.hpp
+      src/i18n.hpp
+      src/auto-names.cpp
+      src/auto-names.hpp
+      src/overlay-layout.cpp
+      src/overlay-layout.hpp
+      src/overlay-badge.cpp
+      src/overlay-badge.hpp
+      src/ui-tokens.cpp
+      src/ui-tokens.hpp
+      src/ui-theme.cpp
+      src/ui-theme.hpp
+      src/resources/trigglow-ui.qrc
+  )
+endif()
 
 set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 

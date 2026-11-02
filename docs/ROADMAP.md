@@ -246,7 +246,7 @@ see below.
   meaningfully higher risk. Only worth prioritizing if the Replay Buffer's narrower fix turns out
   not to cover real usage once it ships.
 - **CA-issued signing for Windows/macOS** (real fix for the SmartScreen/Defender false positive
-  in [#10](https://github.com/VirosMs/obs-trigglow-dynamic-delay/issues/10)) — application to
+  in [#10](https://github.com/TrigglowStudios/trigglow-dynamic-delay/issues/10)) — application to
   [SignPath Foundation](https://signpath.org/apply)'s free code-signing program for qualifying
   open-source projects is in progress. Only a CA-vetted identity actually feeds SmartScreen's and
   Defender's reputation systems.
