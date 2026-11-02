@@ -13,7 +13,13 @@ uniform black these banners want, unlike a logo meant to be composited onto
 an arbitrary background). Not vendored into this repo (see docs/SPEC.md's
 License section).
 
-Usage: python generate-assets.py <path-to-the-dynamic-delay-icon.png>
+Usage: python generate-assets.py <path-to-the-dynamic-delay-icon.png> [<banner-logo.png>]
+
+The optional second file is a transparent (real alpha) logo for the tall
+banner only, e.g. Trigglow's logo-dynamicdelay-con-nombre-transparente-2160.png
+(the Dynamic Delay mark with its name). It is cropped to its visible pixels,
+fitted to WIZARD_IMAGE_LOGO_WIDTH and laid on BANNER_BG, so there is no seam.
+Without it the banner uses the square icon as before.
 
 Requires Pillow: pip install pillow
 
@@ -42,14 +48,37 @@ ICON_SIZES = [(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256
 WIZARD_IMAGE_SIZE = (240, 459)  # 164:314 aspect ratio -- see module docstring.
 WIZARD_SMALL_SIZE = (256, 256)
 WIZARD_IMAGE_LOGO_WIDTH = 176  # How big the (square) logo renders inside the tall banner.
+BANNER_BG = (5, 4, 11)  # Trigglow's night ground (#05040b), behind a transparent banner logo.
+ALPHA_VISIBLE = 48  # A transparent logo's glow below this alpha doesn't count towards its crop.
+
+
+def transparent_banner(path: Path) -> Image.Image:
+    logo = Image.open(path).convert("RGBA")
+    visible = logo.getchannel("A").point(lambda a: 255 if a >= ALPHA_VISIBLE else 0)
+    box = visible.getbbox()
+    if box is None:
+        raise SystemExit(f"Banner logo has no visible pixels: {path}")
+    # Keep a margin of glow around the visible crop.
+    pad = max(box[2] - box[0], box[3] - box[1]) // 12
+    box = (max(box[0] - pad, 0), max(box[1] - pad, 0), min(box[2] + pad, logo.width), min(box[3] + pad, logo.height))
+    logo = logo.crop(box)
+    w = WIZARD_IMAGE_LOGO_WIDTH
+    h = round(logo.height * w / logo.width)
+    logo = logo.resize((w, h), Image.LANCZOS)
+    banner = Image.new("RGB", WIZARD_IMAGE_SIZE, BANNER_BG)
+    banner.paste(logo, ((WIZARD_IMAGE_SIZE[0] - w) // 2, (WIZARD_IMAGE_SIZE[1] - h) // 2), logo)
+    return banner
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: generate-assets.py <path-to-the-dynamic-delay-icon.png>")
+    if len(sys.argv) not in (2, 3):
+        raise SystemExit("Usage: generate-assets.py <path-to-the-dynamic-delay-icon.png> [<banner-logo.png>]")
     source_logo = Path(sys.argv[1])
     if not source_logo.is_file():
         raise SystemExit(f"Source logo not found: {source_logo}")
+    banner_logo = Path(sys.argv[2]) if len(sys.argv) == 3 else None
+    if banner_logo is not None and not banner_logo.is_file():
+        raise SystemExit(f"Banner logo not found: {banner_logo}")
 
     logo = Image.open(source_logo).convert("RGBA")
 
@@ -69,12 +98,15 @@ def main() -> None:
     small_canvas.save(small_path)
     print(f"wrote {small_path.name} {small_canvas.size}")
 
-    banner_w, banner_h = WIZARD_IMAGE_SIZE
-    banner = Image.new("RGB", WIZARD_IMAGE_SIZE, bg)
-    logo_resized = logo.resize((WIZARD_IMAGE_LOGO_WIDTH, WIZARD_IMAGE_LOGO_WIDTH), Image.LANCZOS)
-    x = (banner_w - WIZARD_IMAGE_LOGO_WIDTH) // 2
-    y = (banner_h - WIZARD_IMAGE_LOGO_WIDTH) // 2
-    banner.paste(logo_resized, (x, y), logo_resized)
+    if banner_logo is not None:
+        banner = transparent_banner(banner_logo)
+    else:
+        banner_w, banner_h = WIZARD_IMAGE_SIZE
+        banner = Image.new("RGB", WIZARD_IMAGE_SIZE, bg)
+        logo_resized = logo.resize((WIZARD_IMAGE_LOGO_WIDTH, WIZARD_IMAGE_LOGO_WIDTH), Image.LANCZOS)
+        x = (banner_w - WIZARD_IMAGE_LOGO_WIDTH) // 2
+        y = (banner_h - WIZARD_IMAGE_LOGO_WIDTH) // 2
+        banner.paste(logo_resized, (x, y), logo_resized)
     banner_path = OUT_DIR / "wizard-image.png"
     banner.save(banner_path)
     print(f"wrote {banner_path.name} {banner.size}")

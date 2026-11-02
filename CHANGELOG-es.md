@@ -15,6 +15,8 @@ inicio de sesión se mantienen.
 - **`…-windows-x64-studio-core.zip`**: los filtros del delay y el controlador compilados sin Qt ni
   obs-frontend-api (`-DTRIGGLOW_CORE_ONLY=ON`), con la estructura del motor de Trigglow Studio.
   Trigglow Studio lo descarga solo; no es para OBS.
+- **El instalador de Windows muestra el nuevo logo de Dynamic Delay**, con su nombre, en las
+  páginas de bienvenida y de finalización, en lugar del antiguo cronómetro con botón de play.
 
 ## v0.7.1 — 2026-10-20 (Early Access)
 
