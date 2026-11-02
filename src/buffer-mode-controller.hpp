@@ -89,6 +89,9 @@ struct BufferModeStatus {
 	// Canvas corner for the overlay: 0 top-left (default), 1 top-right, 2 bottom-left, 3 bottom-right.
 	uint32_t overlayCorner = 0;
 	std::string message; // Human-readable (Spanish), empty outside Error/info states.
+	// The locale key `message` comes from ("Status.ChooseLiveScene"...), empty
+	// with no message: for a host with its own translations (Trigglow Studio).
+	std::string messageKey;
 };
 
 using BufferStatusChangedCallback = std::function<void(const BufferModeStatus &)>;
@@ -244,14 +247,16 @@ public:
 	void SetThemeChangedCallback(std::function<void()> callback) { onThemeChanged_ = std::move(callback); }
 
 private:
-	void SetState(BufferModeState state, std::string message = {});
+	// `message` defaults to Str(messageKey); Filling passes it formatted.
+	void SetState(BufferModeState state, const char *messageKey = nullptr, std::string message = {});
 	void NotifyStatusChanged();
 	void OnFrontendEvent(FrontendEvent event);
 
 	// Disable()'s body: the filters, keep-alive and overlay switched off,
-	// Inactive with `message` (empty: the default detail). Program goes back
+	// Inactive with the message of `messageKey` (null: none, the dock's default
+	// detail). Program goes back
 	// to the scene shown before Enable() only if `restoreProgram`.
-	void StopDelay(std::string message, bool restoreProgram);
+	void StopDelay(const char *messageKey, bool restoreProgram);
 
 	// A scene collection switch with the delay Filling or Active: the delay
 	// can't follow (its helper scene and filters belong to the old
@@ -296,6 +301,7 @@ private:
 	// Status.Filling for AppliedDelaySeconds(), or Status.FillingTrimmed
 	// ("41 of your 60 s") when the RAM budget trimmed the delay.
 	std::string FillingMessage() const;
+	const char *FillingMessageKey() const;
 
 	// A hard resize empties the video ring, so the delayed view is blank for
 	// `delay` seconds: Active goes back to Filling with the loading scene on

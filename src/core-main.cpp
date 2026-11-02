@@ -16,12 +16,13 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-// Entry point of the core build (TRIGGLOW_CORE_ONLY): registers the two delay
-// filters and nothing else. No dock, no hotkeys, no account gate, no
-// obs-frontend-api -- the host (Trigglow Studio) builds the wrapper scene,
-// attaches the filters, drives them through their settings (host_* video info
-// included, see video-delay-filter.cpp) and gates them on its own sign-in.
-// plugin-main.cpp is the OBS build.
+// Entry point of the core build (TRIGGLOW_CORE_ONLY): the two delay filters
+// and the same BufferModeController the OBS build's dock drives, on the
+// libobs-only backend of ObsFrontendBridge, exposed to the host through the
+// "trigglow_delay_controller" source (core-host.hpp). No dock, no hotkeys, no
+// account gate, no update checker, no Trigi, no obs-frontend-api, no Qt: the
+// host (Trigglow Studio) has its own UI, draws the badge images and gates the
+// delay on its own sign-in. plugin-main.cpp is the OBS build.
 
 extern "C" {
 #include <obs-module.h>
@@ -29,6 +30,7 @@ extern "C" {
 }
 
 #include "audio-delay-filter.hpp"
+#include "core-host.hpp"
 #include "video-delay-filter.hpp"
 
 OBS_DECLARE_MODULE()
@@ -45,5 +47,11 @@ bool obs_module_load(void)
 	obs_log(LOG_INFO, "loading Trigglow Dynamic Delay core v%s", PLUGIN_VERSION);
 	trigglow::VideoDelayFilter::Register();
 	trigglow::AudioDelayFilter::Register();
+	trigglow::corehost::Register();
 	return true;
+}
+
+void obs_module_unload(void)
+{
+	trigglow::corehost::Shutdown();
 }

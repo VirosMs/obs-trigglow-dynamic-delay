@@ -32,7 +32,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs.hpp> // OBSSourceAutoRelease: libobs's own RAII wrapper for owned source references
 
 extern "C" {
-#include <obs-frontend-api.h>  // needed here too: obs_frontend_event is the exact callback param type
+#ifndef TRIGGLOW_CORE_ONLY
+#include <obs-frontend-api.h> // needed here too: obs_frontend_event is the exact callback param type
+#endif
 #include <graphics/graphics.h> // gs_texrender_t, for AcquireLiveSceneRendering's private render target
 }
 
@@ -69,6 +71,22 @@ extern "C" {
 //   - obs_enum_canvases(): calls back under obs->data.canvases_mutex, named
 //     canvases only (the main one included, private ones not);
 //     obs_canvas_get_video(): plain read
+//
+// Two backends, one controller (BufferModeController) and the same filters:
+//   - the OBS build: obs-frontend-api for the program scene and the frontend
+//     events, OBS's UI thread (OBS_TASK_UI) for everything the controller does;
+//   - the core build (TRIGGLOW_CORE_ONLY, for hosts with their own UI such as
+//     Trigglow Studio, which has no obs-frontend-api): libobs only. Program is
+//     the transition on output channel 0 (obs_get_output_source(0),
+//     obs_transition_get_active_source(), obs_transition_set()); the outputs'
+//     own "start"/"stop" signals stand in for the frontend's started/stopped
+//     events, and the host delivers the rest (DeliverHostEvent(): an output
+//     about to start, a scene collection switch); the controller thread of
+//     core-host.cpp is the UI thread. Video info goes through
+//     VideoDelayFilter::GetVideoInfo() in both (the host's in the core).
+// Only the functions that differ are switched (#ifdef TRIGGLOW_CORE_ONLY);
+// everything else -- the wrapper scene, the filters, the keep-alive, the
+// overlay, the encoders -- is the same code.
 namespace trigglow {
 
 // Mirrors the subset of obs_frontend_event we care about, so callers outside
@@ -137,6 +155,7 @@ public:
 	// Unregisters the event callback. Call from obs_module_unload().
 	void Shutdown();
 
+#ifndef TRIGGLOW_CORE_ONLY
 	bool IsStreamingActive() const;
 	void RequestStreamingStart() const;
 	void RequestStreamingStop() const;
@@ -162,6 +181,12 @@ public:
 	// passed as void* here so this header stays Qt-free and can be included
 	// from delay-controller.hpp / hotkeys.hpp without pulling in Qt.
 	void AddDock(const char *id, const char *title, void *qWidget) const;
+#else
+	// Core build: an event only the host knows about (an output about to
+	// start, a scene collection switch), handed to the controller like a
+	// frontend event. On the controller thread (core-host.cpp).
+	void DeliverHostEvent(FrontendEvent event);
+#endif
 
 	// Passthrough to VideoDelayFilter::GetBufferBudgetBytes() so settings-ui
 	// never needs to include video-delay-filter.hpp itself. See that
@@ -316,6 +341,9 @@ public:
 	// The frontend's stream, recording and replay buffer outputs (from their
 	// STARTED events on) and any other plugin's (Aitum Vertical, multi-rtmp,
 	// Source Record), found by BufferModeController's once-a-second Tick().
+	// The core build watches every output with a video encoder, started or
+	// not, and its "start" and "stop" signals are also the STARTED and
+	// STOPPED events (there is no frontend to send them).
 	// UI thread; takes outputs_mutex.
 	void WatchOutputStops();
 	// The ceiling OBS's main-canvas encoders put on the buffer
@@ -483,8 +511,19 @@ public:
 	bool ReleaseLiveSceneRendering(const std::string &liveSceneName);
 
 private:
+#ifndef TRIGGLOW_CORE_ONLY
 	// Must match obs_frontend_event_cb exactly: void(*)(enum obs_frontend_event, void*).
 	static void FrontendEventCallback(enum obs_frontend_event event, void *privateData);
+#else
+	// Core build: no frontend keeps the wrapper scene in its scene list, so the
+	// bridge holds a reference to it (EnsureBufferWrapperScene()) until Shutdown().
+	mutable obs_source_t *wrapperKeepAlive_ = nullptr;
+	// The outputs' "start" signal (core build): FrontendEvent::StreamingStarted
+	// on the controller thread, like OBS's STREAMING/RECORDING/REPLAY_BUFFER_STARTED.
+	static void OutputStartSignal(void *param, calldata_t *data);
+	static void OutputStartedTask(void *param);
+	static void OutputStoppedTask(void *param);
+#endif
 
 	// Matches obs_add_main_render_callback's signature. Renders
 	// liveSceneRenderSource_ into liveSceneRenderTarget_ (never the real

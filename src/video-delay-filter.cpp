@@ -638,8 +638,10 @@ VideoDelayFilter::~VideoDelayFilter()
 	obs_leave_graphics();
 }
 
+#ifdef TRIGGLOW_CORE_ONLY
 namespace {
-// The core build's video info, from the host (filter settings host_*). Hosts on
+// The core build's video info, from the host (the delay controller source's
+// host_* settings, core-host.cpp: SetHostVideoInfo()). Hosts on
 // another libobs build can't use obs_get_video_info(): Streamlabs' libobs (Trigglow
 // Studio's engine) has a different struct obs_video_info (an `initialized` flag,
 // `fps_type`), so filling ours from it corrupts the stack -- the graphics thread
@@ -647,8 +649,9 @@ namespace {
 std::mutex hostVideoMutex;
 obs_video_info hostVideo = {};
 } // namespace
+#endif
 
-static bool GetVideoInfo(obs_video_info *ovi)
+bool VideoDelayFilter::GetVideoInfo(obs_video_info *ovi)
 {
 #ifdef TRIGGLOW_CORE_ONLY
 	std::lock_guard<std::mutex> lock(hostVideoMutex);
@@ -660,6 +663,14 @@ static bool GetVideoInfo(obs_video_info *ovi)
 	return obs_get_video_info(ovi);
 #endif
 }
+
+#ifdef TRIGGLOW_CORE_ONLY
+void VideoDelayFilter::SetHostVideoInfo(const obs_video_info &ovi)
+{
+	std::lock_guard<std::mutex> lock(hostVideoMutex);
+	hostVideo = ovi;
+}
+#endif
 
 bool VideoDelayFilter::RefreshVideoInfo()
 {
@@ -1840,20 +1851,6 @@ void VideoDelayFilter::SetManagedSetting(const char *key, uint32_t value)
 
 void VideoDelayFilter::Update(obs_data_t *settings)
 {
-#ifdef TRIGGLOW_CORE_ONLY
-	{
-		// The host's video info (see GetVideoInfo()): fps as a fraction, the
-		// canvas (base) and the output size. One canvas per engine, so global.
-		std::lock_guard<std::mutex> lock(hostVideoMutex);
-		hostVideo.fps_num = static_cast<uint32_t>(obs_data_get_int(settings, "host_fps_num"));
-		hostVideo.fps_den = static_cast<uint32_t>(obs_data_get_int(settings, "host_fps_den"));
-		hostVideo.base_width = static_cast<uint32_t>(obs_data_get_int(settings, "host_base_width"));
-		hostVideo.base_height = static_cast<uint32_t>(obs_data_get_int(settings, "host_base_height"));
-		hostVideo.output_width = static_cast<uint32_t>(obs_data_get_int(settings, "host_output_width"));
-		hostVideo.output_height = static_cast<uint32_t>(obs_data_get_int(settings, "host_output_height"));
-	}
-	RefreshVideoInfo();
-#endif
 	{
 		// The delay and the quality floor are the dock's once it has pushed
 		// them (SetManagedSetting()): a different value in the settings came
@@ -2431,10 +2428,19 @@ uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
 	obs_source_t *target = obs_filter_get_target(filterSource_);
 	if (!target)
 		return 0;
-	const uint32_t sourceWidth = obs_source_get_base_width(target);
-	const uint32_t sourceHeight = obs_source_get_base_height(target);
+	uint32_t sourceWidth = obs_source_get_base_width(target);
+	uint32_t sourceHeight = obs_source_get_base_height(target);
 	obs_video_info ovi = {};
-	if (sourceWidth == 0 || sourceHeight == 0 || !GetVideoInfo(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+	if (!GetVideoInfo(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+		return 0;
+#ifdef TRIGGLOW_CORE_ONLY
+	// Streamlabs' libobs gives a scene no size until it's first drawn; the host's scene is the canvas.
+	if (sourceWidth == 0 || sourceHeight == 0) {
+		sourceWidth = ovi.base_width;
+		sourceHeight = ovi.base_height;
+	}
+#endif
+	if (sourceWidth == 0 || sourceHeight == 0)
 		return 0;
 	obs_data_t *settings = obs_source_get_settings(filterSource_);
 	if (!settings)

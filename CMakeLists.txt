@@ -6,8 +6,9 @@ project(${_name} VERSION ${_version})
 
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
-# Core build: only the two delay filters, no Qt and no obs-frontend-api, for hosts
-# other than OBS's own UI (Trigglow Studio), which orchestrate the scenes themselves.
+# Core build: the delay filters and the same controller on a libobs-only backend,
+# no Qt and no obs-frontend-api, for hosts with their own UI (Trigglow Studio),
+# which drive it through a controller source (src/core-host.hpp).
 option(TRIGGLOW_CORE_ONLY "Build only the libobs core (the delay filters) for other hosts" OFF)
 if(TRIGGLOW_CORE_ONLY)
   set(ENABLE_FRONTEND_API OFF CACHE BOOL "" FORCE)
@@ -210,6 +211,16 @@ if(TRIGGLOW_CORE_ONLY)
     ${CMAKE_PROJECT_NAME}
     PRIVATE
       src/core-main.cpp
+      src/core-host.cpp
+      src/core-host.hpp
+      src/buffer-mode-controller.cpp
+      src/buffer-mode-controller.hpp
+      src/obs-frontend-bridge.cpp
+      src/obs-frontend-bridge.hpp
+      src/auto-names.cpp
+      src/auto-names.hpp
+      src/overlay-layout.cpp
+      src/overlay-layout.hpp
       src/logging.cpp
       src/logging.hpp
       src/video-delay-filter.cpp

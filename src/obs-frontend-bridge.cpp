@@ -19,6 +19,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "obs-frontend-bridge.hpp"
 #include "audio-delay-filter.hpp"
 #include "auto-names.hpp"
+#ifdef TRIGGLOW_CORE_ONLY
+#include "core-host.hpp"
+#endif
 #include "logging.hpp"
 #include "overlay-layout.hpp"
 #include "video-delay-filter.hpp"
@@ -30,7 +33,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 extern "C" {
 #include <obs.h>
+#ifndef TRIGGLOW_CORE_ONLY
 #include <obs-frontend-api.h>
+#endif
 #include <obs-module.h> // obs_module_file()
 }
 
@@ -41,11 +46,51 @@ constexpr const char *kComponent = "frontend-bridge";
 // of dropping them when the delay shrinks or the connection hiccups. Real
 // flag, defined in libobs/obs.h. We mirror it here so callers don't need to
 // include obs.h just to pass this bit through.
+#ifndef TRIGGLOW_CORE_ONLY
 constexpr uint32_t kObsOutputDelayPreserve = 1u << 0;
+#endif
 
 // The bridge BufferRestartedTask() may still deliver events to: set by Init(),
 // cleared by Shutdown(), both on the UI thread like the task itself.
 const trigglow::ObsFrontendBridge *g_eventBridge = nullptr;
+
+// Runs `task` on the UI thread, never waiting: OBS's (OBS_TASK_UI) in the OBS
+// build, the controller thread in the core build (a host such as Trigglow
+// Studio's engine sets no UI task handler, so OBS_TASK_UI would be dropped).
+void QueueUiTask(obs_task_t task, void *param)
+{
+#ifdef TRIGGLOW_CORE_ONLY
+	trigglow::corehost::QueueTask(task, param);
+#else
+	obs_queue_task(OBS_TASK_UI, task, param, false);
+#endif
+}
+
+#ifdef TRIGGLOW_CORE_ONLY
+// The core build's scenes: Trigglow Studio's engine (Streamlabs' libobs) gives
+// a scene no size until it's first drawn. The host's scenes are the canvas.
+void SceneSizeOrCanvas(obs_source_t *scene, uint32_t &width, uint32_t &height)
+{
+	if (width != 0 && height != 0)
+		return;
+	obs_video_info ovi = {};
+	if (obs_scene_from_source(scene) && trigglow::VideoDelayFilter::GetVideoInfo(&ovi)) {
+		width = ovi.base_width;
+		height = ovi.base_height;
+	}
+}
+
+// Owned reference to the scene called `name`, or null (an input of that name too).
+obs_source_t *GetSceneByName(const std::string &name)
+{
+	obs_source_t *source = obs_get_source_by_name(name.c_str());
+	if (source && !obs_scene_from_source(source)) {
+		obs_source_release(source);
+		return nullptr;
+	}
+	return source;
+}
+#endif
 } // namespace
 
 namespace trigglow {
@@ -62,7 +107,9 @@ void ObsFrontendBridge::Init(FrontendEventHandler handler)
 		return;
 	}
 	handler_ = std::move(handler);
+#ifndef TRIGGLOW_CORE_ONLY
 	obs_frontend_add_event_callback(&ObsFrontendBridge::FrontendEventCallback, this);
+#endif
 	initialized_ = true;
 	g_eventBridge = this;
 }
@@ -88,15 +135,24 @@ void ObsFrontendBridge::Shutdown()
 	ForgetActiveBufferFilter();
 	ForgetActiveAudioFilters();
 	UnwatchOutputStops();
+#ifdef TRIGGLOW_CORE_ONLY
+	if (wrapperKeepAlive_) {
+		obs_source_release(wrapperKeepAlive_);
+		wrapperKeepAlive_ = nullptr;
+	}
+#endif
 
 	if (g_eventBridge == this)
 		g_eventBridge = nullptr; // A BufferRestartedTask() still queued finds it gone.
 	if (!initialized_)
 		return;
+#ifndef TRIGGLOW_CORE_ONLY
 	obs_frontend_remove_event_callback(&ObsFrontendBridge::FrontendEventCallback, this);
+#endif
 	initialized_ = false;
 }
 
+#ifndef TRIGGLOW_CORE_ONLY
 bool ObsFrontendBridge::IsStreamingActive() const
 {
 	return obs_frontend_streaming_active();
@@ -203,6 +259,66 @@ bool ObsFrontendBridge::SetCurrentSceneByName(const std::string &name) const
 	obs_frontend_source_list_free(&scenes);
 	return found;
 }
+#else
+void ObsFrontendBridge::DeliverHostEvent(FrontendEvent event)
+{
+	if (handler_)
+		handler_(event);
+}
+
+std::vector<std::string> ObsFrontendBridge::ListSceneNames() const
+{
+	// The main canvas's scenes (obs_enum_scenes(): no groups), the wrapper
+	// scene included like OBS's list includes it (ListAvailableScenes()
+	// drops it).
+	std::vector<std::string> names;
+	obs_enum_scenes(
+		[](void *param, obs_source_t *source) -> bool {
+			if (const char *name = obs_source_get_name(source))
+				static_cast<std::vector<std::string> *>(param)->emplace_back(name);
+			return true;
+		},
+		&names);
+	return names;
+}
+
+std::string ObsFrontendBridge::GetCurrentSceneName() const
+{
+	// Program = output channel 0: a transition showing a scene (a host such
+	// as Trigglow Studio), or the scene itself.
+	obs_source_t *program = obs_get_output_source(0);
+	if (program && obs_source_get_type(program) == OBS_SOURCE_TYPE_TRANSITION) {
+		obs_source_t *active = obs_transition_get_active_source(program);
+		obs_source_release(program);
+		program = active;
+	}
+	if (!program)
+		return {};
+	const char *name = obs_source_get_name(program);
+	std::string result = name ? name : "";
+	obs_source_release(program);
+	return result;
+}
+
+bool ObsFrontendBridge::SetCurrentSceneByName(const std::string &name) const
+{
+	if (name.empty())
+		return false;
+	obs_source_t *scene = GetSceneByName(name);
+	if (!scene)
+		return false;
+	// A cut, through the host's transition when program has one.
+	obs_source_t *program = obs_get_output_source(0);
+	if (program && obs_source_get_type(program) == OBS_SOURCE_TYPE_TRANSITION)
+		obs_transition_set(program, scene);
+	else
+		obs_set_output_source(0, scene);
+	if (program)
+		obs_source_release(program);
+	obs_source_release(scene);
+	return true;
+}
+#endif
 
 namespace {
 // Fixed, well-known names so EnsureBufferWrapperScene()/FindBufferFilter()
@@ -586,6 +702,15 @@ bool ObsFrontendBridge::EnsureBufferWrapperScene(const std::string &liveSceneNam
 		obs_source_release(liveSource);
 		return false;
 	}
+#ifdef TRIGGLOW_CORE_ONLY
+	// OBS's frontend keeps a reference to every scene it lists; without one,
+	// the release at the end of this function would destroy the wrapper.
+	if (wrapperKeepAlive_ != wrapperSource) {
+		if (wrapperKeepAlive_)
+			obs_source_release(wrapperKeepAlive_);
+		wrapperKeepAlive_ = obs_source_get_ref(wrapperSource);
+	}
+#endif
 	TRIGGLOW_LOG_INFO(kComponent, "buffer mode: wrapper scene %s, source=%p liveSource=%p",
 			  wrapperWasFound ? "found existing" : "created new", static_cast<void *>(wrapperSource),
 			  static_cast<void *>(liveSource));
@@ -933,13 +1058,16 @@ void ObsFrontendBridge::WatchOutputStops()
 		it = watchedOutputs_.erase(it);
 	}
 	// Active outputs with a video encoder, each with a reference of our own
-	// (taken under outputs_mutex, connected after it).
+	// (taken under outputs_mutex, connected after it). The core build watches
+	// the stopped ones too: their "start" signal is its STARTED event.
 	std::vector<obs_output_t *> active;
 	obs_enum_outputs(
 		[](void *param, obs_output_t *output) -> bool {
 			auto *list = static_cast<std::vector<obs_output_t *> *>(param);
+#ifndef TRIGGLOW_CORE_ONLY
 			if (!obs_output_active(output))
 				return true;
+#endif
 			for (size_t idx = 0; idx < MAX_OUTPUT_VIDEO_ENCODERS; ++idx) {
 				if (obs_output_get_video_encoder2(output, idx)) {
 					if (obs_output_t *ref = obs_output_get_ref(output))
@@ -957,6 +1085,10 @@ void ObsFrontendBridge::WatchOutputStops()
 		if (!watched) {
 			signal_handler_connect(obs_output_get_signal_handler(output), "stop",
 					       &ObsFrontendBridge::OutputStopSignal, this);
+#ifdef TRIGGLOW_CORE_ONLY
+			signal_handler_connect(obs_output_get_signal_handler(output), "start",
+					       &ObsFrontendBridge::OutputStartSignal, this);
+#endif
 			watchedOutputs_.push_back(obs_output_get_weak_output(output));
 		}
 		obs_output_release(output);
@@ -969,6 +1101,10 @@ void ObsFrontendBridge::UnwatchOutputStops()
 		if (obs_output_t *output = obs_weak_output_get_output(weak)) {
 			signal_handler_disconnect(obs_output_get_signal_handler(output), "stop",
 						  &ObsFrontendBridge::OutputStopSignal, this);
+#ifdef TRIGGLOW_CORE_ONLY
+			signal_handler_disconnect(obs_output_get_signal_handler(output), "start",
+						  &ObsFrontendBridge::OutputStartSignal, this);
+#endif
 			obs_output_release(output);
 		}
 		obs_weak_output_release(weak);
@@ -981,8 +1117,33 @@ void ObsFrontendBridge::OutputStopSignal(void *param, calldata_t *data)
 	// The output's own thread: only an encoder error matters here (a network
 	// drop or a user stop doesn't); never waits on the UI.
 	if (calldata_int(data, "code") == OBS_OUTPUT_ENCODE_ERROR)
-		obs_queue_task(OBS_TASK_UI, &ObsFrontendBridge::OutputEncodeErrorTask, param, false);
+		QueueUiTask(&ObsFrontendBridge::OutputEncodeErrorTask, param);
+#ifdef TRIGGLOW_CORE_ONLY
+	// No frontend: the output's own stop is the STOPPED event (any code).
+	QueueUiTask(&ObsFrontendBridge::OutputStoppedTask, param);
+#endif
 }
+
+#ifdef TRIGGLOW_CORE_ONLY
+void ObsFrontendBridge::OutputStartSignal(void *param, calldata_t * /*data*/)
+{
+	QueueUiTask(&ObsFrontendBridge::OutputStartedTask, param);
+}
+
+void ObsFrontendBridge::OutputStartedTask(void *param)
+{
+	auto *self = static_cast<ObsFrontendBridge *>(param);
+	if (self == g_eventBridge && self->handler_)
+		self->handler_(FrontendEvent::StreamingStarted);
+}
+
+void ObsFrontendBridge::OutputStoppedTask(void *param)
+{
+	auto *self = static_cast<ObsFrontendBridge *>(param);
+	if (self == g_eventBridge && self->handler_)
+		self->handler_(FrontendEvent::StreamingStopped);
+}
+#endif
 
 void ObsFrontendBridge::OutputEncodeErrorTask(void *param)
 {
@@ -1033,7 +1194,7 @@ bool ObsFrontendBridge::RawVideoOutputOnMainMix() const
 bool ObsFrontendBridge::MainCanvasGeometry(encodercheck::Size &base, encodercheck::Size &output) const
 {
 	obs_video_info ovi = {};
-	if (!obs_get_video_info(&ovi))
+	if (!VideoDelayFilter::GetVideoInfo(&ovi))
 		return false;
 	base = {ovi.base_width, ovi.base_height};
 	output = {ovi.output_width, ovi.output_height};
@@ -1132,7 +1293,7 @@ void ObsFrontendBridge::BufferRestartedSignal(void *param, calldata_t * /*data*/
 	// Graphics thread (VideoDelayFilter::EnsureRingSized()); the controller
 	// lives on the UI thread. Never waits: the graphics thread can't block on
 	// the UI.
-	obs_queue_task(OBS_TASK_UI, &ObsFrontendBridge::BufferRestartedTask, param, false);
+	QueueUiTask(&ObsFrontendBridge::BufferRestartedTask, param);
 }
 
 void ObsFrontendBridge::BufferRestartedTask(void *param)
@@ -1327,7 +1488,7 @@ bool ObsFrontendBridge::SetDelayOverlay(bool visible, uint32_t seconds, uint32_t
 	obs_video_info ovi = {};
 	float canvasW = 0.0f;
 	float canvasH = 0.0f;
-	if (obs_get_video_info(&ovi)) {
+	if (VideoDelayFilter::GetVideoInfo(&ovi)) {
 		canvasW = static_cast<float>(ovi.base_width);
 		canvasH = static_cast<float>(ovi.base_height);
 	}
@@ -1650,6 +1811,9 @@ void ObsFrontendBridge::RenderLiveSceneCallback(void *param, uint32_t /*cx*/, ui
 
 	uint32_t width = obs_source_get_base_width(self->liveSceneRenderSource_);
 	uint32_t height = obs_source_get_base_height(self->liveSceneRenderSource_);
+#ifdef TRIGGLOW_CORE_ONLY
+	SceneSizeOrCanvas(self->liveSceneRenderSource_, width, height);
+#endif
 	if (width == 0 || height == 0)
 		return;
 
@@ -1677,6 +1841,7 @@ void ObsFrontendBridge::RenderLiveSceneCallback(void *param, uint32_t /*cx*/, ui
 	}
 }
 
+#ifndef TRIGGLOW_CORE_ONLY
 void ObsFrontendBridge::AddDock(const char *id, const char *title, void *qWidget) const
 {
 	// obs_frontend_add_dock_by_id() takes ownership of the widget's lifetime
@@ -1686,6 +1851,7 @@ void ObsFrontendBridge::AddDock(const char *id, const char *title, void *qWidget
 		TRIGGLOW_LOG_ERROR(kComponent, "obs_frontend_add_dock_by_id(\"%s\") failed", id);
 	}
 }
+#endif
 
 uint64_t ObsFrontendBridge::GetBufferBudgetBytes() const
 {
@@ -1706,6 +1872,9 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 	// same thing EnsureRingSized() will actually compute once Enable() runs.
 	uint32_t width = obs_source_get_base_width(liveSource);
 	uint32_t height = obs_source_get_base_height(liveSource);
+#ifdef TRIGGLOW_CORE_ONLY
+	SceneSizeOrCanvas(liveSource, width, height);
+#endif
 	obs_source_release(liveSource);
 
 	// Canvas (base_*) and output (output_*) geometry plus the exact fps_num/
@@ -1715,7 +1884,7 @@ VideoDelayFilter::BufferFitEstimate ObsFrontendBridge::EstimateBufferFit(const s
 	obs_video_info ovi = {};
 	uint32_t baseWidth = 0, baseHeight = 0, outputWidth = 0, outputHeight = 0;
 	uint32_t fpsNum = 30, fpsDen = 1;
-	if (obs_get_video_info(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0) {
+	if (VideoDelayFilter::GetVideoInfo(&ovi) && ovi.fps_num > 0 && ovi.fps_den > 0) {
 		baseWidth = ovi.base_width;
 		baseHeight = ovi.base_height;
 		outputWidth = ovi.output_width;
@@ -1733,7 +1902,7 @@ std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() con
 {
 	video_t *mainVideo = obs_get_video();
 	obs_video_info ovi = {};
-	if (!mainVideo || !obs_get_video_info(&ovi))
+	if (!mainVideo || !VideoDelayFilter::GetVideoInfo(&ovi))
 		return {};
 
 	// The mixes of the other named canvases, compared by pointer only (never
@@ -1807,6 +1976,7 @@ std::vector<ActiveVideoEncoder> ObsFrontendBridge::ListActiveVideoEncoders() con
 	return encoders;
 }
 
+#ifndef TRIGGLOW_CORE_ONLY
 void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, void *privateData)
 {
 	auto *self = static_cast<ObsFrontendBridge *>(privateData);
@@ -1873,5 +2043,6 @@ void ObsFrontendBridge::FrontendEventCallback(enum obs_frontend_event event, voi
 		self->WatchOutputStops();
 	self->handler_(mapped);
 }
+#endif
 
 } // namespace trigglow
