@@ -105,6 +105,7 @@ ha probado en directo. El mínimo se define en un único sitio, el `obsCompat` d
 
 | Plugin | OBS mínimo | Probado hasta | Win | macOS | Linux |
 |---|---|---|---|---|---|
+| 0.7.2 | 31.1.0 | 32.2.2 | Instalador, `.zip` (ubicación de OBS 33) | `.pkg` | `.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.xz` |
 | 0.7.1 | 31.1.0 | 32.2.2 | Instalador, `.zip` (ubicación de OBS 33) | `.pkg` | `.deb`, `.rpm`, `.pkg.tar.zst`, `.tar.xz` |
 | 0.7.0 | 31.1.0 | 32.2.2 | Instalador, `.zip` ("Legacy" en OBS 33) | `.pkg` | `.deb`, solo Ubuntu 24.04 con OBS 32.2 |
 
@@ -212,7 +213,7 @@ sudo .github/scripts/linux/install-build-deps.sh   # paquetes de Ubuntu 24.04
 
 ## Instalar el plugin
 
-**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.7.1-windows-x64-setup.exe`
+**Windows: usa el instalador.** Descarga `obs-trigglow-dynamic-delay-0.7.2-windows-x64-setup.exe`
 desde la [última release](https://github.com/VirosMs/obs-trigglow-dynamic-delay/releases/latest) y
 ejecútalo — instala el plugin en la carpeta de plugins de OBS para todos los usuarios y saca de la
 carpeta de OBS una instalación de la v0.7.0 o anterior. Todavía no
@@ -221,7 +222,7 @@ completa con capturas de cada paso, incluido el aviso de SmartScreen: `docs/INST
 Instálalo antes de salir en directo, no a mitad de un stream — necesita OBS cerrado para
 sobrescribir sus archivos.
 
-**Linux: usa el paquete de tu distribución.** `obs-trigglow-dynamic-delay-0.7.1-x86_64-linux-gnu.deb`
+**Linux: usa el paquete de tu distribución.** `obs-trigglow-dynamic-delay-0.7.2-x86_64-linux-gnu.deb`
 (Debian, Ubuntu, Mint, Pop!_OS: `sudo apt install ./<archivo>.deb`), `.rpm` (Fedora, openSUSE:
 `sudo dnf install ./<archivo>.rpm`) o `.pkg.tar.zst` (Arch, Manjaro, EndeavourOS:
 `sudo pacman -U <archivo>.pkg.tar.zst`), que instalan lo que necesitan. En cualquier otra
