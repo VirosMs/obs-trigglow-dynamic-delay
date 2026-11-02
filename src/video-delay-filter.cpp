@@ -638,10 +638,33 @@ VideoDelayFilter::~VideoDelayFilter()
 	obs_leave_graphics();
 }
 
+namespace {
+// The core build's video info, from the host (filter settings host_*). Hosts on
+// another libobs build can't use obs_get_video_info(): Streamlabs' libobs (Trigglow
+// Studio's engine) has a different struct obs_video_info (an `initialized` flag,
+// `fps_type`), so filling ours from it corrupts the stack -- the graphics thread
+// crashed in video_tick (seen 2026-11-02). The OBS build keeps asking libobs.
+std::mutex hostVideoMutex;
+obs_video_info hostVideo = {};
+} // namespace
+
+static bool GetVideoInfo(obs_video_info *ovi)
+{
+#ifdef TRIGGLOW_CORE_ONLY
+	std::lock_guard<std::mutex> lock(hostVideoMutex);
+	if (hostVideo.fps_num == 0 || hostVideo.fps_den == 0)
+		return false;
+	*ovi = hostVideo;
+	return true;
+#else
+	return obs_get_video_info(ovi);
+#endif
+}
+
 bool VideoDelayFilter::RefreshVideoInfo()
 {
 	obs_video_info ovi = {};
-	if (!obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+	if (!GetVideoInfo(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
 		return false;
 	fpsNum_ = ovi.fps_num;
 	fpsDen_ = ovi.fps_den;
@@ -1154,6 +1177,13 @@ void VideoDelayFilter::EnsureRingSized(uint32_t origWidth, uint32_t origHeight)
 	lastFitInput_ = in;
 	lastFit_ = fit;
 	effectiveDelaySeconds_ = fit.effectiveDelaySeconds;
+	// Also in the filter's own settings, for hosts that read settings but can't
+	// call proc handlers (Trigglow Studio through obs-studio-node): the same value
+	// get_effective_delay_seconds returns.
+	if (obs_data_t *published = obs_source_get_settings(filterSource_)) {
+		obs_data_set_int(published, "effective_delay_seconds", fit.effectiveDelaySeconds);
+		obs_data_release(published);
+	}
 	ringFrameIntervalNs_ = frameIntervalNs_;
 
 	const FrameArena::Config arena = ArenaConfigFor(fit.actualFrames, fit.bufferWidth, fit.bufferHeight,
@@ -1810,6 +1840,20 @@ void VideoDelayFilter::SetManagedSetting(const char *key, uint32_t value)
 
 void VideoDelayFilter::Update(obs_data_t *settings)
 {
+#ifdef TRIGGLOW_CORE_ONLY
+	{
+		// The host's video info (see GetVideoInfo()): fps as a fraction, the
+		// canvas (base) and the output size. One canvas per engine, so global.
+		std::lock_guard<std::mutex> lock(hostVideoMutex);
+		hostVideo.fps_num = static_cast<uint32_t>(obs_data_get_int(settings, "host_fps_num"));
+		hostVideo.fps_den = static_cast<uint32_t>(obs_data_get_int(settings, "host_fps_den"));
+		hostVideo.base_width = static_cast<uint32_t>(obs_data_get_int(settings, "host_base_width"));
+		hostVideo.base_height = static_cast<uint32_t>(obs_data_get_int(settings, "host_base_height"));
+		hostVideo.output_width = static_cast<uint32_t>(obs_data_get_int(settings, "host_output_width"));
+		hostVideo.output_height = static_cast<uint32_t>(obs_data_get_int(settings, "host_output_height"));
+	}
+	RefreshVideoInfo();
+#endif
 	{
 		// The delay and the quality floor are the dock's once it has pushed
 		// them (SetManagedSetting()): a different value in the settings came
@@ -2390,7 +2434,7 @@ uint32_t VideoDelayFilter::PlannedEffectiveDelaySeconds() const
 	const uint32_t sourceWidth = obs_source_get_base_width(target);
 	const uint32_t sourceHeight = obs_source_get_base_height(target);
 	obs_video_info ovi = {};
-	if (sourceWidth == 0 || sourceHeight == 0 || !obs_get_video_info(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
+	if (sourceWidth == 0 || sourceHeight == 0 || !GetVideoInfo(&ovi) || ovi.fps_num == 0 || ovi.fps_den == 0)
 		return 0;
 	obs_data_t *settings = obs_source_get_settings(filterSource_);
 	if (!settings)
@@ -2465,7 +2509,7 @@ void VideoDelayFilter::SetEncoderCeilingProc(void *data, calldata_t *params)
 	long long height = calldata_int(params, "height");
 	obs_video_info ovi = {};
 	// Never above the canvas, never odd: anything else is no ceiling.
-	if (!obs_get_video_info(&ovi) || width <= 0 || height <= 0 || width > static_cast<long long>(ovi.base_width) ||
+	if (!GetVideoInfo(&ovi) || width <= 0 || height <= 0 || width > static_cast<long long>(ovi.base_width) ||
 	    height > static_cast<long long>(ovi.base_height) || width % 8 != 0 || height % 2 != 0) {
 		width = 0;
 		height = 0;
