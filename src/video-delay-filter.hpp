@@ -149,6 +149,17 @@ public:
 	// delaySeconds/minResolutionHeight, it's informational.
 	static uint64_t GetBufferBudgetBytes();
 
+	// OBS's video info (fps, canvas and output size, adapter): what every part
+	// of the plugin reads it through. obs_get_video_info() in the OBS build; in
+	// the core build the host's copy (SetHostVideoInfo()), since a host on
+	// another libobs build can't share struct obs_video_info -- Streamlabs'
+	// (Trigglow Studio's engine) has more fields, and filling ours from it
+	// corrupts the stack. False until there is one.
+	static bool GetVideoInfo(obs_video_info *ovi);
+#ifdef TRIGGLOW_CORE_ONLY
+	static void SetHostVideoInfo(const obs_video_info &ovi);
+#endif
+
 	// What EnsureRingSized() would actually do for a given
 	// (requestedDelaySeconds, minResolutionHeight) at the live scene's real
 	// (sourceWidth, sourceHeight) and OBS's current video settings (canvas

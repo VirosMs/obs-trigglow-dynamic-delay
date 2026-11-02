@@ -174,17 +174,17 @@ void BufferModeController::Enable()
 	// checked before anything else so a logged-out Enable() (from the dock
 	// button OR a hotkey/Stream Deck press) never touches OBS state at all.
 	if (isAuthorized_ && !isAuthorized_()) {
-		SetState(BufferModeState::Error, Str("Status.LoginRequired"));
+		SetState(BufferModeState::Error, "Status.LoginRequired");
 		return;
 	}
 
 	if (status_.liveSceneName.empty()) {
-		SetState(BufferModeState::Error, Str("Status.ChooseLiveScene"));
+		SetState(BufferModeState::Error, "Status.ChooseLiveScene");
 		return;
 	}
 
 	if (!bridge_.EnsureBufferWrapperScene(status_.liveSceneName)) {
-		SetState(BufferModeState::Error, Str("Status.WrapperSceneFailed"));
+		SetState(BufferModeState::Error, "Status.WrapperSceneFailed");
 		return;
 	}
 	bridge_.SetBufferFilterDelaySeconds(status_.liveSceneName, status_.delaySeconds);
@@ -242,7 +242,7 @@ void BufferModeController::Enable()
 		bridge_.SetCurrentSceneByName(status_.loadingSceneName);
 
 	++status_.fillGeneration; // A new fill window: the dock starts its countdown.
-	SetState(BufferModeState::Filling, FillingMessage());
+	SetState(BufferModeState::Filling, FillingMessageKey(), FillingMessage());
 	TRIGGLOW_LOG_INFO(
 		kComponent,
 		"enabled: live=\"%s\" loading=\"%s\" delay=%us output_cap=%s codec_workers=%s buffer_codec=%s%s "
@@ -446,7 +446,7 @@ void BufferModeController::EnterRefill(const char *reason)
 	// fillGeneration changes): OnFillTimerElapsed() switches back to the
 	// wrapper scene once the new ring is full.
 	++status_.fillGeneration;
-	SetState(BufferModeState::Filling, FillingMessage());
+	SetState(BufferModeState::Filling, FillingMessageKey(), FillingMessage());
 	TRIGGLOW_LOG_WARN(kComponent, "%s: the video buffer restarted empty -- %s for the next %us while it refills",
 			  reason,
 			  wasFilling                         ? "the fill window starts over"
@@ -459,6 +459,11 @@ uint32_t BufferModeController::AppliedDelaySeconds() const
 {
 	return status_.effectiveDelaySeconds > 0 ? std::min(status_.effectiveDelaySeconds, status_.delaySeconds)
 						 : status_.delaySeconds;
+}
+
+const char *BufferModeController::FillingMessageKey() const
+{
+	return AppliedDelaySeconds() < status_.delaySeconds ? "Status.FillingTrimmed" : "Status.Filling";
 }
 
 std::string BufferModeController::FillingMessage() const
@@ -487,10 +492,10 @@ void BufferModeController::OnBufferRestarted()
 
 void BufferModeController::Disable()
 {
-	StopDelay({}, /*restoreProgram=*/true);
+	StopDelay(nullptr, /*restoreProgram=*/true);
 }
 
-void BufferModeController::StopDelay(std::string message, bool restoreProgram)
+void BufferModeController::StopDelay(const char *messageKey, bool restoreProgram)
 {
 	bool wasActive = status_.state != BufferModeState::Inactive;
 
@@ -514,7 +519,7 @@ void BufferModeController::StopDelay(std::string message, bool restoreProgram)
 	}
 	sceneBeforeEnable_.clear();
 
-	SetState(BufferModeState::Inactive, std::move(message));
+	SetState(BufferModeState::Inactive, messageKey);
 	if (wasActive)
 		TRIGGLOW_LOG_INFO(kComponent, "disabled");
 }
@@ -532,7 +537,7 @@ void BufferModeController::StopForSceneCollectionChange(bool oldCollectionLoaded
 	// the helper scene it was saved with, which would show the live scene
 	// undelayed now that its filter is off.
 	const bool restoreProgram = oldCollectionLoaded || autonames::IsWrapperSceneName(bridge_.GetCurrentSceneName());
-	StopDelay(Str("Status.CollectionChanged"), restoreProgram);
+	StopDelay("Status.CollectionChanged", restoreProgram);
 }
 
 void BufferModeController::Toggle()
@@ -577,10 +582,11 @@ PipelineHealth BufferModeController::GetPipelineHealth() const
 	return health;
 }
 
-void BufferModeController::SetState(BufferModeState state, std::string message)
+void BufferModeController::SetState(BufferModeState state, const char *messageKey, std::string message)
 {
 	status_.state = state;
-	status_.message = std::move(message);
+	status_.messageKey = messageKey ? messageKey : "";
+	status_.message = message.empty() && messageKey ? Str(messageKey) : std::move(message);
 	NotifyStatusChanged();
 }
 

@@ -621,6 +621,39 @@ jobs:
             Remove-Item $pfxPath -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Build Studio Core 🎛️
+        if: fromJSON(needs.check-event.outputs.package)
+        run: |
+          # Build Studio Core 🎛️
+          #
+          # The core build (-DTRIGGLOW_CORE_ONLY=ON, src/core-main.cpp): only the
+          # two delay filters, for Trigglow Studio's engine, which loads it like
+          # any libobs plugin and drives the filters itself. Packed in the
+          # engine's own layout (obs-plugins/64bit + data/obs-plugins/<name>) so
+          # the Trigglow app's `studio:fetch` unpacks it straight into it. Reuses
+          # .deps from the main build.
+          if ( $Env:RUNNER_DEBUG -ne $null ) {
+            Set-PSDebug -Trace 1
+          }
+
+          $config = '${{ needs.check-event.outputs.config }}'
+          $plugin = '${{ steps.setup.outputs.pluginName }}'
+          $core = "${plugin}-core"
+          cmake --preset windows-ci-x64 -B build_core -DTRIGGLOW_CORE_ONLY=ON
+          if ( $LASTEXITCODE -ne 0 ) { throw 'core configure failed' }
+          cmake --build build_core --config $config
+          if ( $LASTEXITCODE -ne 0 ) { throw 'core build failed' }
+          cmake --install build_core --config $config --prefix build_core/pkg
+          if ( $LASTEXITCODE -ne 0 ) { throw 'core install failed' }
+
+          $src = "build_core/pkg/${plugin}"
+          $stage = 'build_core/studio'
+          $bin = New-Item -ItemType Directory -Force -Path "${stage}/obs-plugins/64bit"
+          $data = New-Item -ItemType Directory -Force -Path "${stage}/data/obs-plugins/${core}"
+          Copy-Item -Path "${src}/bin/64bit/${core}.dll", "${src}/bin/64bit/avcodec-*.dll", "${src}/bin/64bit/avutil-*.dll", "${src}/bin/64bit/swresample-*.dll" -Destination $bin
+          Copy-Item -Path "${src}/data/locale", "${src}/data/licenses" -Destination $data -Recurse
+          Compress-Archive -Path "${stage}/*" -DestinationPath "release/${plugin}-${{ steps.setup.outputs.pluginVersion }}-windows-x64-studio-core.zip"
+
       - name: Upload Artifacts 📡
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
