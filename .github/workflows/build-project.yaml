@@ -24,7 +24,7 @@ jobs:
       pluginName: ${{ steps.setup.outputs.pluginName }}
       releaseTag: ${{ steps.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Check Event Data ☑️
@@ -121,7 +121,7 @@ jobs:
       # tests/pipeline_gop_stress_tests.cpp.
       TRIGGLOW_STRESS_CI: '1'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build and Run Unit Tests 🧪
         run: |
@@ -147,7 +147,7 @@ jobs:
       # under TSAN's 5-15x slowdown the strict ones fail without a race.
       TRIGGLOW_STRESS_CI: '1'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build Threaded Unit Tests with ThreadSanitizer 🧪
         run: |
@@ -223,7 +223,7 @@ jobs:
       run:
         shell: zsh --no-rcs --errexit --pipefail {0}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           fetch-depth: 0
@@ -354,7 +354,7 @@ jobs:
           apt-get update -q
           DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends ca-certificates git
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           fetch-depth: 0
@@ -492,7 +492,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -538,7 +538,7 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
           fetch-depth: 0
